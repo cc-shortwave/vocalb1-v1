@@ -125,6 +125,21 @@ python VocalB1Synthesizer.py
 
 ---
 
+
+---
+
+## 打包发布
+
+```powershell
+.\scripts\package-release.ps1              # 两个版本都打
+.\scripts\package-release.ps1 -Mode lite   # 只打 lite
+```
+
+脚本读 `VERSION`、发布 WPF 程序、(可选) 内置 Python，输出
+`dist/vocalb1-v<版本>-win-x64-{full,lite}.zip`，并生成 `SHA256SUMS.txt` 与 `RELEASE-NOTES.md`。
+两个压缩包都解压成单一文件夹，引擎、`ui/bridge/`、`languages/` 和空的 `voicebank/`
+都放在程序能自动发现的位置。
+
 ## 许可
 
 源代码采用 **MIT** 许可，见 [LICENSE](LICENSE)。

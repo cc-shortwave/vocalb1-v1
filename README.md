@@ -54,6 +54,9 @@ pip install -r requirements.txt
 `matplotlib` (spectrum / spectrogram) and `pygame` (preview playback) are optional —
 synthesis alone does not need them.
 
+On Windows the requirements pull `pyworld-prebuilt` instead of `pyworld`, because upstream
+`pyworld` ships no wheels for Python 3.9+ (it would need a local MSVC build).
+
 ---
 
 ## Quick start
@@ -126,6 +129,21 @@ Measured on a 2-core / 2 GB machine:
 - re-rendering with unchanged parameters: cache hit, effectively instant
 
 ---
+
+
+---
+
+## Building a release
+
+```powershell
+.\scripts\package-release.ps1              # both variants
+.\scripts\package-release.ps1 -Mode lite   # lite only
+```
+
+Reads `VERSION`, publishes the WPF app, optionally bundles an embedded Python, and writes
+`dist/vocalb1-v<version>-win-x64-{full,lite}.zip` plus `SHA256SUMS.txt` and `RELEASE-NOTES.md`.
+Both archives unpack into a single folder; the engine, `ui/bridge/`, `languages/` and an empty
+`voicebank/` are placed where the app auto-discovers them.
 
 ## Licensing
 

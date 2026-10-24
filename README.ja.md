@@ -129,6 +129,21 @@ python VocalB1Synthesizer.py
 
 ---
 
+
+---
+
+## リリースのビルド
+
+```powershell
+.\scripts\package-release.ps1              # full と lite の両方
+.\scripts\package-release.ps1 -Mode lite   # lite のみ
+```
+
+`VERSION` を読み、WPF アプリを publish し、（任意で）Python を同梱して
+`dist/vocalb1-v<version>-win-x64-{full,lite}.zip` と `SHA256SUMS.txt`、
+`RELEASE-NOTES.md` を出力します。どちらのアーカイブも単一フォルダに展開され、
+エンジン・`ui/bridge/`・`languages/`・空の `voicebank/` が自動検出される位置に置かれます。
+
 ## ライセンス
 
 ソースコードは **MIT** ライセンスです — [LICENSE](LICENSE) を参照してください。
