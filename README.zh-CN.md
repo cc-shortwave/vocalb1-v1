@@ -1,6 +1,6 @@
 # VocalB1
 
-[English](README.md) | **中文**
+[English](README.md) | **中文** | [日本語](README.ja.md)
 
 离线轻量化歌声合成引擎 —— 音轨参数独立可控，无预训练，支持 UTAU 声库接入。
 
