@@ -1,0 +1,501 @@
+<Window x:Class="VocalB1.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:VocalB1.App.Controls"
+        Title="VocalB1 Studio"
+        Height="880" Width="1440"
+        MinHeight="720" MinWidth="1120"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BgBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI"
+        UseLayoutRounding="True">
+
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding RenderCommand}" />
+        <KeyBinding Key="S" Modifiers="Control" Command="{Binding SaveProjectCommand}" />
+        <KeyBinding Key="O" Modifiers="Control" Command="{Binding OpenProjectCommand}" />
+        <KeyBinding Key="N" Modifiers="Control" Command="{Binding NewProjectCommand}" />
+        <KeyBinding Key="Z" Modifiers="Control" Command="{Binding UndoCommand}" />
+        <KeyBinding Key="Z" Modifiers="Control+Shift" Command="{Binding RedoCommand}" />
+        <KeyBinding Key="Delete" Command="{Binding DeleteSelectionCommand}" />
+        <KeyBinding Key="Back" Command="{Binding DeleteSelectionCommand}" />
+    </Window.InputBindings>
+
+    <DockPanel>
+
+        <!-- Top bar -->
+        <Border DockPanel.Dock="Top" Height="52"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="16,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="VocalB1" FontSize="17" FontWeight="Bold" Foreground="{DynamicResource AccentBrush}" />
+                    <TextBlock Text="Studio" Margin="6,2,0,0" Foreground="{DynamicResource DimBrush}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="新建" Command="{Binding NewProjectCommand}" />
+                    <Button Content="打开" Command="{Binding OpenProjectCommand}" />
+                    <Button Content="保存" Command="{Binding SaveProjectCommand}" />
+                    <Button Content="{Binding ThemeToggleText}" Command="{Binding ToggleThemeCommand}"
+                            ToolTip="在深色与浅色模式之间切换" />
+                    <ComboBox Width="104" Margin="10,0,0,0" VerticalAlignment="Center"
+                              ItemsSource="{Binding Languages}"
+                              SelectedItem="{Binding SelectedLanguage}"
+                              DisplayMemberPath="Name"
+                              ToolTip="界面语言" />
+                    <Button Content="导入语言包" Margin="6,0,0,0" Command="{Binding ImportLanguageCommand}"
+                            ToolTip="导入 JSON 语言包（中文原文到目标语言的映射表）" />
+                    <Button Content="示例" Command="{Binding LoadDemoCommand}" Margin="10,0,6,0" />
+                    <Button Content="渲染 (F5)" Style="{StaticResource PrimaryButton}" Command="{Binding RenderCommand}" />
+                    <Button Content="取消" Command="{Binding CancelRenderCommand}" />
+                    <Button Content="播放" Command="{Binding PlayCommand}" />
+                    <Button Content="停止" Command="{Binding StopCommand}" Margin="0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Height="28"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StatusText}" />
+                    <TextBlock Text="· 渲染中" Margin="10,0,0,0" Foreground="{DynamicResource AccentBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding EngineInfo}" Foreground="{DynamicResource DimBrush}"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <!-- Log -->
+        <Border DockPanel.Dock="Bottom" Height="176"
+                Background="{DynamicResource PanelBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,1,0,0">
+            <DockPanel Margin="12,8">
+                <TextBlock DockPanel.Dock="Top" Text="日志" Style="{StaticResource SectionTitle}" />
+                <ListBox x:Name="LogList" ItemsSource="{Binding Logs}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding TimeText}" FontFamily="Consolas"
+                                           Foreground="{DynamicResource DimBrush}" Margin="0,0,10,0" />
+                                <TextBlock Text="{Binding Message}" TextWrapping="Wrap">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Border>
+
+        <!-- Main three-column body -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="264" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="324" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: voice library + user dictionary -->
+            <Border Grid.Column="0" Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0"
+                    Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0">
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                            <TextBlock Text="声库" Style="{StaticResource SectionTitle}" Margin="0"
+                                       HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding SelectedTrack.Name}" FontSize="11"
+                                       Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <TextBox DockPanel.Dock="Top" Text="{Binding LibraryRoot, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="声库根目录" />
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,8,0,8">
+                            <Button Content="刷新" Command="{Binding RefreshLibraryCommand}" />
+                            <Button Content="加入工程"
+                                    Command="{Binding AddLibraryItemCommand}"
+                                    CommandParameter="{Binding SelectedItem, ElementName=LibraryList}" />
+                        </StackPanel>
+                        <ListBox x:Name="LibraryList" ItemsSource="{Binding Library}"
+                                 SelectedItem="{Binding SelectedLibraryItem}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+
+                    <!-- User dictionary: unicode text → voice library audio combinations -->
+                    <Border Grid.Row="1" Margin="0,10,0,0" Padding="0,10,0,0"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
+                        <DockPanel>
+                            <Grid DockPanel.Dock="Top">
+                                <TextBlock Text="用户字典" Style="{StaticResource SectionTitle}"
+                                           HorizontalAlignment="Left" />
+                                <Button Content="导入" HorizontalAlignment="Right" Margin="0"
+                                        Padding="10,2" Command="{Binding ImportDictionaryCommand}" />
+                            </Grid>
+
+                            <TextBlock DockPanel.Dock="Top" Text="{Binding DictionaryName}"
+                                       FontWeight="SemiBold" Margin="0,4,0,0" />
+                            <TextBlock DockPanel.Dock="Top" Text="{Binding DictionaryPathText}"
+                                       Foreground="{DynamicResource DimBrush}" FontSize="11"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding DictionaryPathText}" />
+
+                            <Button DockPanel.Dock="Bottom" Content="插入所选条目" Margin="0,8,0,0"
+                                    Command="{Binding InsertDictionaryEntryCommand}" />
+
+                            <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                    <TextBlock Text="起拍" Foreground="{DynamicResource DimBrush}"
+                                               FontSize="11" Margin="0,0,0,2" />
+                                    <TextBox Text="{Binding DictionaryStartBeat, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                                    <TextBlock Text="拍长" Foreground="{DynamicResource DimBrush}"
+                                               FontSize="11" Margin="0,0,0,2" />
+                                    <TextBox Text="{Binding DictionaryBeats, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="目标音高" Foreground="{DynamicResource DimBrush}"
+                                               FontSize="11" Margin="0,0,0,2" />
+                                    <TextBox Text="{Binding DictionaryDstPitch, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                            </Grid>
+
+                            <ListBox x:Name="DictionaryList" ItemsSource="{Binding DictionaryEntries}"
+                                     SelectedItem="{Binding SelectedDictionaryEntry}"
+                                     MinHeight="92" MaxHeight="150" Margin="0,8,0,0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Text}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding Detail}" FontSize="11"
+                                                       Foreground="{DynamicResource DimBrush}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- Center: track tabs + editor area -->
+            <Grid Grid.Column="1" Margin="16,14,16,14">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TabControl Grid.Column="0" x:Name="TrackTabs" ItemsSource="{Binding Tracks}"
+                                SelectedItem="{Binding SelectedTrack}"
+                                PreviewMouseWheel="OnTrackTabsPreviewMouseWheel">
+                        <TabControl.ItemContainerStyle>
+                            <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
+                                <Setter Property="Header" Value="{Binding}" />
+                                <Setter Property="HeaderTemplate">
+                                    <Setter.Value>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" MaxWidth="110"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=TabItem}}" />
+                                        </DataTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </TabControl.ItemContainerStyle>
+                    </TabControl>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="8,0,0,0">
+                        <Button Content="+ 音轨" Command="{Binding AddTrackCommand}" />
+                        <Button Content="移除" Margin="0" Command="{Binding RemoveTrackCommand}" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1" Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <TextBlock Text="{Binding PreviewInfo}" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource DimBrush}" />
+                        <Button HorizontalAlignment="Right" Padding="10,2"
+                                Content="{Binding RollModeText}"
+                                Command="{Binding ToggleRollModeCommand}"
+                                ToolTip="切换后只影响卷帘里的左键/右键操作对象" />
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            Background="{DynamicResource InputBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="4">
+                        <controls:PianoRollView Track="{Binding ActiveTrack}"
+                                                Bpm="{Binding Bpm}"
+                                                BeatsPerBar="{Binding BeatsPerBar}"
+                                                Mode="{Binding RollMode}"
+                                                Revision="{Binding RollRevision}"
+                                                SelectedNoteIndex="{Binding SelectedNoteIndex, Mode=TwoWay}"
+                                                SelectedPitchIndex="{Binding SelectedPitchIndex, Mode=TwoWay}"
+                                                PlayheadBeat="{Binding PlayheadBeat, Mode=TwoWay}"
+                                                EditStarted="OnRollEditStarted"
+                                                EditCommitted="OnRollEditCommitted"
+                                                NoteAddRequested="OnRollNoteAddRequested"
+                                                PlayheadGrabbed="OnRollPlayheadGrabbed"
+                                                MinHeight="220" />
+                    </Border>
+                </Grid>
+
+                <TextBlock Grid.Row="2" Margin="0,10,0,0"
+                           Foreground="{DynamicResource DimBrush}"
+                           TextWrapping="Wrap"
+                           Text="左键单选并拖动：音块模式移动音块（水平改拍位、竖直改音高，块内 Pitch 节点同步跟随），Pitch 线模式只能上下拖动节点（拍位锁定）；在空白处按住左键拖动可框选，框内音块与可见节点同时选中，拖动任一选中音块即可整体平移，Del/BackSpace 批量删除。右键按当前模式在鼠标位置新增音块或节点（点在块边缘可把锚点转为控制点）；每个音块默认带 5 个归属节点，其中首末两个是边缘锚点，不显示、不可拖动。Pitch 线为均匀三次 B 样条。音块之间不会产生新的重叠：向左拖受前一块结束拍位限制，向右越过后一块时其后的音块整体顺延且保持原间隔；重叠区只由位于其中的渐变节点单独调节。每段可在右侧「发音段」下调渐变长度（拍）：卷帘上会从前一段结束处向后、后一段开始处向前各延伸同长的虚线，虚线末端的竖线把手可直接左右拖动改长度（0~4 拍），右侧滑块同步。快捷键：Ctrl+Z 撤销、Ctrl+Shift+Z 重做、Ctrl+S 保存、Ctrl+O 打开、Del/BackSpace 删除所选段。每个音轨拥有独立的声库、发音段与合成参数；渲染与播放只作用于当前标签页。输出目录：_output/ui。" />
+            </Grid>
+
+            <!-- Right: project and segments -->
+            <Border Grid.Column="2" Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0"
+                    Padding="12">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="工程" Style="{StaticResource SectionTitle}" />
+
+                        <TextBlock Text="名称" Foreground="{DynamicResource DimBrush}" Margin="0,0,0,3" />
+                        <TextBox Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}" />
+
+                        <TextBlock Text="工程文件" Foreground="{DynamicResource DimBrush}" Margin="0,10,0,3" />
+                        <TextBlock Text="{Binding ProjectPathText}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding ProjectPathText}" />
+
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock Text="BPM" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding Bpm, StringFormat={}{0:0}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="40" Maximum="240" SmallChange="1" LargeChange="10"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Bpm}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="每小节拍" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding BeatsPerBar}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="1" Maximum="12" SmallChange="1" LargeChange="2"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding BeatsPerBar}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="拍值" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding BeatUnit}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="2" Maximum="8" SmallChange="2" LargeChange="2"
+                                TickFrequency="2" IsSnapToTickEnabled="True" Value="{Binding BeatUnit}" />
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <!-- Independent settings for the current track -->
+                        <TextBlock Text="音轨设置" Style="{StaticResource SectionTitle}" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="当前：" Foreground="{DynamicResource DimBrush}" />
+                            <TextBlock Text="{Binding SelectedTrack.Name}" Foreground="{DynamicResource AccentBrush}" />
+                        </StackPanel>
+
+                        <TextBlock Text="音轨名称" Foreground="{DynamicResource DimBrush}" Margin="0,0,0,3" />
+                        <TextBox Text="{Binding SelectedTrack.Name, UpdateSourceTrigger=PropertyChanged}" />
+
+                        <TextBlock Text="声库路径（每轨独立）" Foreground="{DynamicResource DimBrush}" Margin="0,8,0,3" />
+                        <TextBox Text="{Binding LibraryRoot, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="留空则使用引擎默认声库" />
+
+                        <Expander Style="{StaticResource ParameterDropDown}"
+                                  Header="共振峰跟随（7 频段）" Margin="0,10,0,0">
+                            <ItemsControl ItemsSource="{Binding FollowRatioRows}"
+                                          ItemTemplate="{StaticResource ParameterSliderTemplate}" />
+                        </Expander>
+
+                        <Expander Style="{StaticResource ParameterDropDown}"
+                                  Header="能量分配 / 共振峰增益（8 频段）" Margin="0,8,0,0">
+                            <ItemsControl ItemsSource="{Binding BandRatioRows}"
+                                          ItemTemplate="{StaticResource ParameterSliderTemplate}" />
+                        </Expander>
+
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock Text="气声阈值" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding BreathyThr, StringFormat={}{0:0.00}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.1"
+                                TickFrequency="0.01" IsSnapToTickEnabled="True" Value="{Binding BreathyThr}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="Jitter（音高抖动）" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding Jitter, StringFormat={}{0:0}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="100" SmallChange="1" LargeChange="10"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Jitter}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="Shimmer（音量抖动）" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding Shimmer, StringFormat={}{0:0}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="100" SmallChange="1" LargeChange="10"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Shimmer}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="AP 缩放" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding ApScale, StringFormat={}{0:0.00}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.1"
+                                TickFrequency="0.01" IsSnapToTickEnabled="True" Value="{Binding ApScale}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="AP 上限" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding ApMax, StringFormat={}{0:0.00}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.1"
+                                TickFrequency="0.01" IsSnapToTickEnabled="True" Value="{Binding ApMax}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="位深" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding BitDepth}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="16" Maximum="32" SmallChange="8" LargeChange="8"
+                                TickFrequency="8" IsSnapToTickEnabled="True" Value="{Binding BitDepth}" />
+
+                        <Grid Margin="0,8,0,0">
+                            <TextBlock Text="声音占比" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding StereoBalance, StringFormat={}{0:0}}" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="100" SmallChange="1" LargeChange="10"
+                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding StereoBalance}"
+                                ToolTip="越大右声道能量占比越大：0 = 全部左声道，50 = 平衡，100 = 全部右声道" />
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="发音段" Style="{StaticResource SectionTitle}" Margin="0" />
+                            <TextBlock Grid.Column="1" Text="{Binding Segments.Count}" Foreground="{DynamicResource DimBrush}" />
+                        </Grid>
+
+                        <!-- Lyrics of the selected segment: edit directly; the text inside the clip in the piano roll updates in sync -->
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="歌词" Foreground="{DynamicResource DimBrush}"
+                                       VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBox Grid.Column="1" x:Name="LyricBox" Margin="0"
+                                     Text="{Binding SelectedLyric, UpdateSourceTrigger=PropertyChanged}"
+                                     IsEnabled="{Binding HasSelectedSegment}"
+                                     ToolTip="选中音块后直接输入歌词；清空则回到音频名对应的默认文字" />
+                        </Grid>
+
+                        <!-- Crossfade length between the selected segment and the previous one (stored as synthesis frames, converted to beats at the current tempo) -->
+                        <Grid Margin="0,0,0,4">
+                            <TextBlock Text="渐变长度（拍）" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
+                            <TextBlock Text="{Binding SelectedTransitionBeats, StringFormat={}{0:0.##}}"
+                                       HorizontalAlignment="Right" />
+                        </Grid>
+                        <Slider Minimum="0" Maximum="4" SmallChange="0.05" LargeChange="0.5"
+                                TickFrequency="0.05" IsSnapToTickEnabled="True"
+                                Value="{Binding SelectedTransitionBeats}"
+                                IsEnabled="{Binding HasSelectedSegment}"
+                                ToolTip="该音块与前一段之间的交叉渐变宽度（拍）；0 表示按时间重叠或硬拼接" />
+
+                        <ListBox x:Name="SegmentList" ItemsSource="{Binding Segments}"
+                                 SelectedItem="{Binding SelectedSegment}" MinHeight="120">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="18" />
+                                            <ColumnDefinition Width="52" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Number}" Foreground="{DynamicResource DimBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Lyric}" FontWeight="SemiBold" />
+                                        <TextBlock Grid.Column="2" Text="{Binding RangeText}" Foreground="{DynamicResource DimBrush}" />
+                                        <TextBlock Grid.Column="3" Text="{Binding PitchText}" Foreground="{DynamicResource PitchBrush}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Button Content="移除所选段" Margin="0,8,0,0"
+                                Command="{Binding RemoveSegmentCommand}"
+                                CommandParameter="{Binding SelectedItem, ElementName=SegmentList}" />
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <TextBlock Text="说明" Style="{StaticResource SectionTitle}" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
+                                   Text="每个标签页是一条独立音轨：声库、发音段、共振峰跟随/增益、气声与 AP 参数互不影响。BPM 与拍型属于整个工程。" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>
