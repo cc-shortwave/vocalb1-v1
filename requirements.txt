@@ -1,8 +1,13 @@
+# Windows: the upstream `pyworld` ships no wheels for Python 3.9+ (only cp36-cp38),
+# so a plain install would need a local MSVC build. `pyworld-prebuilt` provides
+# win_amd64 wheels up to cp315 and still installs the `pyworld` package, so
+# `import pyworld` is unchanged.
 numpy>=1.24
 scipy>=1.10
 soundfile>=0.12
-pyworld>=0.3
+pyworld>=0.3,<1 ; sys_platform != "win32"
+pyworld-prebuilt>=0.3.6 ; sys_platform == "win32"
 
-# 可选 / optional
-matplotlib>=3.7   # 频谱图、语谱图
-pygame>=2.5       # 试听
+# optional / 可选
+matplotlib>=3.7
+pygame>=2.5

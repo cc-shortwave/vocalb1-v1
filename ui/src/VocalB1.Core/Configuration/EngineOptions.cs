@@ -35,7 +35,9 @@ public sealed class EngineOptions
 
     /// <summary>
     /// Probes upward from the current executable location for the repository root;
-    /// the interpreter is taken from the VOCALB1_PYTHON environment variable first, then C:\Python312\python.exe, and finally python on PATH.
+    /// the interpreter is taken from the VOCALB1_PYTHON environment variable first, then a
+    /// Python distribution bundled at &lt;root&gt;/python/python.exe, then C:\Python312\python.exe,
+    /// and finally python on PATH.
     /// </summary>
     public static EngineOptions Discover()
     {
@@ -48,8 +50,11 @@ public sealed class EngineOptions
         };
 
         var env = Environment.GetEnvironmentVariable("VOCALB1_PYTHON");
+        var bundled = Path.Combine(root, "python", "python.exe");
         if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
             options.PythonPath = env;
+        else if (File.Exists(bundled))
+            options.PythonPath = bundled;
         else if (File.Exists(@"C:\Python312\python.exe"))
             options.PythonPath = @"C:\Python312\python.exe";
         else
