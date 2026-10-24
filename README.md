@@ -1,6 +1,6 @@
 # VocalB1
 
-**English** | [中文](README.zh-CN.md)
+**English** | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 Offline lightweight singing synthesizer — per-note parameters, no pretraining, UTAU voicebank support.
 
