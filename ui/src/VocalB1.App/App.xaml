@@ -1,0 +1,13 @@
+<Application x:Class="VocalB1.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Dictionary 0 is the palette (replaceable at runtime); dictionary 1 holds the shared styles -->
+                <ResourceDictionary Source="Themes/Palette.Dark.xaml" />
+                <ResourceDictionary Source="Themes/Styles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

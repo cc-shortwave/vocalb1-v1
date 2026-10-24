@@ -1,0 +1,52 @@
+# ── 声库：只保留说明文件，音频内容绝不入库 ──
+voicebank/*
+!voicebank/README.md
+*.wav
+*.mp3
+*.flac
+*.ogg
+oto.ini
+
+# ── 运行产物 ──
+_output/
+output/
+out/
+cache/
+work/
+runtime/
+*.npy
+*.npz
+
+# ── 本机配置（含本机绝对路径），模板见 ui/engine.settings.example.json ──
+ui/engine.settings.json
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ── C# / .NET ──
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userprefs
+TestResults/
+*.exe
+*.dll
+*.pdb
+*.msi
+
+# ── 日志 / 临时 / 备份 ──
+*.log
+*.bak
+*.bak_*
+*.tmp
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

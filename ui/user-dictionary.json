@@ -1,0 +1,48 @@
+{
+  "formatVersion": "1.0",
+  "name": "示例用户字典",
+  "description": "把特定 unicode 文本映射为声库音频的组合。audio 可写绝对路径，或相对字典文件 / 声库根目录的文件名；weight 决定条目总拍长在各段之间的分配；pitchOffset 是相对目标音高的半音偏移。",
+  "defaultSrcPitch": "D4",
+  "entries": [
+    {
+      "text": "きゃ",
+      "defaultBeats": 1.0,
+      "parts": [
+        { "audio": "_き.wav", "weight": 1.0, "keepUnvoicedHead": true },
+        { "audio": "_や.wav", "weight": 0.6, "transition": 4 }
+      ]
+    },
+    {
+      "text": "しゃ",
+      "defaultBeats": 1.0,
+      "parts": [
+        { "audio": "_し.wav", "weight": 1.0, "keepUnvoicedHead": true },
+        { "audio": "_や.wav", "weight": 0.6, "transition": 4 }
+      ]
+    },
+    {
+      "text": "ちゃ",
+      "defaultBeats": 1.0,
+      "parts": [
+        { "audio": "_ち.wav", "weight": 1.0, "keepUnvoicedHead": true },
+        { "audio": "_や.wav", "weight": 0.6, "transition": 4 }
+      ]
+    },
+    {
+      "text": "あー",
+      "defaultBeats": 2.0,
+      "parts": [
+        { "audio": "_あ.wav", "weight": 1.0, "keepUnvoicedHead": true },
+        { "audio": "_あ.wav", "weight": 1.0, "transition": 6 }
+      ]
+    },
+    {
+      "text": "んー",
+      "defaultBeats": 2.0,
+      "parts": [
+        { "audio": "_ん.wav", "weight": 1.0, "keepUnvoicedHead": true },
+        { "audio": "_ん.wav", "weight": 1.0, "transition": 6 }
+      ]
+    }
+  ]
+}

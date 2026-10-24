@@ -1,0 +1,8 @@
+{
+  "repositoryRoot": "",
+  "pythonPath": "",
+  "bridgeScriptPath": "",
+  "libraryRoot": "",
+  "startupTimeoutSeconds": 30,
+  "renderTimeoutSeconds": 900
+}

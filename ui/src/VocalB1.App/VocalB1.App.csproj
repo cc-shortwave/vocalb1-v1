@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\VocalB1.Core\VocalB1.Core.csproj" />
+    <ProjectReference Include="..\VocalB1.Engine\VocalB1.Engine.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- 可双击运行的入口名 -->
+    <AssemblyName>VocalB1</AssemblyName>
+    <RootNamespace>VocalB1.App</RootNamespace>
+  </PropertyGroup>
+
+</Project>
