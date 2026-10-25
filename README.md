@@ -142,6 +142,15 @@ Measured on a 2-core / 2 GB machine:
 
 Reads `VERSION`, publishes the WPF app, optionally bundles an embedded Python, and writes
 `dist/vocalb1-v<version>-win-x64-{full,lite}.zip` plus `SHA256SUMS.txt` and `RELEASE-NOTES.md`.
+
+Version numbers are bumped by the script, not by hand:
+
+```powershell
+.\scripts\package-release.ps1 -Bump patch -Tag   # 1.0.0 -> 1.0.1, commits VERSION, tags v1.0.1
+```
+
+`-Bump` takes `patch` (bugfix), `minor` (new feature) or `major` (breaking change); `-NoCommit`
+leaves the change uncommitted and `-Tag` creates the annotated tag locally (never pushes).
 Both archives unpack into a single folder; the engine, `ui/bridge/`, `languages/` and an empty
 `voicebank/` are placed where the app auto-discovers them.
 

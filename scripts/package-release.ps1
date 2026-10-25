@@ -40,6 +40,16 @@ param(
     # Defaults to the contents of the VERSION file.
     [string]$Version,
 
+    # Bump VERSION before building: patch (bugfix), minor (feature), major (breaking).
+    [ValidateSet('none', 'patch', 'minor', 'major')]
+    [string]$Bump = 'none',
+
+    # With -Bump: do not create the "chore: bump version" commit.
+    [switch]$NoCommit,
+
+    # With -Bump: also create the annotated tag v<version> locally (never pushed).
+    [switch]$Tag,
+
     [string]$Runtime = 'win-x64',
 
     # Output folder, relative to the repository root.
@@ -89,6 +99,36 @@ if (-not $Version) {
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must look like 1.0.0 (got '$Version')"
+}
+
+# ------------------------------------------------------------------ bump
+if ($Bump -ne 'none') {
+    $nums = @($Version.Split('.') | ForEach-Object { [int]$_ })
+    switch ($Bump) {
+        'major' { $nums[0] = $nums[0] + 1; $nums[1] = 0; $nums[2] = 0 }
+        'minor' { $nums[1] = $nums[1] + 1; $nums[2] = 0 }
+        'patch' { $nums[2] = $nums[2] + 1 }
+    }
+    $Version = ($nums -join '.')
+    Set-Content -LiteralPath (Join-Path $Root 'VERSION') -Value $Version -Encoding ASCII
+    Write-Host "  bumped  : $Bump -> $Version (VERSION updated)" -ForegroundColor Yellow
+
+    if (-not $NoCommit) {
+        & git -C $Root add VERSION
+        if ($LASTEXITCODE -ne 0) { throw "git add VERSION failed" }
+        & git -C $Root commit -q -m "chore: bump version to $Version"
+        if ($LASTEXITCODE -ne 0) { throw "git commit failed (nothing to commit?)" }
+        Write-Ok "committed: chore: bump version to $Version"
+    }
+
+    if ($Tag) {
+        $tagName = "v$Version"
+        $existing = (& git -C $Root tag -l $tagName)
+        if ($existing) { throw "Tag $tagName already exists" }
+        & git -C $Root tag -a $tagName -m "$tagName"
+        if ($LASTEXITCODE -ne 0) { throw "git tag failed" }
+        Write-Ok "created tag $tagName (push it with: git push origin $tagName)"
+    }
 }
 Write-Host "VocalB1 release builder" -ForegroundColor White
 Write-Host "  version : $Version"
@@ -316,5 +356,5 @@ Write-Host "Done. Artefacts in $DistPath :" -ForegroundColor Green
 Get-ChildItem -LiteralPath $DistPath -File | Select-Object Name, @{
     Name = 'MB'; Expression = { [math]::Round($_.Length / 1MB, 1) }
 } | Format-Table -AutoSize
-Write-Host "Next: create the release on GitHub with tag v$Version, upload the .zip files plus SHA256SUMS.txt," -ForegroundColor White
-Write-Host "and paste RELEASE-NOTES.md as the release description." -ForegroundColor White
+Write-Host "Next: commit/push, create the tag v$Version, then publish the release on GitHub with the" -ForegroundColor White
+Write-Host "      .zip files plus SHA256SUMS.txt, and paste RELEASE-NOTES.md as the description." -ForegroundColor White

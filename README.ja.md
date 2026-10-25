@@ -141,7 +141,16 @@ python VocalB1Synthesizer.py
 
 `VERSION` を読み、WPF アプリを publish し、（任意で）Python を同梱して
 `dist/vocalb1-v<version>-win-x64-{full,lite}.zip` と `SHA256SUMS.txt`、
-`RELEASE-NOTES.md` を出力します。どちらのアーカイブも単一フォルダに展開され、
+`RELEASE-NOTES.md` を出力します。
+
+バージョン番号はスクリプトが更新します（手で書き換えません）：
+
+```powershell
+.\scripts\package-release.ps1 -Bump patch -Tag   # 1.0.0 -> 1.0.1、VERSION をコミットし tag v1.0.1 を作成
+```
+
+`-Bump` は `patch`（バグ修正）/ `minor`（機能追加）/ `major`（互換性のない変更）。
+`-NoCommit` はコミットせず、`-Tag` はローカルに注釈付きタグを作成します（push はしません）。どちらのアーカイブも単一フォルダに展開され、
 エンジン・`ui/bridge/`・`languages/`・空の `voicebank/` が自動検出される位置に置かれます。
 
 ## ライセンス
