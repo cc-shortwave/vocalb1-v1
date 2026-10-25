@@ -161,7 +161,10 @@ If `full` gets much above ~300 MB, consider shipping `lite` only and documenting
 The notes are rendered from `docs/RELEASE-NOTES-TEMPLATE.md`, so you can edit the wording
 (including CJK text) without touching PowerShell.
 
-### 4.4 Windows installer (optional)
+### 4.4 Windows installer (deferred - not used for v1.0.0)
+
+v1.0.0 ships as zips only. The installer is already implemented and can be turned on
+later (e.g. v1.1.0) without touching the engine or the release notes format.
 
 ```powershell
 winget install -e --id JRSoftware.InnoSetup      # once

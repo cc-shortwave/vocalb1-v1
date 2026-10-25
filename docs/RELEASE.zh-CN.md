@@ -158,7 +158,10 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 发布说明是从 `docs/RELEASE-NOTES-TEMPLATE.md` 渲染的，改文案（包括中日文）只改那个文件，
 **不要往 .ps1 里写非 ASCII 字符**。
 
-### 4.4 Windows 安装包（可选）
+### 4.4 Windows 安装包（已实现，v1.0.0 暂不启用）
+
+**v1.0.0 只发 zip。** 安装包的脚本已经写好，以后（比如 v1.1.0）加个 `-Installer` 就能开，
+不需要改引擎，也不影响发布说明的格式。
 
 ```powershell
 winget install -e --id JRSoftware.InnoSetup      # 只装一次
