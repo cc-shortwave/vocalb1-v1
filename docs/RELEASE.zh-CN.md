@@ -102,7 +102,7 @@ dist\
 | `-SkipDotnet` | 只重打包，复用上次的编译产物 |
 | `-SkipPython` | 不打内嵌 Python |
 | `-RebuildPython` | 忽略 `dist\_cache\`，强制重建内嵌 Python |
-| `-Installer` | 同时用 Inno Setup 6 生成安装程序 `vocalb1-<版本>-win-x64-setup.exe` |
+| `-Installer` | **两个 zip 都打**，再用 Inno Setup 6 生成安装程序；等价于自动加上 `-Mode both`，且不能与 `-SkipPython` 同用 |
 
 **为什么不能直接把 dll 挪进子目录**：.NET 是按 `.deps.json` 记录的位置在自己所在的文件夹里找依赖的，
 把文件挪走会直接启动失败；要支持子目录得自定义 host policy，下次 publish 又会冲掉。
@@ -167,6 +167,8 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 winget install -e --id JRSoftware.InnoSetup      # 只装一次
 .\scripts\package-release.ps1 -Mode full -Installer
 ```
+
+加了 `-Installer` 就等于 `-Mode both`，所以 full zip、lite zip、安装包**一次全出**，发布资产不会缺一块。
 
 产物：`dist\vocalb1-1.0.0-win-x64-setup.exe`
 

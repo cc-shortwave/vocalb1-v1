@@ -103,7 +103,7 @@ Useful switches:
 | `-SkipDotnet` | repack only, reuse the previous publish output |
 | `-SkipPython` | never build the embedded Python |
 | `-RebuildPython` | ignore `dist\_cache\` and rebuild the embedded Python from scratch |
-| `-Installer` | also build `vocalb1-<ver>-win-x64-setup.exe` with Inno Setup 6 |
+| `-Installer` | build **both** zips plus `vocalb1-<ver>-win-x64-setup.exe` (Inno Setup 6); implies `-Mode both` and cannot be used with `-SkipPython` |
 
 Why not just move the DLLs into a subfolder: .NET resolves its own assemblies from the
 folder named in `.deps.json`; relocating them needs a custom host policy and breaks on the
@@ -170,6 +170,9 @@ later (e.g. v1.1.0) without touching the engine or the release notes format.
 winget install -e --id JRSoftware.InnoSetup      # once
 .\scripts\package-release.ps1 -Mode full -Installer
 ```
+
+`-Installer` implies `-Mode both`, so you always get the full zip, the lite zip and the
+installer together — the release assets never drift apart.
 
 Output: `dist\vocalb1-1.0.0-win-x64-setup.exe`.
 
