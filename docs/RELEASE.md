@@ -16,6 +16,7 @@ Follow it top to bottom; every step has a way to verify it worked.
 | Python | 3.10+ on PATH — only needed to test the `lite` build |
 | Git | any recent version |
 | Network | needed for the `full` build (downloads the embedded Python + wheels) |
+| Inno Setup 6 | only for `-Installer`: `winget install -e --id JRSoftware.InnoSetup` |
 | Space | ~1.5 GB free in `dist\` |
 
 ---
@@ -102,6 +103,7 @@ Useful switches:
 | `-SkipDotnet` | repack only, reuse the previous publish output |
 | `-SkipPython` | never build the embedded Python |
 | `-RebuildPython` | ignore `dist\_cache\` and rebuild the embedded Python from scratch |
+| `-Installer` | also build `vocalb1-<ver>-win-x64-setup.exe` with Inno Setup 6 |
 
 Why not just move the DLLs into a subfolder: .NET resolves its own assemblies from the
 folder named in `.deps.json`; relocating them needs a custom host policy and breaks on the
@@ -158,6 +160,22 @@ If `full` gets much above ~300 MB, consider shipping `lite` only and documenting
 
 The notes are rendered from `docs/RELEASE-NOTES-TEMPLATE.md`, so you can edit the wording
 (including CJK text) without touching PowerShell.
+
+### 4.4 Windows installer (optional)
+
+```powershell
+winget install -e --id JRSoftware.InnoSetup      # once
+.\scripts\package-release.ps1 -Mode full -Installer
+```
+
+Output: `dist\vocalb1-1.0.0-win-x64-setup.exe`.
+
+- Installs **per user** into `%LOCALAPPDATA%\Programs\VocalB1`, so no admin prompt
+- Start-menu entries: the app, "Voicebank folder" and the uninstaller; desktop icon optional
+- Uninstall deliberately keeps `saves.db` and the user's voicebank
+- Built from the `full` payload when available, otherwise from the single variant you built
+- `installer\vocalb1.iss` is pure ASCII on purpose (same BOM-less ANSI trap as the .ps1)
+- Verify on a **clean** machine or Windows Sandbox: install -> launch -> render -> uninstall
 
 ---
 
