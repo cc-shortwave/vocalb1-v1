@@ -18,8 +18,8 @@
     <UseWPF>true</UseWPF>
     <!-- 可双击运行的入口名 -->
     <AssemblyName>VocalB1</AssemblyName>
-    <RootNamespace>VocalB1.App</RootNamespace>
     <ApplicationIcon>..\..\..\VocalB1_Version_1.0.ico</ApplicationIcon>
+    <RootNamespace>VocalB1.App</RootNamespace>
   </PropertyGroup>
 
 </Project>
