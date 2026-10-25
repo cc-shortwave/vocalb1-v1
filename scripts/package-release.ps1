@@ -324,9 +324,14 @@ foreach ($variant in $variants) {
         Copy-Item -LiteralPath $pythonRuntime -Destination (Join-Path $target 'python') -Recurse -Force
     }
 
-    # 7. never ship a local settings file or stray cache
+    # 7. never ship a local settings file, stray cache, or the developer-only startup test
     Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq 'engine.settings.json' -or $_.Name -eq '__pycache__' -or $_.Extension -eq '.pyc' } |
+        Where-Object {
+            $_.Name -eq 'engine.settings.json' -or
+            $_.Name -eq '__pycache__' -or
+            $_.Extension -eq '.pyc' -or
+            $_.Name -like 'VocalB1.StartupTest*'
+        } |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
     $sizeMB = Get-SizeMB $target
