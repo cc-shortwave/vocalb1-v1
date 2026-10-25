@@ -44,6 +44,8 @@ VocalB1 は歌声の録音を「F0（基本周波数）／スペクトル包絡�
     └── test_vocal_lib.py     # ライブラリの回帰テスト
 ```
 
+ライブラリの API リファレンスは独立しています：[vocal_lib/README.md](vocal_lib/README.md)（日本語 / English / 中文）。
+
 ---
 
 ## 動作環境

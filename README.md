@@ -43,6 +43,8 @@ pure signal processing that runs on a 2-core / 2 GB machine.
     └── test_vocal_lib.py     # library regression tests
 ```
 
+The library has its own API reference: [vocal_lib/README.md](vocal_lib/README.md) (English / 中文 / 日本語).
+
 ---
 
 ## Requirements
