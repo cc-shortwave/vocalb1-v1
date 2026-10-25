@@ -1152,10 +1152,10 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Install a dropped voicebank folder: validate the format, copy it under voicebank/, then use it on the active track.
+    /// Install a dropped voicebank folder: validate and copy it off the UI thread, then use it on the active track.
     /// Returns null on success, otherwise the reason the install was rejected.
     /// </summary>
-    public string? InstallVoicebank(string sourceDirectory)
+    public async Task<string?> InstallVoicebankAsync(string sourceDirectory)
     {
         if (!Directory.Exists(sourceDirectory))
             return "拖入的内容不是文件夹。";
@@ -1170,17 +1170,23 @@ public sealed class MainViewModel : ObservableObject
         if (Directory.Exists(target))
             return $"voicebank 中已存在同名声库：{name}";
 
+        string? error;
         try
         {
-            if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
-                    .Any(file => string.Equals(Path.GetFileName(file), "oto.ini", StringComparison.OrdinalIgnoreCase)))
-                return "声库格式错误：缺少 oto.ini。";
+            // Large folders would freeze the window if scanned on the UI thread.
+            error = await Task.Run(() =>
+            {
+                if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                        .Any(file => string.Equals(Path.GetFileName(file), "oto.ini", StringComparison.OrdinalIgnoreCase)))
+                    return "声库格式错误：缺少 oto.ini。";
 
-            if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
-                return "声库格式错误：没有 wav 音频文件。";
+                if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
+                    return "声库格式错误：没有 wav 音频文件。";
 
-            Directory.CreateDirectory(VoicebankRoot);
-            CopyDirectory(source, target);
+                Directory.CreateDirectory(VoicebankRoot);
+                CopyDirectory(source, target);
+                return null;
+            });
         }
         catch (Exception ex)
         {
@@ -1191,6 +1197,9 @@ public sealed class MainViewModel : ObservableObject
             AddLog("error", "Voicebank install failed: " + ex.Message);
             return "安装失败：" + ex.Message;
         }
+
+        if (error is not null)
+            return error;
 
         LibraryRoot = target;
         RefreshLibrary();
