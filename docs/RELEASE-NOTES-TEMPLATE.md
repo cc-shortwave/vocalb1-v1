@@ -8,7 +8,7 @@ No pretraining, no GPU, no network.
 
 ### Quick start
 1. Unzip the archive (it contains a single folder).
-2. Put a UTAU 単独音 voicebank into `voicebank/`, e.g. `voicebank/<your-voicebank>/oto.ini`.
+2. Put a UTAU 単独音 voicebank into `voicebank/`, e.g. wav files and `icon.jpg` under `voicebank/<your-voicebank>/`.
 3. Double-click `VocalB1.exe`.
 
 ### Not included

@@ -5,8 +5,8 @@ EN
 --
 1. Unzip this folder anywhere (keep the whole folder together).
 2. Put a UTAU 単独音 voicebank into the "voicebank" subfolder, for example
-       voicebank\<your-voicebank>\oto.ini
        voicebank\<your-voicebank>\_a.wav ... (142 basic kana)
+       voicebank\<your-voicebank>\icon.jpg
    No voicebank is bundled, for licensing reasons.
 3. Double-click VocalB1.exe.
    - full build : a bundled Python is included, nothing to install.
@@ -18,8 +18,8 @@ EN
 ----
 1. 把整个文件夹解压到任意位置（别把里面的文件拆散）。
 2. 把 UTAU「単独音」声库放进 voicebank 子目录，例如
-       voicebank\<你的声库>\oto.ini
        voicebank\<你的声库>\_あ.wav …（需要 142 个基本假名）
+       voicebank\<你的声库>\icon.jpg
    出于版权原因，不附带任何声库。
 3. 双击 VocalB1.exe 启动。
    - full 版：已内置 Python，不需要额外安装。
@@ -31,7 +31,7 @@ EN
 ------
 1. フォルダごと任意の場所に解凍してください（中のファイルを分けないでください）。
 2. UTAU の「単独音」音源を voicebank サブフォルダに置きます。
-   例: voicebank\<お使いの音源>\oto.ini
+   例: voicebank\<お使いの音源>\_あ.wav … と icon.jpg
    ライセンスの都合で、音源は同梱していません。
 3. VocalB1.exe をダブルクリックして起動します。
    - full 版 : Python を内蔵しているので追加インストールは不要です。
