@@ -163,6 +163,7 @@ Both archives unpack into a single folder; the engine, `ui/bridge/`, `languages/
 ## Licensing
 
 Source code is released under the **MIT** license — see [LICENSE](LICENSE).
+Scope and third-party licenses are listed in [NOTICE.md](NOTICE.md).
 
 **Voicebanks are not covered.** They are licensed by their respective rights holders; this
 project neither bundles nor redistributes any. Follow the terms of the voicebank you use —
