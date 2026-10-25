@@ -58,6 +58,10 @@ param(
     # Smaller app, but the user must install the .NET 9 Desktop Runtime.
     [switch]$FrameworkDependent,
 
+    # Bundle the whole app into a single VocalB1.exe instead of ~200 loose DLLs.
+    # The runtime is compressed into the exe and unpacked to %TEMP% on first run.
+    [switch]$SingleFile,
+
     # Reuse the existing publish output instead of running dotnet again.
     [switch]$SkipDotnet,
 
@@ -164,6 +168,10 @@ if ($SkipDotnet -and (Test-Path -LiteralPath $publishDir)) {
     $csproj = Join-Path $Root 'ui/src/VocalB1.App/VocalB1.App.csproj'
     if (-not (Test-Path -LiteralPath $csproj)) { throw "Project not found: $csproj" }
 
+    if ($SingleFile -and $FrameworkDependent) {
+        throw "-SingleFile needs the runtime inside the exe, so it cannot be combined with -FrameworkDependent"
+    }
+
     $selfContained = if ($FrameworkDependent) { 'false' } else { 'true' }
     $dotnetArgs = @(
         'publish', $csproj,
@@ -171,11 +179,18 @@ if ($SkipDotnet -and (Test-Path -LiteralPath $publishDir)) {
         '-r', $Runtime,
         "--self-contained=$selfContained",
         "-p:Version=$Version",
-        '-p:PublishSingleFile=false',
+        "-p:PublishSingleFile=$($SingleFile.IsPresent.ToString().ToLower())",
         '-p:DebugType=none',
         '-p:GenerateDocumentationFile=false',
         '-o', $publishDir
     )
+    if ($SingleFile) {
+        $dotnetArgs += @(
+            '-p:IncludeNativeLibrariesForSelfExtract=true',
+            '-p:EnableCompressionInSingleFile=true',
+            '-p:PublishTrimmed=false'
+        )
+    }
     & dotnet @dotnetArgs
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
     Write-Ok "published to $publishDir"
