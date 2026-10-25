@@ -96,14 +96,14 @@ dist\
 | 参数 | 作用 |
 |---|---|
 | `-Mode lite\|full\|both` | 打哪个/哪几个变体 |
-| `-SingleFile` | 只有**一个** `VocalB1.exe`（约 70 MB），不再是两百个 dll；运行时压缩在 exe 里，首次启动解压到 `%TEMP%` |
-| `-FrameworkDependent` | 不打包 .NET，体积小很多，但用户要自己装 .NET 9 Desktop Runtime；不能和 `-SingleFile` 同用 |
+| `-NoSingleFile` | 把运行时摊成两百个 dll 放在 exe 旁边，只用于调试。**默认是单个 `VocalB1.exe`**（约 70 MB），运行时压缩在里面，首次启动解压到 `%TEMP%` |
+| `-FrameworkDependent` | 不打包 .NET，体积小很多，但用户要自己装 .NET 9 Desktop Runtime；此模式下自动不用单文件（两者不能同用） |
 | `-SkipDotnet` | 只重打包，复用上次的编译产物 |
 | `-SkipPython` | 不打内嵌 Python |
 
 **为什么不能直接把 dll 挪进子目录**：.NET 是按 `.deps.json` 记录的位置在自己所在的文件夹里找依赖的，
 把文件挪走会直接启动失败；要支持子目录得自定义 host policy，下次 publish 又会冲掉。
-`-SingleFile` 才是官方支持的做法。
+单文件发布（现在的默认）才是官方支持的做法。
 
 ---
 
@@ -256,7 +256,7 @@ git push origin v1.0.0
 | 界面能开但提示*引擎尚未初始化* | 没找到内嵌 Python | 确认 `python\python.exe` 和 `VocalB1.exe` 在同一层；程序会先找这个位置，再找 `C:\Python312` |
 | 提示*找不到声库* | 全新解压的 `voicebank\` 是空的 | 放一个声库进去（这是预期行为，不是 bug） |
 | zip 有 300+ MB | .NET 自包含 + Python | 用 `-FrameworkDependent`，或只发 lite |
-| exe 旁边有两百个 dll | .NET 自包含发布会把整个运行时摊出来 | 用 `-SingleFile`，或 `-FrameworkDependent` |
+| exe 旁边有两百个 dll | 传了 `-NoSingleFile`，运行时被摊开 | 去掉这个参数（默认就是单文件） |
 | `Compress-Archive` 很慢或失败 | 目录太大 | 删掉 `dist\_stage` 重来；目录控制在 2 GB 以内 |
 | `RELEASE-NOTES.md` 出现乱码（如 `鈥?`） | .ps1 里有非 ASCII 字符，PowerShell 5.1 按 ANSI 解析脚本 | .ps1 保持纯 ASCII，文案改 `docs/RELEASE-NOTES-TEMPLATE.md` |
 | push 被服务器钩子拒绝 | 混进了禁止的文件（`*.wav`、`oto.ini`、`*.db`、超过 5 MB、或不该出现的路线关键词） | 看钩子提示，删掉那个文件，`git commit --amend` 后重推 |

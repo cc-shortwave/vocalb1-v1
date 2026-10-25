@@ -97,14 +97,14 @@ Useful switches:
 | switch | effect |
 |---|---|
 | `-Mode lite\|full\|both` | which variant(s) to build |
-| `-SingleFile` | one `VocalB1.exe` (~70 MB) instead of ~200 loose DLLs; the runtime is compressed inside the exe and unpacked to `%TEMP%` on first start |
-| `-FrameworkDependent` | no bundled .NET, far smaller, but the user must install the .NET 9 Desktop Runtime; cannot be combined with `-SingleFile` |
+| `-NoSingleFile` | ship the runtime as ~200 loose DLLs next to the exe — for debugging only. **The default is a single ~70 MB `VocalB1.exe`** with the runtime compressed inside (unpacked to `%TEMP%` on first start) |
+| `-FrameworkDependent` | no bundled .NET, far smaller, but the user must install the .NET 9 Desktop Runtime; implies `-NoSingleFile` (cannot be combined) |
 | `-SkipDotnet` | repack only, reuse the previous publish output |
 | `-SkipPython` | never build the embedded Python |
 
 Why not just move the DLLs into a subfolder: .NET resolves its own assemblies from the
 folder named in `.deps.json`; relocating them needs a custom host policy and breaks on the
-next publish. `-SingleFile` is the supported way to get a tidy folder.
+next publish. a single-file publish (the default) is the supported way to get a tidy folder.
 
 ---
 
@@ -260,7 +260,7 @@ If a secret was ever in the history, rotate the secret — do not rely on rewrit
 | app starts but says *engine not initialized* | bundled Python not found | check that `python\python.exe` sits next to `VocalB1.exe`; the app looks there before `C:\Python312` |
 | app says *voicebank not found* | empty `voicebank\` in the fresh unzip | add a voicebank (this is expected on a clean download) |
 | zip is 300+ MB | self-contained .NET + Python | use `-FrameworkDependent`, or ship lite only |
-| hundreds of DLLs next to the exe | self-contained publish lays out the whole runtime | build with `-SingleFile`, or `-FrameworkDependent` |
+| hundreds of DLLs next to the exe | `-NoSingleFile` was passed, so the runtime is published loose | drop the switch (single-file is the default) |
 | `Compress-Archive` very slow / fails | huge folder | delete `dist\_stage` and retry; keep the folder under ~2 GB |
 | `RELEASE-NOTES.md` shows garbled characters (e.g. `鈥?`) | the .ps1 contained non-ASCII text and PowerShell 5.1 read it as ANSI | keep the .ps1 pure ASCII; edit wording in `docs/RELEASE-NOTES-TEMPLATE.md` instead |
 | push rejected by the server hook | a forbidden file slipped in (`*.wav`, `oto.ini`, `*.db`, >5 MB, generation-2 keywords) | read the hook message, remove the file, `git commit --amend`, push again |
