@@ -298,8 +298,14 @@ public sealed class PythonEngineClient : IRenderEngine
                 if (!string.IsNullOrEmpty(message.ImportError))
                 {
                     _ready = false;
-                    _handshake?.TrySetException(new EngineException(
-                        "Python 引擎导入失败：" + message.ImportError + "\n" + StderrSummary()));
+                    var detail = "Python 引擎导入失败：" + message.ImportError + "\n" + StderrSummary();
+                    detail += "\nInterpreter: " + _options.PythonPath;
+                    if (message.ImportError.Contains("ModuleNotFoundError", StringComparison.OrdinalIgnoreCase))
+                    {
+                        detail += "\nMissing dependency. Run:\n  \""
+                                  + _options.PythonPath + "\" -m pip install -r requirements.txt";
+                    }
+                    _handshake?.TrySetException(new EngineException(detail));
                     break;
                 }
                 _ready = true;
