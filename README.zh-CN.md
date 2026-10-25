@@ -43,6 +43,8 @@ VocalB1 把一段人声录音拆成「基频 + 频谱包络 + 气声 + 激励」
     └── test_vocal_lib.py     # 库回归测试
 ```
 
+这个库有独立的 API 文档：[vocal_lib/README.md](vocal_lib/README.md)（中 / English / 日本語）。
+
 ---
 
 ## 依赖
