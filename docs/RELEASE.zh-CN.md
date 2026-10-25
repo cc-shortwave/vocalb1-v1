@@ -150,6 +150,8 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 
 如果 full 明显超过 300 MB，考虑只发 lite，把装 Python 的说明写清楚。
 
+**内嵌 Python 只构建一次，之后走缓存。** 它放在 `dist\_cache\python-3.12.10-embed-amd64\`。以后每次打包只用一条 import 自检（约 1 秒）确认它完好就直接复用，**不再下载**。只有这几种情况会重建：删了 `dist\_cache\`、改了脚本里的 Python 版本号、自检失败、或者显式加 `-RebuildPython`。最终用户那边永远不需要下载任何东西 —— 运行时就在 `full` 包的 `python\` 目录里。
+
 发布说明是从 `docs/RELEASE-NOTES-TEMPLATE.md` 渲染的，改文案（包括中日文）只改那个文件，
 **不要往 .ps1 里写非 ASCII 字符**。
 

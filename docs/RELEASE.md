@@ -101,6 +101,7 @@ Useful switches:
 | `-FrameworkDependent` | no bundled .NET, far smaller, but the user must install the .NET 9 Desktop Runtime; implies `-NoSingleFile` (cannot be combined) |
 | `-SkipDotnet` | repack only, reuse the previous publish output |
 | `-SkipPython` | never build the embedded Python |
+| `-RebuildPython` | ignore `dist\_cache\` and rebuild the embedded Python from scratch |
 
 Why not just move the DLLs into a subfolder: .NET resolves its own assemblies from the
 folder named in `.deps.json`; relocating them needs a custom host policy and breaks on the
@@ -152,6 +153,8 @@ written there, just confirm they look sane:
 - full ≈ 150–280 MB (adds the embedded Python) — 149.6 MB measured
 
 If `full` gets much above ~300 MB, consider shipping `lite` only and documenting the Python install.
+
+**The embedded Python is built once, then cached.** It lives in `dist\_cache\python-3.12.10-embed-amd64\`. Later runs re-check it with an import test (about a second) and reuse it, so nothing is downloaded again. It is rebuilt only when you delete `dist\_cache\`, change the Python version in the script, the import test fails, or you pass `-RebuildPython`. End users never download anything: the runtime ships inside the `full` archive.
 
 The notes are rendered from `docs/RELEASE-NOTES-TEMPLATE.md`, so you can edit the wording
 (including CJK text) without touching PowerShell.
