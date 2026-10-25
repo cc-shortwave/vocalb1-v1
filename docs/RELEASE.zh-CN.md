@@ -16,6 +16,7 @@
 | Git | 任意较新版本 |
 | 网络 | `full` 包需要联网下载内嵌 Python 和依赖轮子 |
 | 空间 | `dist\` 下留约 1.5 GB |
+| Inno Setup 6 | 仅 `-Installer` 需要：`winget install -e --id JRSoftware.InnoSetup` |
 
 ---
 
@@ -100,6 +101,8 @@ dist\
 | `-FrameworkDependent` | 不打包 .NET，体积小很多，但用户要自己装 .NET 9 Desktop Runtime；此模式下自动不用单文件（两者不能同用） |
 | `-SkipDotnet` | 只重打包，复用上次的编译产物 |
 | `-SkipPython` | 不打内嵌 Python |
+| `-RebuildPython` | 忽略 `dist\_cache\`，强制重建内嵌 Python |
+| `-Installer` | 同时用 Inno Setup 6 生成安装程序 `vocalb1-<版本>-win-x64-setup.exe` |
 
 **为什么不能直接把 dll 挪进子目录**：.NET 是按 `.deps.json` 记录的位置在自己所在的文件夹里找依赖的，
 把文件挪走会直接启动失败；要支持子目录得自定义 host policy，下次 publish 又会冲掉。
@@ -154,6 +157,22 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 
 发布说明是从 `docs/RELEASE-NOTES-TEMPLATE.md` 渲染的，改文案（包括中日文）只改那个文件，
 **不要往 .ps1 里写非 ASCII 字符**。
+
+### 4.4 Windows 安装包（可选）
+
+```powershell
+winget install -e --id JRSoftware.InnoSetup      # 只装一次
+.\scripts\package-release.ps1 -Mode full -Installer
+```
+
+产物：`dist\vocalb1-1.0.0-win-x64-setup.exe`
+
+- **按用户安装**到 `%LOCALAPPDATA%\Programs\VocalB1`，不弹管理员权限
+- 开始菜单三项：程序本体、「Voicebank folder」（直接打开声库目录）、卸载器；桌面图标可选
+- 卸载**故意保留** `saves.db` 和用户自己的声库
+- 有 `full` 包就用 `full` 的内容做安装包，否则用你这次打的那个变体
+- `installer\vocalb1.iss` 保持纯 ASCII（和 .ps1 同样的 ANSI 编码坑）
+- 验收请在**干净的机器或 Windows 沙盒**里做：安装 → 启动 → 合成 → 卸载
 
 ---
 

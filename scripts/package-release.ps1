@@ -69,6 +69,9 @@ param(
     # Ignore dist\_cache and rebuild the embedded Python from scratch.
     [switch]$RebuildPython,
 
+    # Also build a Windows installer (.exe) with Inno Setup.
+    [switch]$Installer,
+
     # Same as -Mode lite: skip the embedded Python runtime.
     [switch]$SkipPython,
 
@@ -146,7 +149,7 @@ Write-Host "  runtime : $Runtime"
 # ------------------------------------------------------------------ variants
 $variants = @()
 if ($Mode -eq 'both') { $variants = @('full', 'lite') } else { $variants = @($Mode) }
-if ($SkipPython) { $variants = $variants | Where-Object { $_ -ne 'full' } }
+if ($SkipPython) { $variants = @($variants | Where-Object { $_ -ne 'full' }) }
 if (-not $variants) { throw "Nothing to build (mode=$Mode, SkipPython=$SkipPython)" }
 
 # ------------------------------------------------------------------ prerequisites
@@ -274,6 +277,7 @@ $engineFiles = @(
 )
 
 $built = @()
+$stageFolders = @{}
 
 foreach ($variant in $variants) {
     $folderName = "vocalb1-v$Version-$Runtime-$variant"
@@ -336,6 +340,43 @@ foreach ($variant in $variants) {
     Write-Ok ("{0}  folder {1} MB -> zip {2} MB" -f $zipName, $sizeMB, $zipMB)
 
     $built += [pscustomobject]@{ Variant = $variant; Zip = $zipName; SizeMB = $zipMB; FolderMB = $sizeMB }
+    $stageFolders[$variant] = $target
+}
+
+# ------------------------------------------------------------------ installer
+$installerName = $null
+$installerMB = 0
+if ($Installer) {
+    Write-Step 'Building the Windows installer (Inno Setup)'
+    $issPath = Join-Path $Root 'installer\vocalb1.iss'
+    if (-not (Test-Path -LiteralPath $issPath)) { throw "Installer script not found: $issPath" }
+
+    $candidates = @()
+    if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe') }
+    if ($env:ProgramFiles)        { $candidates += (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe') }
+    if ($env:LOCALAPPDATA)        { $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe') }
+    $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $iscc) {
+        $cmd = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+        if ($cmd) { $iscc = $cmd.Source }
+    }
+    if (-not $iscc) {
+        throw 'Inno Setup not found. Install it once with:  winget install -e --id JRSoftware.InnoSetup'
+    }
+    Write-Ok "ISCC: $iscc"
+
+    if ($stageFolders.Count -eq 0) { throw 'Nothing was packaged, so there is nothing to put into the installer' }
+    $instSource = if ($stageFolders.ContainsKey('full')) { $stageFolders['full'] } else { $stageFolders[$variants[0]] }
+    Write-Ok "installer payload: $instSource"
+
+    & $iscc "/DMyAppVersion=$Version" "/DStageDir=$instSource" "/DOutDir=$DistPath" $issPath
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+    $installerName = "vocalb1-$Version-win-x64-setup.exe"
+    $installerPath = Join-Path $DistPath $installerName
+    if (-not (Test-Path -LiteralPath $installerPath)) { throw "ISCC reported success but $installerName is missing" }
+    $installerMB = [math]::Round((Get-Item -LiteralPath $installerPath).Length / 1MB, 1)
+    Write-Ok ("{0}  {1} MB" -f $installerName, $installerMB)
 }
 
 # ------------------------------------------------------------------ checksums
@@ -344,6 +385,10 @@ $sumsPath = Join-Path $DistPath 'SHA256SUMS.txt'
 $lines = foreach ($b in $built) {
     $h = (Get-FileHash -LiteralPath (Join-Path $DistPath $b.Zip) -Algorithm SHA256).Hash.ToLower()
     "$h  $($b.Zip)"
+}
+if ($installerName) {
+    $h = (Get-FileHash -LiteralPath (Join-Path $DistPath $installerName) -Algorithm SHA256).Hash.ToLower()
+    $lines += "$h  $installerName"
 }
 Set-Content -LiteralPath $sumsPath -Value $lines -Encoding ASCII
 $lines | ForEach-Object { Write-Ok $_ }
@@ -356,6 +401,9 @@ $downloads = foreach ($b in $built) {
     } else {
         "- **lite** ($($b.SizeMB) MB) - requires Python 3.10+ on PATH, then ``pip install -r requirements.txt``."
     }
+}
+if ($installerName) {
+    $downloads = @("- **installer** ($installerMB MB) - double-click to install, Start-menu shortcuts, no admin rights needed.") + $downloads
 }
 $buildNote = if ($variants -contains 'full') {
     '- The full build bundles an embedded Python; the lite build uses your own.'
