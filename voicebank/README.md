@@ -7,7 +7,7 @@ distributed with this repository.
 
 ## How to use
 
-Drop a UTAU **単独音 (single-note)** voicebank folder in here:
+Drop a **single-note voicebank** folder in here:
 
 ```
 voicebank/
@@ -27,9 +27,22 @@ set VOCALB1_LIB=D:\my-voicebank\some-voice
 
 (macOS / Linux: `export VOCALB1_LIB=/path/to/voicebank`)
 
+## Voicebank structure
+
+```
+voicebank/
+└── <your-virtualsinger>/
+    ├── œ.wav
+    ├── ...
+    └── icon.jpg
+```
+
+`icon.jpg` is optional and sits next to the audio files; when present it is shown
+next to the New button in the top bar.
+
 ## What counts as a usable voicebank
 
-- a UTAU **単独音** voicebank
+- a **single-note voicebank**
 - contains `oto.ini` plus wav files named `_あ.wav`, `_か.wav`, …
 - needs the 142 basic kana for full coverage
 
@@ -50,7 +63,7 @@ exists in the repository while the voicebank itself can never be committed by ac
 
 ### 怎么用
 
-把 UTAU **単独音** 声库文件夹整个放进本目录：
+把**单独音声库**文件夹整个放进本目录：
 
 ```
 voicebank/
@@ -70,9 +83,21 @@ set VOCALB1_LIB=D:\声库\别的音源
 
 （macOS / Linux：`export VOCALB1_LIB=/path/to/voicebank`）
 
+### 声库结构
+
+```
+voicebank/
+└── <你的声库>/
+    ├── œ.wav
+    ├── ...
+    └── icon.jpg
+```
+
+`icon.jpg` 与音频文件同级，可选；存在时会显示在顶栏「新建」按钮旁边。
+
 ### 什么算一个可用的声库
 
-- UTAU 格式的**単独音**音源
+- **单独音声库**
 - 目录里有 `oto.ini`，以及以 `_` 开头的 wav（`_あ.wav`、`_か.wav`…）
 - 需要 142 个基本假名才能完整演唱
 
@@ -93,7 +118,7 @@ set VOCALB1_LIB=D:\声库\别的音源
 
 ### 使い方
 
-UTAU の**単独音**音源フォルダをここに置きます：
+**単独音音源**フォルダをここに置きます：
 
 ```
 voicebank/
@@ -113,9 +138,22 @@ set VOCALB1_LIB=D:\my-voicebank\some-voice
 
 （macOS / Linux：`export VOCALB1_LIB=/path/to/voicebank`）
 
+### 音源の構成
+
+```
+voicebank/
+└── <お使いの音源>/
+    ├── œ.wav
+    ├── ...
+    └── icon.jpg
+```
+
+`icon.jpg` は音声ファイルと同じ階層に置く任意の画像です。ある場合は上部バーの
+「新規」ボタンの横に表示されます。
+
 ### 使える音源の条件
 
-- UTAU の**単独音**音源
+- **単独音音源**
 - `oto.ini` と `_あ.wav`、`_か.wav` … といった wav が入っていること
 - 網羅するには基本仮名 142 音が必要
 
