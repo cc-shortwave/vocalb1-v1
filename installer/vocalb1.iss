@@ -53,6 +53,7 @@ OutputBaseFilename=vocalb1-{#MyAppVersion}-win-x64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\VocalB1_Version_1.0.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 LicenseFile=..\LICENSE

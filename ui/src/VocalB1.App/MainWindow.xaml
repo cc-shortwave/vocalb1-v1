@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:VocalB1.App.Controls"
         Title="VocalB1 Studio"
+        Icon="Assets/VocalB1.ico"
         Height="880" Width="1440"
         MinHeight="720" MinWidth="1120"
         WindowStartupLocation="CenterScreen"

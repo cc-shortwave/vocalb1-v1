@@ -5,6 +5,11 @@
     <ProjectReference Include="..\VocalB1.Engine\VocalB1.Engine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Single application icon: used for the exe and the window title bar. -->
+    <Resource Include="..\..\..\VocalB1_Version_1.0.ico" Link="Assets\VocalB1.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
@@ -14,6 +19,7 @@
     <!-- 可双击运行的入口名 -->
     <AssemblyName>VocalB1</AssemblyName>
     <RootNamespace>VocalB1.App</RootNamespace>
+    <ApplicationIcon>..\..\..\VocalB1_Version_1.0.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>
