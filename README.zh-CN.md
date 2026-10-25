@@ -159,6 +159,6 @@ python VocalB1Synthesizer.py
 
 ## 作者
 
-郭希淳（Xichun Guo）· 2026
+Xichun Guo · 2026
 
 项目主页：<https://vocalb1.com>
