@@ -67,9 +67,9 @@ pip install -r requirements.txt
 ```
 voicebank/
 └── <你的声库>/
-    ├── oto.ini
     ├── _あ.wav
-    └── ...
+    ├── ...
+    └── icon.jpg
 ```
 
 仓库**不附带声库**（版权限制），详见 [voicebank/README.md](voicebank/README.md)。

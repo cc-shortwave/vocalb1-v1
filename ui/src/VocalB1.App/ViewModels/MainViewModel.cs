@@ -1176,12 +1176,12 @@ public sealed class MainViewModel : ObservableObject
             // Large folders would freeze the window if scanned on the UI thread.
             error = await Task.Run(() =>
             {
-                if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
-                        .Any(file => string.Equals(Path.GetFileName(file), "oto.ini", StringComparison.OrdinalIgnoreCase)))
-                    return "声库格式错误：缺少 oto.ini。";
-
                 if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
                     return "声库格式错误：没有 wav 音频文件。";
+
+                if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                        .Any(file => string.Equals(Path.GetFileName(file), "icon.jpg", StringComparison.OrdinalIgnoreCase)))
+                    return "声库格式错误：缺少 icon.jpg。";
 
                 Directory.CreateDirectory(VoicebankRoot);
                 CopyDirectory(source, target);

@@ -12,7 +12,6 @@ Drop a **single-note voicebank** folder in here:
 ```
 voicebank/
 └── <your-voicebank>/
-    ├── oto.ini
     ├── _あ.wav
     ├── _い.wav
     └── ...
@@ -37,13 +36,12 @@ voicebank/
     └── icon.jpg
 ```
 
-`icon.jpg` is optional and sits next to the audio files; when present it is shown
-next to the New button in the top bar.
+`icon.jpg` sits next to the audio files and is shown next to the New button in the top bar.
 
 ## What counts as a usable voicebank
 
 - a **single-note voicebank**
-- contains `oto.ini` plus wav files named `_あ.wav`, `_か.wav`, …
+- contains wav files named `_あ.wav`, `_か.wav`, … and an `icon.jpg`
 - needs the 142 basic kana for full coverage
 
 ## Licensing
@@ -68,7 +66,6 @@ exists in the repository while the voicebank itself can never be committed by ac
 ```
 voicebank/
 └── <你的声库>/
-    ├── oto.ini
     ├── _あ.wav
     ├── _い.wav
     └── ...
@@ -93,12 +90,12 @@ voicebank/
     └── icon.jpg
 ```
 
-`icon.jpg` 与音频文件同级，可选；存在时会显示在顶栏「新建」按钮旁边。
+`icon.jpg` 与音频文件同级，会显示在顶栏「新建」按钮旁边。
 
 ### 什么算一个可用的声库
 
 - **单独音声库**
-- 目录里有 `oto.ini`，以及以 `_` 开头的 wav（`_あ.wav`、`_か.wav`…）
+- 目录里有 wav（`_あ.wav`、`_か.wav`…）与 `icon.jpg`
 - 需要 142 个基本假名才能完整演唱
 
 ### 版权提醒
@@ -123,7 +120,6 @@ voicebank/
 ```
 voicebank/
 └── <お使いの音源>/
-    ├── oto.ini
     ├── _あ.wav
     ├── _い.wav
     └── ...
@@ -148,13 +144,12 @@ voicebank/
     └── icon.jpg
 ```
 
-`icon.jpg` は音声ファイルと同じ階層に置く任意の画像です。ある場合は上部バーの
-「新規」ボタンの横に表示されます。
+`icon.jpg` は音声ファイルと同じ階層に置きます。上部バーの「新規」ボタンの横に表示されます。
 
 ### 使える音源の条件
 
 - **単独音音源**
-- `oto.ini` と `_あ.wav`、`_か.wav` … といった wav が入っていること
+- wav（`_あ.wav`、`_か.wav` …）と `icon.jpg` が入っていること
 - 網羅するには基本仮名 142 音が必要
 
 ### ライセンスについて

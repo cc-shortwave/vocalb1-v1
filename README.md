@@ -71,9 +71,9 @@ Put a UTAU **単独音 (single-note)** voicebank folder inside `voicebank/`:
 ```
 voicebank/
 └── <your-voicebank>/
-    ├── oto.ini
     ├── _あ.wav
-    └── ...
+    ├── ...
+    └── icon.jpg
 ```
 
 No voicebank is bundled, for licensing reasons — see [voicebank/README.md](voicebank/README.md).
