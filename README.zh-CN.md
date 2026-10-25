@@ -176,7 +176,7 @@ python VocalB1Synthesizer.py
 
 ## 致谢
 
-- **Mingxuan** —— 视觉设计与发布测试：设计应用图标与项目标识；在 Windows 11 上安装
+- **Mingxuan** —— 视觉设计与发布测试：设计应用图标；在 Windows 11 上安装
   `setup.exe` 发布包并完整跑通，提出了过程中发现的问题。
 
 图标是他的作品，与 MIT 许可的关系见 [NOTICE.md](NOTICE.md)。
