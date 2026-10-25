@@ -66,6 +66,9 @@ param(
     # Reuse the existing publish output instead of running dotnet again.
     [switch]$SkipDotnet,
 
+    # Ignore dist\_cache and rebuild the embedded Python from scratch.
+    [switch]$RebuildPython,
+
     # Same as -Mode lite: skip the embedded Python runtime.
     [switch]$SkipPython,
 
@@ -210,27 +213,41 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 Write-Ok "apphost: $(Split-Path -Leaf $exe)"
 
-# ------------------------------------------------------------------ embedded python (built once)
-$pythonRuntime = Join-Path $Stage '_python'
+# ------------------------------------------------------------------ embedded python (cached)
+# Built once into dist\_cache\ and reused by later runs; -RebuildPython forces a refresh.
+$pythonTag     = [IO.Path]::GetFileNameWithoutExtension($PythonEmbedUrl)
+$pythonCache   = Join-Path $DistPath ("_cache\" + $pythonTag)
+$pythonRuntime = $pythonCache
 if ($variants -contains 'full') {
-    if (Test-Path -LiteralPath $pythonRuntime) {
-        Write-Step 'Reusing embedded Python runtime'
-    } else {
-        Write-Step 'Building embedded Python runtime'
+    $cacheGood = $false
+    $cachedPy  = Join-Path $pythonCache 'python.exe'
+    if ((Test-Path -LiteralPath $cachedPy) -and -not $RebuildPython) {
+        Write-Step 'Checking the cached Python runtime'
+        & $cachedPy -c "import numpy, scipy, soundfile, pyworld" 2>$null
+        $cacheGood = ($LASTEXITCODE -eq 0)
+        if ($cacheGood) { Write-Ok "reusing $pythonCache" }
+        else { Write-Ok 'cache is incomplete - rebuilding' }
+    }
+
+    if (-not $cacheGood) {
+        Write-Step 'Building the embedded Python runtime (first run downloads ~80 MB)'
+        $buildDir = "$pythonCache.building"
+        if (Test-Path -LiteralPath $buildDir) { Remove-Item -LiteralPath $buildDir -Recurse -Force }
+
         $zipPath = Join-Path $Stage 'python-embed.zip'
         Write-Host "    downloading $PythonEmbedUrl"
         Invoke-WebRequest -Uri $PythonEmbedUrl -OutFile $zipPath -UseBasicParsing
-        Expand-Archive -LiteralPath $zipPath -DestinationPath $pythonRuntime -Force
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $buildDir -Force
         Remove-Item -LiteralPath $zipPath -Force
 
-        $pth = Get-ChildItem -LiteralPath $pythonRuntime -Filter 'python*._pth' | Select-Object -First 1
+        $pth = Get-ChildItem -LiteralPath $buildDir -Filter 'python*._pth' | Select-Object -First 1
         if (-not $pth) { throw "No python*._pth inside the embeddable package" }
         $lines = @(Get-Content -LiteralPath $pth.FullName)
         $lines = @($lines | ForEach-Object { if ($_ -eq '#import site') { 'import site' } else { $_ } })
         if ($lines -notcontains 'Lib\site-packages') { $lines += 'Lib\site-packages' }
         Set-Content -LiteralPath $pth.FullName -Value $lines -Encoding ASCII
 
-        $py = Join-Path $pythonRuntime 'python.exe'
+        $py = Join-Path $buildDir 'python.exe'
         $getPip = Join-Path $Stage 'get-pip.py'
         Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip -UseBasicParsing
         & $py $getPip --no-warn-script-location --index-url $PipIndex
@@ -243,7 +260,10 @@ if ($variants -contains 'full') {
 
         & $py -c "import numpy, scipy, soundfile, pyworld; print('deps ok')"
         if ($LASTEXITCODE -ne 0) { throw "embedded Python cannot import the required packages" }
-        Write-Ok ("embedded Python ready ({0} MB)" -f (Get-SizeMB $pythonRuntime))
+
+        if (Test-Path -LiteralPath $pythonCache) { Remove-Item -LiteralPath $pythonCache -Recurse -Force }
+        Move-Item -LiteralPath $buildDir -Destination $pythonCache -Force
+        Write-Ok ("embedded Python ready ({0} MB), cached for the next run" -f (Get-SizeMB $pythonCache))
     }
 }
 
