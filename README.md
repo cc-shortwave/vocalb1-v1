@@ -182,6 +182,16 @@ verification, debugging and final decisions. The project uses open-source librar
 
 ---
 
+## Acknowledgements
+
+- **Mingxuan** — visual identity and release testing: designed the application icon
+  and the project mark, installed the `setup.exe` build on Windows 11, ran it end to
+  end, and reported the problems he found.
+
+The icon is his work; see [NOTICE.md](NOTICE.md) for how it relates to the MIT license.
+
+---
+
 ## Author
 
 Xichun Guo · 2026

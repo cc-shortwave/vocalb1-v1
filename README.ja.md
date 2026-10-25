@@ -181,6 +181,16 @@ python VocalB1Synthesizer.py
 
 ---
 
+## 謝辞
+
+- **Mingxuan** —— ビジュアルとリリース検証：アプリケーションアイコンとプロジェクト
+  マークを制作。Windows 11 で `setup.exe` をインストールして一通り動作を確認し、
+  見つかった問題を報告しました。
+
+アイコンは氏の作品です。MIT ライセンスとの関係は [NOTICE.md](NOTICE.md) を参照してください。
+
+---
+
 ## 作者
 
 Xichun Guo · 2026
