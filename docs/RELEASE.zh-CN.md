@@ -16,7 +16,7 @@
 | Git | 任意较新版本 |
 | 网络 | `full` 包需要联网下载内嵌 Python 和依赖轮子 |
 | 空间 | `dist\` 下留约 1.5 GB |
-| Inno Setup 6 | 仅 `-Installer` 需要：`winget install -e --id JRSoftware.InnoSetup` |
+| Inno Setup 6 | 默认构建需要：`winget install -e --id JRSoftware.InnoSetup` |
 
 ---
 
@@ -102,7 +102,7 @@ dist\
 | `-SkipDotnet` | 只重打包，复用上次的编译产物 |
 | `-SkipPython` | 不打内嵌 Python |
 | `-RebuildPython` | 忽略 `dist\_cache\`，强制重建内嵌 Python |
-| `-Installer` | **两个 zip 都打**，再用 Inno Setup 6 生成安装程序；等价于自动加上 `-Mode both`，且不能与 `-SkipPython` 同用 |
+| `-NoInstaller` | 不生成安装包（`setup.exe` 现在是默认产物） |
 
 **为什么不能直接把 dll 挪进子目录**：.NET 是按 `.deps.json` 记录的位置在自己所在的文件夹里找依赖的，
 把文件挪走会直接启动失败；要支持子目录得自定义 host policy，下次 publish 又会冲掉。
@@ -158,17 +158,27 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 发布说明是从 `docs/RELEASE-NOTES-TEMPLATE.md` 渲染的，改文案（包括中日文）只改那个文件，
 **不要往 .ps1 里写非 ASCII 字符**。
 
-### 4.4 Windows 安装包（已实现，v1.0.0 暂不启用）
+### 4.4 Windows 安装包（默认就出）
 
-**v1.0.0 只发 zip。** 安装包的脚本已经写好，以后（比如 v1.1.0）加个 `-Installer` 就能开，
-不需要改引擎，也不影响发布说明的格式。
+直接跑 `package-release.ps1`（不加任何参数）会出三个资产：
+
+```
+dist\vocalb1-1.0.0-win-x64-full.zip
+dist\vocalb1-1.0.0-win-x64-lite.zip
+dist\vocalb1-1.0.0-win-x64-setup.exe
+```
+
+`-NoInstaller` 可以跳过第三个（比如临时只想测 lite、机器上又没装 Inno Setup）。
+
+**故意不做 lite 版安装包。** lite 装到别人机器上还得装 Python 再 `pip install`，
+这和"安装包"承诺的"双击就能用"是矛盾的。lite 保持 zip，留给开发者。
 
 ```powershell
 winget install -e --id JRSoftware.InnoSetup      # 只装一次
 .\scripts\package-release.ps1 -Mode full -Installer
 ```
 
-加了 `-Installer` 就等于 `-Mode both`，所以 full zip、lite zip、安装包**一次全出**，发布资产不会缺一块。
+三个资产总是一起产出，发布时不会出现只发一半的情况。
 
 产物：`dist\vocalb1-1.0.0-win-x64-setup.exe`
 

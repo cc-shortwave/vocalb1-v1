@@ -69,8 +69,8 @@ param(
     # Ignore dist\_cache and rebuild the embedded Python from scratch.
     [switch]$RebuildPython,
 
-    # Also build a Windows installer (.exe) with Inno Setup.
-    [switch]$Installer,
+    # The Windows installer (.exe, Inno Setup) is built by default; use this to skip it.
+    [switch]$NoInstaller,
 
     # Same as -Mode lite: skip the embedded Python runtime.
     [switch]$SkipPython,
@@ -148,23 +148,10 @@ Write-Host "  runtime : $Runtime"
 
 # ------------------------------------------------------------------ variants
 $variants = @()
-if ($Installer) {
-    # The installer is built from the full payload, and the release always ships
-    # both archives, so -Installer implies -Mode both.
-    $variants = @('full', 'lite')
-} elseif ($Mode -eq 'both') {
-    $variants = @('full', 'lite')
-} else {
-    $variants = @($Mode)
-}
-if ($SkipPython) {
-    if ($Installer) {
-        throw '-Installer needs the full payload, so it cannot be combined with -SkipPython'
-    }
-    $variants = @($variants | Where-Object { $_ -ne 'full' })
-}
+if ($Mode -eq 'both') { $variants = @('full', 'lite') } else { $variants = @($Mode) }
+if ($SkipPython) { $variants = @($variants | Where-Object { $_ -ne 'full' }) }
 if (-not $variants) { throw "Nothing to build (mode=$Mode, SkipPython=$SkipPython)" }
-Write-Host ("  builds  : " + ($variants -join ', ') + $(if ($Installer) { '  + installer' } else { '' }))
+Write-Host ("  builds  : " + ($variants -join ', ') + $(if ($NoInstaller) { '' } else { '  + installer' }))
 
 # ------------------------------------------------------------------ prerequisites
 if (-not $SkipDotnet) {
@@ -365,7 +352,12 @@ foreach ($variant in $variants) {
 # ------------------------------------------------------------------ installer
 $installerName = $null
 $installerMB = 0
-if ($Installer) {
+$buildInstaller = -not $NoInstaller
+if ($buildInstaller -and -not $stageFolders.ContainsKey('full')) {
+    Write-Host '  ! installer skipped: it needs the full payload (a lite-only build cannot run by itself)' -ForegroundColor Yellow
+    $buildInstaller = $false
+}
+if ($buildInstaller) {
     Write-Step 'Building the Windows installer (Inno Setup)'
     $issPath = Join-Path $Root 'installer\vocalb1.iss'
     if (-not (Test-Path -LiteralPath $issPath)) { throw "Installer script not found: $issPath" }
@@ -384,8 +376,7 @@ if ($Installer) {
     }
     Write-Ok "ISCC: $iscc"
 
-    if ($stageFolders.Count -eq 0) { throw 'Nothing was packaged, so there is nothing to put into the installer' }
-    $instSource = if ($stageFolders.ContainsKey('full')) { $stageFolders['full'] } else { $stageFolders[$variants[0]] }
+    $instSource = $stageFolders['full']
     Write-Ok "installer payload: $instSource"
 
     & $iscc "/DMyAppVersion=$Version" "/DStageDir=$instSource" "/DOutDir=$DistPath" $issPath

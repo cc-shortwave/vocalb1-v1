@@ -16,7 +16,7 @@ Follow it top to bottom; every step has a way to verify it worked.
 | Python | 3.10+ on PATH — only needed to test the `lite` build |
 | Git | any recent version |
 | Network | needed for the `full` build (downloads the embedded Python + wheels) |
-| Inno Setup 6 | only for `-Installer`: `winget install -e --id JRSoftware.InnoSetup` |
+| Inno Setup 6 | required for the default build: `winget install -e --id JRSoftware.InnoSetup` |
 | Space | ~1.5 GB free in `dist\` |
 
 ---
@@ -103,7 +103,7 @@ Useful switches:
 | `-SkipDotnet` | repack only, reuse the previous publish output |
 | `-SkipPython` | never build the embedded Python |
 | `-RebuildPython` | ignore `dist\_cache\` and rebuild the embedded Python from scratch |
-| `-Installer` | build **both** zips plus `vocalb1-<ver>-win-x64-setup.exe` (Inno Setup 6); implies `-Mode both` and cannot be used with `-SkipPython` |
+| `-NoInstaller` | skip the installer (`setup.exe` is built by default) |
 
 Why not just move the DLLs into a subfolder: .NET resolves its own assemblies from the
 folder named in `.deps.json`; relocating them needs a custom host policy and breaks on the
@@ -161,18 +161,28 @@ If `full` gets much above ~300 MB, consider shipping `lite` only and documenting
 The notes are rendered from `docs/RELEASE-NOTES-TEMPLATE.md`, so you can edit the wording
 (including CJK text) without touching PowerShell.
 
-### 4.4 Windows installer (deferred - not used for v1.0.0)
+### 4.4 Windows installer (built by default)
 
-v1.0.0 ships as zips only. The installer is already implemented and can be turned on
-later (e.g. v1.1.0) without touching the engine or the release notes format.
+A plain `package-release.ps1` now produces three assets:
+
+```
+dist\vocalb1-1.0.0-win-x64-full.zip
+dist\vocalb1-1.0.0-win-x64-lite.zip
+dist\vocalb1-1.0.0-win-x64-setup.exe
+```
+
+`-NoInstaller` skips the third one (useful for a quick lite test without Inno Setup).
+
+**There is deliberately no lite installer.** A lite install would need Python plus
+`pip install` on the target machine, which contradicts what an installer promises
+("double-click and it works"). Lite stays a zip for developers.
 
 ```powershell
 winget install -e --id JRSoftware.InnoSetup      # once
 .\scripts\package-release.ps1 -Mode full -Installer
 ```
 
-`-Installer` implies `-Mode both`, so you always get the full zip, the lite zip and the
-installer together — the release assets never drift apart.
+The three assets are always produced together, so a release never ships half of them.
 
 Output: `dist\vocalb1-1.0.0-win-x64-setup.exe`.
 
