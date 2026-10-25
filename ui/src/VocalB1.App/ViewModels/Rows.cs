@@ -82,6 +82,15 @@ public sealed class LanguageRow(LanguagePack pack)
     public override string ToString() => Name;
 }
 
+/// <summary>A row of the voicebank combo box: the singer name is the folder name under voicebank/.</summary>
+public sealed class VoicebankOption(string name, string path)
+{
+    public string Name { get; } = name;
+    public string Path { get; } = path;
+
+    public override string ToString() => Name;
+}
+
 /// <summary>A row of a parameter slider: dragging writes back to the model and keeps the value text on the right in sync.</summary>
 public sealed class ParameterRow(
     string label, double minimum, double maximum, double step, double value, Action<double> apply)

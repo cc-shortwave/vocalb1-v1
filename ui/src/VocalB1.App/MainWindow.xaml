@@ -8,6 +8,9 @@
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BgBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI"
+        AllowDrop="True"
+        DragOver="OnWindowDragOver"
+        Drop="OnWindowDrop"
         UseLayoutRounding="True">
 
     <Window.InputBindings>
@@ -165,8 +168,10 @@
                             <TextBlock Text="{Binding SelectedTrack.Name}" FontSize="11"
                                        Foreground="{DynamicResource AccentBrush}" HorizontalAlignment="Right" />
                         </Grid>
-                        <TextBox DockPanel.Dock="Top" Text="{Binding LibraryRoot, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="声库根目录" />
+                        <ComboBox DockPanel.Dock="Top" ItemsSource="{Binding Voicebanks}"
+                                  SelectedItem="{Binding SelectedVoicebank}"
+                                  DisplayMemberPath="Name"
+                                  ToolTip="选择 voicebank 目录下的声库（歌手名称）" />
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,8,0,8">
                             <Button Content="刷新" Command="{Binding RefreshLibraryCommand}" />
                             <Button Content="加入工程"
