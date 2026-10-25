@@ -9,6 +9,7 @@ oto.ini
 
 # ── 运行产物 ──
 _output/
+_test_output/
 output/
 out/
 cache/

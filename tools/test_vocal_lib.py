@@ -3,8 +3,8 @@
 test_vocal_lib.py -- vocal_lib functional regression tests
 
 Run:
-    C:\\Python312\\python.exe test_vocal_lib.py            # all tests
-    C:\\Python312\\python.exe test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
+    C:\\Python312\\python.exe tools\\test_vocal_lib.py            # all tests
+    C:\\Python312\\python.exe tools\\test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
 
 Coverage:
     [1] Package import and public API completeness
@@ -25,15 +25,18 @@ import sys
 import traceback
 import numpy as np
 
+# 开发仓库中本文件位于 tools/，库与引擎在上一级；发布包中所有脚本平铺在同一目录。
 _BASE = os.path.dirname(os.path.abspath(__file__))
-if _BASE not in sys.path:
-    sys.path.insert(0, _BASE)
+_ROOT = _BASE if os.path.exists(os.path.join(_BASE, "vocal_lib")) else os.path.dirname(_BASE)
+for _path in (_ROOT, _BASE):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-OUT_DIR = os.path.join(_BASE, "_test_output")
+OUT_DIR = os.path.join(_ROOT, "_test_output")
 
 # Candidate test audio: the first existing one is used (append here when the library path changes)
 _CANDIDATES = [
-    os.path.join(os.environ.get("VOCALB1_LIB") or os.path.join(_BASE, "voicebank"), "_で.wav"),
+    os.path.join(os.environ.get("VOCALB1_LIB") or os.path.join(_ROOT, "voicebank"), "_で.wav"),
 ]
 
 _CACHE = {}          # intermediate results shared between cases (avoids repeated decomposition)

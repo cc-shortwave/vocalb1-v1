@@ -40,7 +40,8 @@ VocalB1 は歌声の録音を「F0（基本周波数）／スペクトル包絡�
     ├── spectrogram.py        # スペクトログラム表示
     ├── oscilloscope.py       # 波形表示
     ├── pit_editor.py         # ピッチカーブエディタ
-    └── _plosive_diag.py      # 破裂音の過渡診断
+    ├── _plosive_diag.py      # 破裂音の過渡診断
+    └── test_vocal_lib.py     # ライブラリの回帰テスト
 ```
 
 ---
