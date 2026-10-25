@@ -137,6 +137,15 @@ python VocalB1Synthesizer.py
 
 脚本读 `VERSION`、发布 WPF 程序、(可选) 内置 Python，输出
 `dist/vocalb1-v<版本>-win-x64-{full,lite}.zip`，并生成 `SHA256SUMS.txt` 与 `RELEASE-NOTES.md`。
+
+版本号由脚本自增，不用手改：
+
+```powershell
+.\scripts\package-release.ps1 -Bump patch -Tag   # 1.0.0 -> 1.0.1，提交 VERSION，打 tag v1.0.1
+```
+
+`-Bump` 可取值：`patch`（修 bug）、`minor`（加功能）、`major`（不兼容改动）；
+`-NoCommit` 只改文件不提交，`-Tag` 在本地创建附注 tag（不会自动推送）。
 两个压缩包都解压成单一文件夹，引擎、`ui/bridge/`、`languages/` 和空的 `voicebank/`
 都放在程序能自动发现的位置。
 
