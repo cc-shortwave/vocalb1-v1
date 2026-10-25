@@ -66,7 +66,11 @@ pip install -r requirements.txt
 
 ### 1. 音源を置く
 
-UTAU の**単独音**音源フォルダを `voicebank/` に入れます：
+**ドラッグ＆ドロップ**：VocalB1 を起動し、音源フォルダをウィンドウにドロップします。
+`voicebank/<名前>/` にコピーされ、すぐに読み込まれます。ドロップするフォルダには
+`.wav` と `icon.jpg` が必要です。
+
+**手動で置く**：UTAU の**単独音**音源フォルダを `voicebank/` に入れます：
 
 ```
 voicebank/

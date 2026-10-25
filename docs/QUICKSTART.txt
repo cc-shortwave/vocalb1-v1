@@ -4,9 +4,13 @@ VocalB1 QUICKSTART
 EN
 --
 1. Unzip this folder anywhere (keep the whole folder together).
-2. Put a UTAU 単独音 voicebank into the "voicebank" subfolder, for example
-       voicebank\<your-voicebank>\_a.wav ... (142 basic kana)
-       voicebank\<your-voicebank>\icon.jpg
+2. Add a voicebank. Two ways:
+     a) drag the voicebank folder onto the VocalB1 window - it is copied into
+        "voicebank\<name>\" and loaded at once; the folder needs .wav files
+        and an icon.jpg;
+     b) or put it there yourself:
+           voicebank\<your-voicebank>\_a.wav ... (142 basic kana)
+           voicebank\<your-voicebank>\icon.jpg
    No voicebank is bundled, for licensing reasons.
 3. Double-click VocalB1.exe.
    - full build : a bundled Python is included, nothing to install.
@@ -17,9 +21,12 @@ EN
 中文
 ----
 1. 把整个文件夹解压到任意位置（别把里面的文件拆散）。
-2. 把 UTAU「単独音」声库放进 voicebank 子目录，例如
-       voicebank\<你的声库>\_あ.wav …（需要 142 个基本假名）
-       voicebank\<你的声库>\icon.jpg
+2. 加声库，两种办法：
+     a) 把声库文件夹直接拖到 VocalB1 窗口上——会自动复制进
+        voicebank\<名字>\ 并立即载入；文件夹里要有 .wav 和 icon.jpg；
+     b) 或者自己放进去：
+           voicebank\<你的声库>\_あ.wav …（需要 142 个基本假名）
+           voicebank\<你的声库>\icon.jpg
    出于版权原因，不附带任何声库。
 3. 双击 VocalB1.exe 启动。
    - full 版：已内置 Python，不需要额外安装。
@@ -30,8 +37,12 @@ EN
 日本語
 ------
 1. フォルダごと任意の場所に解凍してください（中のファイルを分けないでください）。
-2. UTAU の「単独音」音源を voicebank サブフォルダに置きます。
-   例: voicebank\<お使いの音源>\_あ.wav … と icon.jpg
+2. 音源を追加します。方法は 2 つ：
+     a) 音源フォルダを VocalB1 のウィンドウにドロップ—
+        voicebank\<名前>\ にコピーされ、すぐ読み込まれます。
+        フォルダには .wav と icon.jpg が必要です。
+     b) 手動で置く：
+           voicebank\<お使いの音源>\_あ.wav … と icon.jpg
    ライセンスの都合で、音源は同梱していません。
 3. VocalB1.exe をダブルクリックして起動します。
    - full 版 : Python を内蔵しているので追加インストールは不要です。
