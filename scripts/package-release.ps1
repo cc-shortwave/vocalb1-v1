@@ -60,6 +60,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$env:DOTNET_NOLOGO = '1'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 
 $Root     = Split-Path -Parent $PSScriptRoot
 $DistPath = Join-Path $Root $DistDir
@@ -139,8 +141,17 @@ if ($SkipDotnet -and (Test-Path -LiteralPath $publishDir)) {
     Write-Ok "published to $publishDir"
 }
 
-$exe = Join-Path $publishDir 'VocalB1.App.exe'
-if (-not (Test-Path -LiteralPath $exe)) { throw "Publish output has no VocalB1.App.exe: $publishDir" }
+# The csproj sets <AssemblyName>VocalB1</AssemblyName>, so the apphost is VocalB1.exe.
+$exe = Join-Path $publishDir 'VocalB1.exe'
+if (-not (Test-Path -LiteralPath $exe)) {
+    $anyExe = Get-ChildItem -LiteralPath $publishDir -Filter '*.exe' -File |
+        Where-Object { $_.Name -notmatch '^(createdump|vcruntime.*|api-ms-.*)\.exe$' } |
+        Select-Object -First 1
+    if (-not $anyExe) { throw "Publish output contains no executable: $publishDir" }
+    $exe = $anyExe.FullName
+    Write-Verbose "Falling back to $exe"
+}
+Write-Ok "apphost: $(Split-Path -Leaf $exe)"
 
 # ------------------------------------------------------------------ embedded python (built once)
 $pythonRuntime = Join-Path $Stage '_python'
@@ -196,8 +207,9 @@ foreach ($variant in $variants) {
 
     # 1. app binaries at the folder root
     Copy-Item -Path (Join-Path $publishDir '*') -Destination $target -Recurse -Force
-    $publishedExe = Join-Path $target 'VocalB1.App.exe'
-    if (Test-Path -LiteralPath $publishedExe) {
+    # Keep a stable entry point name: VocalB1.exe
+    $publishedExe = Join-Path $target (Split-Path -Leaf $exe)
+    if ((Split-Path -Leaf $publishedExe) -ne 'VocalB1.exe' -and (Test-Path -LiteralPath $publishedExe)) {
         Move-Item -LiteralPath $publishedExe -Destination (Join-Path $target 'VocalB1.exe') -Force
     }
 
