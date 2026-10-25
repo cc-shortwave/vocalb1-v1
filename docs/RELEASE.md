@@ -118,10 +118,10 @@ $a.Dispose()          # must print nothing
 
 ### 4.2 Run it on a clean-ish path
 
-Unzip somewhere **outside** your working copy, e.g. `C:\Users\<you>\Desktop\reltest\`.
+Unzip somewhere **outside** your working copy, e.g. `%USERPROFILE%\Desktop\reltest\`.
 
 ```powershell
-mklink /J "C:\Users\<you>\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
+mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
 ```
 
 - [ ] double-clicking `VocalB1.exe` opens the window (no console error)
@@ -247,7 +247,7 @@ If a secret was ever in the history, rotate the secret — do not rely on rewrit
 | app says *voicebank not found* | empty `voicebank\` in the fresh unzip | add a voicebank (this is expected on a clean download) |
 | zip is 300+ MB | self-contained .NET + Python | use `-FrameworkDependent`, or ship lite only |
 | `Compress-Archive` very slow / fails | huge folder | delete `dist\_stage` and retry; keep the folder under ~2 GB |
-| push rejected by the server hook | a forbidden file slipped in (`*.wav`, `oto.ini`, `*.db`, >5 MB, "二代" keywords) | read the hook message, remove the file, `git commit --amend`, push again |
+| push rejected by the server hook | a forbidden file slipped in (`*.wav`, `oto.ini`, `*.db`, >5 MB, generation-2 keywords) | read the hook message, remove the file, `git commit --amend`, push again |
 
 ---
 

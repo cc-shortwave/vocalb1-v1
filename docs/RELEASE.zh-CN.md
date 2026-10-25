@@ -116,10 +116,10 @@ $a.Dispose()          # 必须什么都不打印
 
 ### 4.2 真正跑一遍
 
-解压到一个**仓库外面**的地方，例如 `C:\Users\<你>\Desktop\reltest\`。
+解压到一个**仓库外面**的地方，例如 `%USERPROFILE%\Desktop\reltest\`。
 
 ```powershell
-mklink /J "C:\Users\<你>\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
+mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
 ```
 
 - [ ] 双击 `VocalB1.exe` 能开窗口（不弹控制台报错）
@@ -242,7 +242,7 @@ git push origin v1.0.0
 | 提示*找不到声库* | 全新解压的 `voicebank\` 是空的 | 放一个声库进去（这是预期行为，不是 bug） |
 | zip 有 300+ MB | .NET 自包含 + Python | 用 `-FrameworkDependent`，或只发 lite |
 | `Compress-Archive` 很慢或失败 | 目录太大 | 删掉 `dist\_stage` 重来；目录控制在 2 GB 以内 |
-| push 被服务器钩子拒绝 | 混进了禁止的文件（`*.wav`、`oto.ini`、`*.db`、>5 MB、"二代"关键词） | 看钩子提示，删掉那个文件，`git commit --amend` 后重推 |
+| push 被服务器钩子拒绝 | 混进了禁止的文件（`*.wav`、`oto.ini`、`*.db`、超过 5 MB、或不该出现的路线关键词） | 看钩子提示，删掉那个文件，`git commit --amend` 后重推 |
 
 ---
 
