@@ -134,10 +134,13 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 
 脚本已经把它们写进 `RELEASE-NOTES.md`，确认一下数字合理：
 
-- lite 约 100–180 MB（.NET 自包含，没有 Python）
-- full 约 150–250 MB（再加上内嵌 Python）
+- lite 约 60–180 MB（.NET 自包含，没有 Python）—— .NET 9.0.306 实测 58.6 MB
+- full 约 150–280 MB（再加上内嵌 Python）—— 实测 149.6 MB
 
-如果 full 超过 300 MB，考虑只发 lite，把装 Python 的说明写清楚。
+如果 full 明显超过 300 MB，考虑只发 lite，把装 Python 的说明写清楚。
+
+发布说明是从 `docs/RELEASE-NOTES-TEMPLATE.md` 渲染的，改文案（包括中日文）只改那个文件，
+**不要往 .ps1 里写非 ASCII 字符**。
 
 ---
 
@@ -242,6 +245,7 @@ git push origin v1.0.0
 | 提示*找不到声库* | 全新解压的 `voicebank\` 是空的 | 放一个声库进去（这是预期行为，不是 bug） |
 | zip 有 300+ MB | .NET 自包含 + Python | 用 `-FrameworkDependent`，或只发 lite |
 | `Compress-Archive` 很慢或失败 | 目录太大 | 删掉 `dist\_stage` 重来；目录控制在 2 GB 以内 |
+| `RELEASE-NOTES.md` 出现乱码（如 `鈥?`） | .ps1 里有非 ASCII 字符，PowerShell 5.1 按 ANSI 解析脚本 | .ps1 保持纯 ASCII，文案改 `docs/RELEASE-NOTES-TEMPLATE.md` |
 | push 被服务器钩子拒绝 | 混进了禁止的文件（`*.wav`、`oto.ini`、`*.db`、超过 5 MB、或不该出现的路线关键词） | 看钩子提示，删掉那个文件，`git commit --amend` 后重推 |
 
 ---

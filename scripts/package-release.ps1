@@ -315,41 +315,26 @@ $lines | ForEach-Object { Write-Ok $_ }
 Write-Step 'Writing RELEASE-NOTES.md'
 $downloads = foreach ($b in $built) {
     if ($b.Variant -eq 'full') {
-        "- **full** ($($b.SizeMB) MB) — Python runtime included, unzip and run."
+        "- **full** ($($b.SizeMB) MB) - Python runtime included, unzip and run."
     } else {
-        "- **lite** ($($b.SizeMB) MB) — requires Python 3.10+ on PATH, then ``pip install -r requirements.txt``."
+        "- **lite** ($($b.SizeMB) MB) - requires Python 3.10+ on PATH, then ``pip install -r requirements.txt``."
     }
 }
-$notes = @"
-## vocalb1 v$Version
+$buildNote = if ($variants -contains 'full') {
+    '- The full build bundles an embedded Python; the lite build uses your own.'
+} else {
+    '- This build uses your installed Python.'
+}
 
-Offline lightweight singing synthesizer with per-note control.
-No pretraining, no GPU, no network.
-
-### Downloads
-$($downloads -join "`n")
-
-### Quick start
-1. Unzip the archive (it contains a single folder).
-2. Put a UTAU 単独音 voicebank into ``voicebank/``, e.g. ``voicebank/<your-voicebank>/oto.ini``.
-3. Double-click ``VocalB1.exe``.
-
-### Not included
-No voicebank is bundled, for licensing reasons. See ``voicebank/README.md``.
-
-### Verify
-``````
-sha256sum -c SHA256SUMS.txt
-``````
-
-### Notes
-- Windows x64 only. The Python engine itself is cross-platform.
-- $(if ($variants -contains 'full') { 'The full build bundles an embedded Python; the lite build uses your own.' } else { 'This build uses your installed Python.' })
-"@
+# The template lives in docs/ so this script can stay pure ASCII. PowerShell 5.1
+# would otherwise read a BOM-less UTF-8 .ps1 as ANSI and mangle any non-ASCII text.
+$templatePath = Join-Path $Root 'docs/RELEASE-NOTES-TEMPLATE.md'
+if (-not (Test-Path -LiteralPath $templatePath)) { throw "Template not found: $templatePath" }
+$notes = Get-Content -LiteralPath $templatePath -Raw -Encoding UTF8
+$notes = $notes.Replace('{{VERSION}}', $Version)
+$notes = $notes.Replace('{{DOWNLOADS}}', ($downloads -join "`r`n"))
+$notes = $notes.Replace('{{BUILDNOTE}}', $buildNote)
 [IO.File]::WriteAllText((Join-Path $DistPath 'RELEASE-NOTES.md'), $notes, (New-Object System.Text.UTF8Encoding($false)))
-
-# ------------------------------------------------------------------ cleanup + summary
-Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Done. Artefacts in $DistPath :" -ForegroundColor Green
