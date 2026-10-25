@@ -13,6 +13,7 @@
     <UseWPF>true</UseWPF>
     <!-- 可双击运行的入口名 -->
     <AssemblyName>VocalB1</AssemblyName>
+    <ApplicationIcon>..\..\..\assets\VocalB1.ico</ApplicationIcon>
     <RootNamespace>VocalB1.App</RootNamespace>
   </PropertyGroup>
 

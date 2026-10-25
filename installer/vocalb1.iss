@@ -26,6 +26,7 @@
 #define MyAppPublisher "Xichun Guo"
 #define MyAppURL "https://vocalb1.com"
 #define MyAppExeName "VocalB1.exe"
+#define MyAppIcon "VocalB1.ico"
 
 [Setup]
 ; Keep this AppId forever: it is how Windows recognises an upgrade of the same product.
@@ -53,7 +54,8 @@ OutputBaseFilename=vocalb1-{#MyAppVersion}-win-x64-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\{#MyAppIcon}
+SetupIconFile=..\assets\{#MyAppIcon}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 LicenseFile=..\LICENSE
 AllowNoIcons=yes
@@ -65,12 +67,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Everything the release script staged: VocalB1.exe, the engine, vocal_lib,
 ; languages, ui\bridge and an empty voicebank folder with its README.
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\assets\{#MyAppIcon}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{group}\Voicebank folder"; Filename: "explorer.exe"; Parameters: """{app}\voicebank"""
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppIcon}"; IconIndex: 0
+Name: "{group}\Voicebank folder"; Filename: "explorer.exe"; Parameters: """{app}\voicebank"""; IconFilename: "shell32.dll"; IconIndex: 3
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppIcon}"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
