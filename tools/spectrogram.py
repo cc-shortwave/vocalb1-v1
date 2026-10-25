@@ -157,9 +157,11 @@ def analyze_wav_stft_zoom(wav_paths, nperseg=1024, noverlap=256, downsample: int
 
 
 if __name__ == "__main__":
-    # Anchor the output directory to the script directory to avoid missing files when the working directory differs at runtime
+    # 产物目录锚定在仓库根：开发时本文件位于 tools/，发布包中则与引擎平铺。
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _ROOT_DIR = _BASE_DIR if os.path.exists(
+        os.path.join(_BASE_DIR, "VocalB1Synthesizer.py")) else os.path.dirname(_BASE_DIR)
     WAV_FILES = [
-        os.path.join(_BASE_DIR, "_output", "e2e_song.wav"),
+        os.path.join(_ROOT_DIR, "_output", "e2e_song.wav"),
     ]
     analyze_wav_stft_zoom(WAV_FILES, nperseg=1024, noverlap=256, downsample=1)

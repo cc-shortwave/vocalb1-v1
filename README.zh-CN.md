@@ -35,9 +35,11 @@ VocalB1 把一段人声录音拆成「基频 + 频谱包络 + 气声 + 激励」
 │   └── engine.settings.example.json
 ├── languages/                # 界面语言包（en / ja / zh）
 ├── voicebank/                # 声库放这里（仓库不含声库）
-├── spectrogram.py            # 语谱图
-├── oscilloscope.py           # 波形视图
-└── pit_editor.py             # 音高曲线编辑器
+└── tools/                    # 辅助工具（引擎运行不依赖）
+    ├── spectrogram.py        # 语谱图
+    ├── oscilloscope.py       # 波形视图
+    ├── pit_editor.py         # 音高曲线编辑器
+    └── _plosive_diag.py      # 爆破音诊断
 ```
 
 ---
