@@ -42,6 +42,21 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 声库根目录下的 icon.jpg（与音频文件同级），无图标时自动隐藏 -->
+                    <Image Source="{Binding LibraryIcon}" Height="26" MaxWidth="72" Margin="0,0,8,0"
+                           VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"
+                           ToolTip="{Binding LibraryRoot}">
+                        <Image.Style>
+                            <Style TargetType="Image">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasLibraryIcon}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Image.Style>
+                    </Image>
                     <Button Content="新建" Command="{Binding NewProjectCommand}" />
                     <Button Content="打开" Command="{Binding OpenProjectCommand}" />
                     <Button Content="保存" Command="{Binding SaveProjectCommand}" />

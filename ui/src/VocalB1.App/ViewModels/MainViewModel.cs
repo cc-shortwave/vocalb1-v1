@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using VocalB1.App.Controls;
@@ -37,6 +39,7 @@ public sealed class MainViewModel : ObservableObject
     private ProjectDocument _project;
     private TrackDocument _activeTrack = new();
     private string? _projectPath;
+    private ImageSource? _libraryIcon;
     private CancellationTokenSource? _renderCts;
     private readonly Dictionary<TrackDocument, RenderedTrack> _trackOutputs = [];
     private readonly DispatcherTimer _playheadTimer;
@@ -129,6 +132,11 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<LibraryEntry> Library { get; } = [];
     public ObservableCollection<DictionaryEntryRow> DictionaryEntries { get; } = [];
     public ObservableCollection<LogEntry> Logs { get; } = [];
+
+    /// <summary>声库目录下与音频同级的 icon.jpg，显示在顶栏「新建」旁。</summary>
+    public ImageSource? LibraryIcon => _libraryIcon;
+
+    public bool HasLibraryIcon => _libraryIcon is not null;
 
     public string ProjectName
     {
@@ -1060,7 +1068,49 @@ public sealed class MainViewModel : ObservableObject
         Library.Clear();
         foreach (var entry in LibraryScanner.Scan(EffectiveLibraryRoot))
             Library.Add(entry);
+        RefreshLibraryIcon();
         StatusText = $"声库：{Library.Count} 个音频";
+    }
+
+    /// <summary>声库图标与音频文件同级：重新扫描声库时同步查找 icon.jpg。</summary>
+    private void RefreshLibraryIcon()
+    {
+        var root = EffectiveLibraryRoot;
+        var path = string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)
+            ? null
+            : Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(p => string.Equals(Path.GetFileName(p), "icon.jpg", StringComparison.OrdinalIgnoreCase));
+
+        var icon = LoadLibraryIcon(path);
+        if (ReferenceEquals(icon, _libraryIcon))
+            return;
+
+        _libraryIcon = icon;
+        OnPropertyChanged(nameof(LibraryIcon));
+        OnPropertyChanged(nameof(HasLibraryIcon));
+    }
+
+    private static ImageSource? LoadLibraryIcon(string? path)
+    {
+        if (path is null)
+            return null;
+
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            image.UriSource = new Uri(path);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception)
+        {
+            // 声库文件属于外部输入，损坏或无法解码的图片直接忽略，不影响声库列表。
+            return null;
+        }
     }
 
     private void AddLibraryItem(LibraryEntry? entry)
