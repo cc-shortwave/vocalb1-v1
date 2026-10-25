@@ -151,6 +151,9 @@ Version numbers are bumped by the script, not by hand:
 
 `-Bump` takes `patch` (bugfix), `minor` (new feature) or `major` (breaking change); `-NoCommit`
 leaves the change uncommitted and `-Tag` creates the annotated tag locally (never pushes).
+
+The full step-by-step checklist — pre-flight, verification, GitHub Release, rollback and
+troubleshooting — is in **[docs/RELEASE.md](docs/RELEASE.md)**.
 Both archives unpack into a single folder; the engine, `ui/bridge/`, `languages/` and an empty
 `voicebank/` are placed where the app auto-discovers them.
 

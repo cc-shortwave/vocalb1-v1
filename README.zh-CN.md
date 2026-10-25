@@ -146,6 +146,8 @@ python VocalB1Synthesizer.py
 
 `-Bump` 可取值：`patch`（修 bug）、`minor`（加功能）、`major`（不兼容改动）；
 `-NoCommit` 只改文件不提交，`-Tag` 在本地创建附注 tag（不会自动推送）。
+
+完整的发布流程（发布前检查、验证、GitHub Release、撤回、故障排查）见 **[docs/RELEASE.zh-CN.md](docs/RELEASE.zh-CN.md)**。
 两个压缩包都解压成单一文件夹，引擎、`ui/bridge/`、`languages/` 和空的 `voicebank/`
 都放在程序能自动发现的位置。
 

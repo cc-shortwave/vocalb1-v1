@@ -150,7 +150,10 @@ python VocalB1Synthesizer.py
 ```
 
 `-Bump` は `patch`（バグ修正）/ `minor`（機能追加）/ `major`（互換性のない変更）。
-`-NoCommit` はコミットせず、`-Tag` はローカルに注釈付きタグを作成します（push はしません）。どちらのアーカイブも単一フォルダに展開され、
+`-NoCommit` はコミットせず、`-Tag` はローカルに注釈付きタグを作成します（push はしません）。
+
+リリース手順の全体（事前チェック、検証、GitHub Release、ロールバック、トラブルシュート）は
+**[docs/RELEASE.md](docs/RELEASE.md)** にあります（英語）。どちらのアーカイブも単一フォルダに展開され、
 エンジン・`ui/bridge/`・`languages/`・空の `voicebank/` が自動検出される位置に置かれます。
 
 ## ライセンス
