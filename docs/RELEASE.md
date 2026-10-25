@@ -138,10 +138,13 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 Copy the two sizes from the script output into the release notes file — they are already
 written there, just confirm they look sane:
 
-- lite ≈ 100–180 MB (self-contained .NET, no Python)
-- full ≈ 150–250 MB (adds the embedded Python)
+- lite ≈ 60–180 MB (self-contained .NET, no Python) — 58.6 MB measured on .NET 9.0.306
+- full ≈ 150–280 MB (adds the embedded Python) — 149.6 MB measured
 
-If `full` is above ~300 MB, consider shipping `lite` only and documenting the Python install.
+If `full` gets much above ~300 MB, consider shipping `lite` only and documenting the Python install.
+
+The notes are rendered from `docs/RELEASE-NOTES-TEMPLATE.md`, so you can edit the wording
+(including CJK text) without touching PowerShell.
 
 ---
 
@@ -247,6 +250,7 @@ If a secret was ever in the history, rotate the secret — do not rely on rewrit
 | app says *voicebank not found* | empty `voicebank\` in the fresh unzip | add a voicebank (this is expected on a clean download) |
 | zip is 300+ MB | self-contained .NET + Python | use `-FrameworkDependent`, or ship lite only |
 | `Compress-Archive` very slow / fails | huge folder | delete `dist\_stage` and retry; keep the folder under ~2 GB |
+| `RELEASE-NOTES.md` shows garbled characters (e.g. `鈥?`) | the .ps1 contained non-ASCII text and PowerShell 5.1 read it as ANSI | keep the .ps1 pure ASCII; edit wording in `docs/RELEASE-NOTES-TEMPLATE.md` instead |
 | push rejected by the server hook | a forbidden file slipped in (`*.wav`, `oto.ini`, `*.db`, >5 MB, generation-2 keywords) | read the hook message, remove the file, `git commit --amend`, push again |
 
 ---
