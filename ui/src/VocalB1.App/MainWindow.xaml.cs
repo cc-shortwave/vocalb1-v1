@@ -1,9 +1,12 @@
+using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using VocalB1.App.Controls;
 using VocalB1.App.Services;
 using VocalB1.App.ViewModels;
+using VocalB1.Core.Serialization;
 
 namespace VocalB1.App;
 
@@ -21,6 +24,7 @@ public partial class MainWindow : Window
             _viewModel?.BeginLanguageSelection();
             LanguageService.Apply(this);
         };
+        Closing += OnWindowClosing;
     }
 
     private void AttachViewModel()
@@ -60,4 +64,38 @@ public partial class MainWindow : Window
 
     private void OnRollPlayheadGrabbed(object? sender, EventArgs e) =>
         _viewModel?.PauseForPlayheadDrag();
+
+    /// <summary>Accept files dropped anywhere on the window (voicebank folders and project files).</summary>
+    private void OnWindowDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnWindowDrop(object sender, DragEventArgs e)
+    {
+        if (_viewModel is null || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            return;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths)
+            return;
+
+        var path = paths[0];
+        if (Directory.Exists(path))
+        {
+            if (_viewModel.InstallVoicebank(path) is { } error)
+                MessageBox.Show(error, "安装声库", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        else if (File.Exists(path) && path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            _viewModel.OpenProjectFromPath(path);
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnWindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (_viewModel is not null && !_viewModel.ConfirmDiscardChanges("退出"))
+            e.Cancel = true;
+    }
 }

@@ -39,6 +39,8 @@ public sealed class MainViewModel : ObservableObject
     private ProjectDocument _project;
     private TrackDocument _activeTrack = new();
     private string? _projectPath;
+    /// <summary>Project snapshot taken on load/save, used to tell whether there are unsaved changes.</summary>
+    private string _savedSnapshot = string.Empty;
     private ImageSource? _libraryIcon;
     private CancellationTokenSource? _renderCts;
     private readonly Dictionary<TrackDocument, RenderedTrack> _trackOutputs = [];
@@ -132,6 +134,7 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<LibraryEntry> Library { get; } = [];
     public ObservableCollection<DictionaryEntryRow> DictionaryEntries { get; } = [];
     public ObservableCollection<LogEntry> Logs { get; } = [];
+    public ObservableCollection<VoicebankOption> Voicebanks { get; } = [];
 
     /// <summary>声库目录下与音频同级的 icon.jpg，显示在顶栏「新建」旁。</summary>
     public ImageSource? LibraryIcon => _libraryIcon;
@@ -194,6 +197,33 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
         }
     }
+
+    /// <summary>Voicebank picked for the current track: singer names are the folder names under voicebank/.</summary>
+    public VoicebankOption? SelectedVoicebank
+    {
+        get
+        {
+            var current = _activeTrack.LibraryRoot;
+            if (string.IsNullOrWhiteSpace(current) || SamePath(current, VoicebankRoot))
+                return Voicebanks.FirstOrDefault();
+            return Voicebanks.FirstOrDefault(option => SamePath(option.Path, current));
+        }
+        set
+        {
+            if (value is null || SamePath(_activeTrack.LibraryRoot, value.Path))
+                return;
+            LibraryRoot = value.Path;
+            OnPropertyChanged();
+            RefreshLibrary();
+            StatusText = $"声库：{value.Name}";
+        }
+    }
+
+    /// <summary>True when the project differs from the last loaded/saved snapshot (prompted on load and on close).</summary>
+    public bool HasUnsavedChanges =>
+        !string.Equals(_savedSnapshot, ProjectJson.Serialize(_project), StringComparison.Ordinal);
+
+    private string VoicebankRoot => Path.Combine(_services.Options.RepositoryRoot, "voicebank");
 
     public TrackRow? SelectedTrack
     {
@@ -681,30 +711,60 @@ public sealed class MainViewModel : ObservableObject
         if (dialog.ShowDialog() != true)
             return;
 
+        OpenProjectFromPath(dialog.FileName);
+    }
+
+    /// <summary>Load a project file dropped onto the window: prompt for unsaved changes, then replace the workspace.</summary>
+    public void OpenProjectFromPath(string path)
+    {
+        ProjectDocument project;
         try
         {
-            LoadProject(ProjectJson.Load(dialog.FileName), dialog.FileName);
-            AddLog("info", $"Project opened: {dialog.FileName}");
+            project = ProjectJson.Load(path);
         }
         catch (Exception ex)
         {
             AddLog("error", "Failed to open project: " + ex.Message);
             StatusText = "打开失败";
-        }
-    }
-
-    private void SaveProject()
-    {
-        if (string.IsNullOrWhiteSpace(_projectPath))
-        {
-            SaveProjectAs();
+            MessageBox.Show("无法打开工程文件：" + ex.Message, "载入工程", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        SaveTo(_projectPath);
+        if (!ConfirmDiscardChanges("载入工程"))
+            return;
+
+        LoadProject(project, path);
+        AddLog("info", $"Project opened: {path}");
+        StatusText = "已载入：" + Path.GetFileName(path);
     }
 
-    private void SaveProjectAs()
+    /// <summary>Ask whether to save unsaved changes; returns false when the user cancels the action.</summary>
+    public bool ConfirmDiscardChanges(string action)
+    {
+        if (!HasUnsavedChanges)
+            return true;
+
+        return MessageBox.Show(
+            "当前工程有未保存的更改，是否保存？",
+            action,
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question) switch
+        {
+            MessageBoxResult.Yes => SaveProject(),
+            MessageBoxResult.No => true,
+            _ => false,
+        };
+    }
+
+    private bool SaveProject()
+    {
+        if (string.IsNullOrWhiteSpace(_projectPath))
+            return SaveProjectAs();
+
+        return SaveTo(_projectPath);
+    }
+
+    private bool SaveProjectAs()
     {
         var dialog = new SaveFileDialog
         {
@@ -713,25 +773,28 @@ public sealed class MainViewModel : ObservableObject
             FileName = string.IsNullOrWhiteSpace(ProjectName) ? "untitled" + ProjectJson.FileExtension : ProjectName + ProjectJson.FileExtension,
         };
         if (dialog.ShowDialog() != true)
-            return;
+            return false;
 
-        SaveTo(dialog.FileName);
+        return SaveTo(dialog.FileName);
     }
 
-    private void SaveTo(string path)
+    private bool SaveTo(string path)
     {
         try
         {
             ProjectJson.Save(_project, path);
             _projectPath = path;
+            _savedSnapshot = ProjectJson.Serialize(_project);
             OnPropertyChanged(nameof(ProjectPathText));
             StatusText = "已保存：" + Path.GetFileName(path);
             AddLog("info", "Project saved: " + path);
+            return true;
         }
         catch (Exception ex)
         {
             AddLog("error", "Save failed: " + ex.Message);
             StatusText = "保存失败";
+            return false;
         }
     }
 
@@ -766,6 +829,7 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedTrack));
 
         ActivateTrack(_project.Tracks[0]);
+        _savedSnapshot = ProjectJson.Serialize(_project);
         (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
         StatusText = "就绪";
     }
@@ -1063,9 +1127,102 @@ public sealed class MainViewModel : ObservableObject
     // ------------------------------------------------------------------
     // Library
     // ------------------------------------------------------------------
+    /// <summary>Rebuild the voicebank choices from voicebank/, keeping an out-of-tree path visible.</summary>
+    private void RefreshVoicebanks()
+    {
+        var current = _activeTrack.LibraryRoot;
+        Voicebanks.Clear();
+
+        if (Directory.Exists(VoicebankRoot))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(VoicebankRoot)
+                         .OrderBy(directory => Path.GetFileName(directory) ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+                Voicebanks.Add(new VoicebankOption(Path.GetFileName(directory), directory));
+        }
+
+        if (!string.IsNullOrWhiteSpace(current)
+            && !SamePath(current, VoicebankRoot)
+            && !Voicebanks.Any(option => SamePath(option.Path, current)))
+        {
+            var name = Path.GetFileName(current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            Voicebanks.Add(new VoicebankOption(string.IsNullOrEmpty(name) ? current : name, current));
+        }
+
+        OnPropertyChanged(nameof(SelectedVoicebank));
+    }
+
+    /// <summary>
+    /// Install a dropped voicebank folder: validate the format, copy it under voicebank/, then use it on the active track.
+    /// Returns null on success, otherwise the reason the install was rejected.
+    /// </summary>
+    public string? InstallVoicebank(string sourceDirectory)
+    {
+        if (!Directory.Exists(sourceDirectory))
+            return "拖入的内容不是文件夹。";
+
+        var source = Path.GetFullPath(sourceDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var name = Path.GetFileName(source);
+        if (string.IsNullOrEmpty(name) || SamePath(source, VoicebankRoot))
+            return "请拖入声库文件夹本身，而不是 voicebank 目录。";
+
+        var target = Path.Combine(VoicebankRoot, name);
+        if (Directory.Exists(target))
+            return $"voicebank 中已存在同名声库：{name}";
+
+        try
+        {
+            if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                    .Any(file => string.Equals(Path.GetFileName(file), "oto.ini", StringComparison.OrdinalIgnoreCase)))
+                return "声库格式错误：缺少 oto.ini。";
+
+            if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
+                return "声库格式错误：没有 wav 音频文件。";
+
+            Directory.CreateDirectory(VoicebankRoot);
+            CopyDirectory(source, target);
+        }
+        catch (Exception ex)
+        {
+            if (Directory.Exists(target))
+            {
+                try { Directory.Delete(target, recursive: true); } catch { /* best effort rollback */ }
+            }
+            AddLog("error", "Voicebank install failed: " + ex.Message);
+            return "安装失败：" + ex.Message;
+        }
+
+        LibraryRoot = target;
+        RefreshLibrary();
+        AddLog("info", $"Voicebank installed: {target}");
+        StatusText = $"已安装声库：{name}";
+        return null;
+    }
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+        foreach (var directory in Directory.EnumerateDirectories(source))
+            CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory)));
+    }
+
+    /// <summary>Compares two paths loosely: ignores a trailing separator and letter case.</summary>
+    private static bool SamePath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+        return string.Equals(
+            left.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            right.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private void RefreshLibrary()
     {
         Library.Clear();
+        RefreshVoicebanks();
         foreach (var entry in LibraryScanner.Scan(EffectiveLibraryRoot))
             Library.Add(entry);
         RefreshLibraryIcon();
