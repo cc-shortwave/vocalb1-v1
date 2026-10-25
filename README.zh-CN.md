@@ -39,7 +39,8 @@ VocalB1 把一段人声录音拆成「基频 + 频谱包络 + 气声 + 激励」
     ├── spectrogram.py        # 语谱图
     ├── oscilloscope.py       # 波形视图
     ├── pit_editor.py         # 音高曲线编辑器
-    └── _plosive_diag.py      # 爆破音诊断
+    ├── _plosive_diag.py      # 爆破音诊断
+    └── test_vocal_lib.py     # 库回归测试
 ```
 
 ---

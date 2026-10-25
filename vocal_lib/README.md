@@ -606,12 +606,12 @@ VocalB1一代/
 ├── VocalDecomposer.py         # 分解封装（WAV -> 逐帧参数）
 ├── VocalSynthesizer.py        # 合成封装（逐帧参数 -> WAV）
 ├── prosses_breath.py          # 气声拼接（由 VocalB1Synthesizer 内部调用）
-├── test_vocal_lib.py          # 回归测试（库功能自检，直接运行）
 ├── tools/                     # 辅助工具（引擎运行不依赖）
 │   ├── spectrogram.py         # STFT 语谱图查看（支持框选放大）
 │   ├── oscilloscope.py        # 波形查看
 │   ├── pit_editor.py          # 音高曲线编辑器（pygame）
-│   └── _plosive_diag.py       # 爆破音诊断
+│   ├── _plosive_diag.py       # 爆破音诊断
+│   └── test_vocal_lib.py      # 回归测试（库功能自检，直接运行）
 ├── _output/                   # 合成产物输出目录
 └── vocal_lib/                 # 核心库（详见 5.2）
 ```
@@ -685,7 +685,7 @@ glot_loaded = GlottalExcitation.load("_output/glot.npy")
 
 ## 七、回归测试
 
-`test_vocal_lib.py`（位于项目根目录）对库做端到端自检，共 7 项：
+`tools/test_vocal_lib.py` 对库做端到端自检，共 7 项：
 
 | 用例 | 校验内容 |
 |---|---|
@@ -698,8 +698,8 @@ glot_loaded = GlottalExcitation.load("_output/glot.npy")
 | 端到端 | `VocalB1Synthesizer.synthesize` 落盘成功且中间产物已清理 |
 
 ```bash
-C:\Python312\python.exe test_vocal_lib.py            # 全部用例
-C:\Python312\python.exe test_vocal_lib.py --no-e2e   # 跳过端到端（省时）
+C:\Python312\python.exe tools\test_vocal_lib.py            # 全部用例
+C:\Python312\python.exe tools\test_vocal_lib.py --no-e2e   # 跳过端到端（省时）
 ```
 
 测试产物写入 `_test_output/` 便于试听排查；任一用例失败时退出码非 0。
