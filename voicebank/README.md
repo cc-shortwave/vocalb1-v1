@@ -7,7 +7,17 @@ distributed with this repository.
 
 ## How to use
 
-Drop a **single-note voicebank** folder in here:
+**Method 1 — drag and drop.** With VocalB1 running, drag the voicebank folder onto the
+window. It is copied into `voicebank/<name>/` and loaded right away. The folder is checked
+before anything is copied:
+
+- it contains at least one `.wav`
+- it contains an `icon.jpg` (shown next to the New button in the top bar)
+- no folder of the same name already exists in `voicebank/`
+
+If a check fails, nothing is copied and a dialog says why.
+
+**Method 2 — place it yourself.** Put a **single-note voicebank** folder in here:
 
 ```
 voicebank/
@@ -61,7 +71,16 @@ exists in the repository while the voicebank itself can never be committed by ac
 
 ### 怎么用
 
-把**单独音声库**文件夹整个放进本目录：
+**办法一：拖进来。** 启动 VocalB1 后，把声库文件夹拖到窗口上。程序会先检查，再复制到
+`voicebank/<名字>/` 并立即载入：
+
+- 里面有至少一个 `.wav`
+- 里面有一个 `icon.jpg`（显示在顶栏「新建」按钮旁）
+- `voicebank/` 下没有同名文件夹
+
+任何一条不过就整个不复制，并弹窗说明原因。
+
+**办法二：自己放。** 把**单独音声库**文件夹整个放进本目录：
 
 ```
 voicebank/
@@ -115,7 +134,17 @@ voicebank/
 
 ### 使い方
 
-**単独音音源**フォルダをここに置きます：
+**方法 1：ドラッグ＆ドロップ。** VocalB1 を起動した状態で、音源フォルダをウィンドウに
+ドロップします。コピー前に次の点が検査され、問題なければ
+`voicebank/<名前>/` にコピーされてすぐ読み込まれます：
+
+- `.wav` が 1 つ以上ある
+- `icon.jpg` がある（上部バーの「新規」ボタンの横に表示されます）
+- `voicebank/` に同名フォルダがない
+
+検査に通らない場合はコピーされず、理由がダイアログで表示されます。
+
+**方法 2：手動で置く。** **単独音音源**フォルダをここに置きます：
 
 ```
 voicebank/

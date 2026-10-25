@@ -68,7 +68,11 @@ On Windows the requirements pull `pyworld-prebuilt` instead of `pyworld`, becaus
 
 ### 1. Add a voicebank
 
-Put a UTAU **単独音 (single-note)** voicebank folder inside `voicebank/`:
+**Drag and drop** — start VocalB1, then drag the voicebank folder onto the window. It is
+copied into `voicebank/<name>/` and loaded immediately. The folder must contain at least
+one `.wav` and an `icon.jpg`.
+
+**Or place it yourself** — put a UTAU **単独音 (single-note)** voicebank folder inside `voicebank/`:
 
 ```
 voicebank/

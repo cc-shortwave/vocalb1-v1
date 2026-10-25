@@ -64,7 +64,10 @@ pip install -r requirements.txt
 
 ### 1. 放一个声库
 
-把 UTAU **単独音** 声库文件夹放进 `voicebank/`：
+**拖进来**：启动 VocalB1 后，把声库文件夹直接拖到窗口上。程序会把它复制到
+`voicebank/<名字>/` 并立即载入。被拖入的文件夹里必须有 `.wav` 音频和 `icon.jpg`。
+
+**或者自己放**：把 UTAU **単独音** 声库文件夹放进 `voicebank/`：
 
 ```
 voicebank/
