@@ -12,6 +12,14 @@ If you use a voicebank with this project, follow the terms of that voicebank. Mo
 them allow personal, non-commercial use and prohibit redistribution — including
 redistribution of modified copies and of models trained on them.
 
+## Logo and icon
+
+`VocalB1_Version_1.0.ico` — the application icon, also used as the favicon of
+vocalb1.com — was designed by **Mingxuan** and is included here with his permission.
+
+It is **not** covered by the MIT license above. That license applies to the source
+code; reusing the icon elsewhere needs his permission.
+
 ## Third-party dependencies
 
 These keep their own licenses; the MIT license above does not override them.
