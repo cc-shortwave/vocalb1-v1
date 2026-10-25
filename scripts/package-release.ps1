@@ -382,7 +382,7 @@ if ($buildInstaller) {
     & $iscc "/DMyAppVersion=$Version" "/DStageDir=$instSource" "/DOutDir=$DistPath" $issPath
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 
-    $installerName = "vocalb1-$Version-win-x64-setup.exe"
+    $installerName = "vocalb1-v$Version-win-x64-setup.exe"
     $installerPath = Join-Path $DistPath $installerName
     if (-not (Test-Path -LiteralPath $installerPath)) { throw "ISCC reported success but $installerName is missing" }
     $installerMB = [math]::Round((Get-Item -LiteralPath $installerPath).Length / 1MB, 1)
