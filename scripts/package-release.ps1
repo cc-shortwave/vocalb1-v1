@@ -148,9 +148,23 @@ Write-Host "  runtime : $Runtime"
 
 # ------------------------------------------------------------------ variants
 $variants = @()
-if ($Mode -eq 'both') { $variants = @('full', 'lite') } else { $variants = @($Mode) }
-if ($SkipPython) { $variants = @($variants | Where-Object { $_ -ne 'full' }) }
+if ($Installer) {
+    # The installer is built from the full payload, and the release always ships
+    # both archives, so -Installer implies -Mode both.
+    $variants = @('full', 'lite')
+} elseif ($Mode -eq 'both') {
+    $variants = @('full', 'lite')
+} else {
+    $variants = @($Mode)
+}
+if ($SkipPython) {
+    if ($Installer) {
+        throw '-Installer needs the full payload, so it cannot be combined with -SkipPython'
+    }
+    $variants = @($variants | Where-Object { $_ -ne 'full' })
+}
 if (-not $variants) { throw "Nothing to build (mode=$Mode, SkipPython=$SkipPython)" }
+Write-Host ("  builds  : " + ($variants -join ', ') + $(if ($Installer) { '  + installer' } else { '' }))
 
 # ------------------------------------------------------------------ prerequisites
 if (-not $SkipDotnet) {
