@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 using VocalB1.App.Controls;
 using VocalB1.App.Services;
 using VocalB1.App.ViewModels;
@@ -74,23 +75,31 @@ public partial class MainWindow : Window
 
     private void OnWindowDrop(object sender, DragEventArgs e)
     {
-        if (_viewModel is null || !e.Data.GetDataPresent(DataFormats.FileDrop))
+        // Release the drag source (Explorer waits for this handler) before any blocking work or dialog.
+        e.Handled = true;
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop))
             return;
         if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths)
             return;
 
         var path = paths[0];
+        Dispatcher.BeginInvoke(new Action(() => _ = HandleDroppedPathAsync(path)), DispatcherPriority.Background);
+    }
+
+    private async Task HandleDroppedPathAsync(string path)
+    {
+        if (_viewModel is not { } viewModel)
+            return;
+
         if (Directory.Exists(path))
         {
-            if (_viewModel.InstallVoicebank(path) is { } error)
+            if (await viewModel.InstallVoicebankAsync(path) is { } error)
                 MessageBox.Show(error, "安装声库", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         else if (File.Exists(path) && path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
         {
-            _viewModel.OpenProjectFromPath(path);
+            viewModel.OpenProjectFromPath(path);
         }
-
-        e.Handled = true;
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)
