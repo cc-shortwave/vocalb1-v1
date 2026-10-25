@@ -32,6 +32,9 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Synthesis frame constant: 12000 / BPM gives the frames per beat (frame period 5 ms).</summary>
     private const double FramesPerBeatConstant = 12000.0;
 
+    /// <summary>Default crossfade between adjacent notes: 0.25 beat at the current tempo, stored as 5 ms frames.</summary>
+    private double DefaultTransitionFrames => Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _bpm));
+
     private readonly AppServices _services;
     private readonly List<ProjectDocument> _undoStack = [];
     private readonly List<ProjectDocument> _redoStack = [];
@@ -1019,6 +1022,7 @@ public sealed class MainViewModel : ObservableObject
             DstPitch = PitchMath.ToPitchName(semitone),
             BeatStart = start,
             BeatEnd = start + 1.0,
+            Transition = DefaultTransitionFrames,
         };
         _activeTrack.Segments.Add(segment);
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
@@ -1293,6 +1297,7 @@ public sealed class MainViewModel : ObservableObject
             DstPitch = "D4",
             BeatStart = start,
             BeatEnd = start + 1.0,
+            Transition = DefaultTransitionFrames,
         };
         _activeTrack.Segments.Add(segment);
         _activeTrack.AddPitchNodes(segment, 5);
