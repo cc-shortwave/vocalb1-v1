@@ -166,6 +166,6 @@ verification, debugging and final decisions. The project uses open-source librar
 
 ## Author
 
-郭希淳 (Xichun Guo) · 2026
+Xichun Guo · 2026
 
 Homepage: <https://vocalb1.com>
