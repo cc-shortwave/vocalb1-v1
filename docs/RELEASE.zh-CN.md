@@ -252,6 +252,7 @@ git push origin v1.0.0
 | `dotnet publish failed` 报 NETSDK1045 | SDK 太旧 | 装 .NET 9 SDK |
 | `pip install failed` / 超时 | 镜像连不上 | 加 `-PipIndex https://pypi.org/simple` 重跑 |
 | full 版报 `ModuleNotFoundError: pyworld` | 官方 pyworld 没有 Python 3.9+ 的 Windows 轮子 | 确认 `requirements.txt` 在 Windows 下选的是 `pyworld-prebuilt` |
+| 弹窗报 `Python 引擎导入失败: ModuleNotFoundError: No module named 'soundfile'` | 用的是 lite 包，它找到的那个 Python 没装依赖 | 在解压目录里执行 `"<那个解释器>" -m pip install -r requirements.txt`，或直接用 full 包 |
 | 界面能开但提示*引擎尚未初始化* | 没找到内嵌 Python | 确认 `python\python.exe` 和 `VocalB1.exe` 在同一层；程序会先找这个位置，再找 `C:\Python312` |
 | 提示*找不到声库* | 全新解压的 `voicebank\` 是空的 | 放一个声库进去（这是预期行为，不是 bug） |
 | zip 有 300+ MB | .NET 自包含 + Python | 用 `-FrameworkDependent`，或只发 lite |

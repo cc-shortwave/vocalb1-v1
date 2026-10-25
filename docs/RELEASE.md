@@ -256,6 +256,7 @@ If a secret was ever in the history, rotate the secret — do not rely on rewrit
 | `dotnet publish failed` with NETSDK1045 | SDK too old | install the .NET 9 SDK |
 | `pip install failed` / timeouts | mirror unreachable | rerun with `-PipIndex https://pypi.org/simple` |
 | `ModuleNotFoundError: pyworld` in the full build | upstream `pyworld` has no wheels for Python 3.9+ | `requirements.txt` must select `pyworld-prebuilt` on Windows |
+| dialog: `Failed to import the Python engine: ModuleNotFoundError: No module named 'soundfile'` | lite build — the interpreter it picked has no dependencies installed | run `"<interpreter>" -m pip install -r requirements.txt` from the unzipped folder, or use the full build |
 | app starts but says *engine not initialized* | bundled Python not found | check that `python\python.exe` sits next to `VocalB1.exe`; the app looks there before `C:\Python312` |
 | app says *voicebank not found* | empty `voicebank\` in the fresh unzip | add a voicebank (this is expected on a clean download) |
 | zip is 300+ MB | self-contained .NET + Python | use `-FrameworkDependent`, or ship lite only |
