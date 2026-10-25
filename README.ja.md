@@ -36,9 +36,11 @@ VocalB1 は歌声の録音を「F0（基本周波数）／スペクトル包絡�
 │   └── engine.settings.example.json
 ├── languages/                # UI 言語パック（en / ja / zh）
 ├── voicebank/                # 音源はここに置く（同梱なし）
-├── spectrogram.py            # スペクトログラム表示
-├── oscilloscope.py           # 波形表示
-└── pit_editor.py             # ピッチカーブエディタ
+└── tools/                    # 補助ツール（エンジンの実行には不要）
+    ├── spectrogram.py        # スペクトログラム表示
+    ├── oscilloscope.py       # 波形表示
+    ├── pit_editor.py         # ピッチカーブエディタ
+    └── _plosive_diag.py      # 破裂音の過渡診断
 ```
 
 ---

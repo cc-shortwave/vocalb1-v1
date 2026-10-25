@@ -607,9 +607,11 @@ VocalB1一代/
 ├── VocalSynthesizer.py        # 合成封装（逐帧参数 -> WAV）
 ├── prosses_breath.py          # 气声拼接（由 VocalB1Synthesizer 内部调用）
 ├── test_vocal_lib.py          # 回归测试（库功能自检，直接运行）
-├── spectrogram.py             # STFT 语谱图查看（支持框选放大）
-├── oscilloscope.py            # 波形查看
-├── _plosive_diag.py           # 爆破音诊断
+├── tools/                     # 辅助工具（引擎运行不依赖）
+│   ├── spectrogram.py         # STFT 语谱图查看（支持框选放大）
+│   ├── oscilloscope.py        # 波形查看
+│   ├── pit_editor.py          # 音高曲线编辑器（pygame）
+│   └── _plosive_diag.py       # 爆破音诊断
 ├── _output/                   # 合成产物输出目录
 └── vocal_lib/                 # 核心库（详见 5.2）
 ```

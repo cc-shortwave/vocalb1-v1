@@ -36,10 +36,13 @@ import os
 import sys
 import time
 
-# Ensure the working path used to import VocalB1 matches this file
+# 开发仓库中本文件位于 tools/，引擎脚本在上一级；发布包中所有脚本平铺在同一目录。
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if _BASE_DIR not in sys.path:
-    sys.path.insert(0, _BASE_DIR)
+_ROOT_DIR = _BASE_DIR if os.path.exists(
+    os.path.join(_BASE_DIR, 'VocalB1Synthesizer.py')) else os.path.dirname(_BASE_DIR)
+for _path in (_ROOT_DIR, _BASE_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 import pygame
 
@@ -90,7 +93,7 @@ C_LIB_SEL = (62, 110, 170)
 C_PREVIEW = (130, 220, 140)
 C_GAP = (150, 110, 90)         # cut gap dashed line
 KEEP = "KEEP"                  # matches the VocalB1Synthesizer._apply_pitch_line sentinel
-PREVIEW_WAV = os.path.join(_BASE_DIR, '_output', 'editor_preview.wav')
+PREVIEW_WAV = os.path.join(_ROOT_DIR, '_output', 'editor_preview.wav')
 
 
 def st_to_name(st):
@@ -544,7 +547,7 @@ class Editor:
             'pitch_line': [[round(p, 3), v] for p, v in
                            self.build_pitch_line()],
         }
-        out = os.path.join(_BASE_DIR, 'edit_pitch.json')
+        out = os.path.join(_ROOT_DIR, 'edit_pitch.json')
         with open(out, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         self.set_status(f"Saved {os.path.basename(out)} (VocalB1.py untouched)", 4000)
@@ -1076,7 +1079,9 @@ def _shot():
                     LYRIC_TOP + LYRIC_H // 2)
     ed.mouse_beat = ed.b1 - 0.5
     app.draw()
-    out = os.path.join(_BASE_DIR, 'pit_editor_preview.png')
+    shot_dir = os.path.join(_ROOT_DIR, '_output')
+    os.makedirs(shot_dir, exist_ok=True)
+    out = os.path.join(shot_dir, 'pit_editor_preview.png')
     pygame.image.save(app.screen, out)
     print(f"[shot] {out}")
 

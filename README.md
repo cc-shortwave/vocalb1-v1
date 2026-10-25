@@ -35,9 +35,11 @@ pure signal processing that runs on a 2-core / 2 GB machine.
 │   └── engine.settings.example.json
 ├── languages/                # UI language packs (en / ja / zh)
 ├── voicebank/                # put your voicebank here (none is bundled)
-├── spectrogram.py            # spectrogram view
-├── oscilloscope.py           # waveform view
-└── pit_editor.py             # pitch-curve editor
+└── tools/                    # helper scripts (the engine does not need them)
+    ├── spectrogram.py        # spectrogram view
+    ├── oscilloscope.py       # waveform view
+    ├── pit_editor.py         # pitch-curve editor
+    └── _plosive_diag.py      # plosive transient diagnostics
 ```
 
 ---

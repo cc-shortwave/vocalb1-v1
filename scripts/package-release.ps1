@@ -270,7 +270,7 @@ if ($variants -contains 'full') {
 # ------------------------------------------------------------------ assemble
 $engineFiles = @(
     'VocalB1Synthesizer.py', 'VocalDecomposer.py', 'VocalSynthesizer.py', 'VocalB1.py',
-    'spectrogram.py', 'oscilloscope.py', 'pit_editor.py', 'prosses_breath.py'
+    'tools/spectrogram.py', 'tools/oscilloscope.py', 'tools/pit_editor.py', 'prosses_breath.py'
 )
 
 $built = @()

@@ -4,8 +4,10 @@ import numpy as np
 from scipy.io import wavfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_OUT = os.path.join(_HERE, "_output")
-D = os.environ.get("VOCALB1_LIB") or os.path.join(_HERE, "voicebank")
+# 开发时本文件位于 tools/，产物与声库在上一级；发布包中则与引擎平铺。
+_ROOT = _HERE if os.path.exists(os.path.join(_HERE, "VocalB1Synthesizer.py")) else os.path.dirname(_HERE)
+_OUT = os.path.join(_ROOT, "_output")
+D = os.environ.get("VOCALB1_LIB") or os.path.join(_ROOT, "voicebank")
 BA = os.path.join(_OUT, "breath_seg0.wav")
 BB = os.path.join(_OUT, "breath_seg1.wav")
 OUT = os.path.join(_OUT, "multi_voiced_bezier.wav")
