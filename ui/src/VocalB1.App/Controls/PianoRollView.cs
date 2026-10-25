@@ -307,6 +307,9 @@ public sealed class PianoRollView : FrameworkElement
         var track = Track;
         var segments = track?.Segments ?? [];
         var points = track?.PitchLine ?? [];
+        // Curve drawing uses the same compiled sequence that is sent to the engine,
+        // so what is on screen is what is rendered (hidden anchors no longer join the curve).
+        var curve = track?.BuildRenderPitchLine() ?? [];
         var layout = BuildLayout(size, segments, points);
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
@@ -314,7 +317,7 @@ public sealed class PianoRollView : FrameworkElement
         DrawBeats(dc, layout, dpi);
         DrawNotes(dc, layout, segments, dpi);
         DrawNoteTransitions(dc, layout);
-        DrawPitchLine(dc, layout, points);
+        DrawPitchLine(dc, layout, curve);
         DrawNoteLyrics(dc, layout, segments, dpi);
         DrawSelectionBox(dc);
         DrawPlayhead(dc, layout);
@@ -700,51 +703,72 @@ public sealed class PianoRollView : FrameworkElement
         };
         pen.Freeze();
 
-        var nodes = new Point?[points.Count];
-        for (var i = 0; i < points.Count; i++)
+        // Control-point handles still come from the stored line (their indices are what editing uses);
+        // the curve itself is drawn from the compiled sequence passed in, which is the same list
+        // the engine receives.  They only differ by the hidden edge anchors.
+        var source = Track?.PitchLine ?? [];
+        var indexOf = new Dictionary<PitchPoint, int>(ReferenceEqualityComparer.Instance);
+        for (var i = 0; i < source.Count; i++)
+            indexOf[source[i]] = i;
+
+        var nodes = new Point?[source.Count];
+        for (var i = 0; i < source.Count; i++)
         {
-            var (beat, maybeSemitone) = PointState(i, points[i]);
+            var (beat, maybeSemitone) = PointState(i, source[i]);
             nodes[i] = maybeSemitone is int semitone
                 ? new Point(layout.X(beat), layout.RowCenter(semitone))
                 : null;
         }
 
-        // All nodes are chained into one line in ascending beat order: nodes of different notes (notes with different pitches) also join smoothly.
-        // Multiple nodes on the same beat keep their original order; the B-spline yields a smooth transition rather than a hard vertical cut.
-        var order = new int[points.Count];
-        for (var i = 0; i < order.Length; i++)
-            order[i] = i;
-
-        Array.Sort(order, (a, b) =>
-        {
-            var byBeat = points[a].Beat.CompareTo(points[b].Beat);
-            return byBeat != 0 ? byBeat : a.CompareTo(b);
-        });
-
-        // Break the seam only when adjacent nodes belong to different notes and the two notes have a time gap (their ends do not meet).
         var segmentById = new Dictionary<string, VoiceSegment>();
         foreach (var segment in layout.Segments)
             segmentById[segment.Id] = segment;
 
-        var sequence = new List<Point?>(order.Length + 8);
-        var previous = -1;
-        foreach (var i in order)
+        // Same interpolation as the engine (_apply_pitch_line): in [p_i, p_i+1) the pitch follows a
+        // smoothstep from v_i to v_i+1.  Silent / KEEP nodes break the line, and so does a real rest
+        // between two notes.  Nodes that share one beat get a 20 ms visual ramp, matching the short
+        // jump ramp the engine inserts at such zero-length intervals.
+        var rampBeats = Math.Max(0.0, 20.0 * Bpm / 60000.0);
+        var runs = new List<List<Point>>();
+        List<Point>? run = null;
+        PitchPoint? previousPoint = null;
+        var lastBeat = double.NegativeInfinity;
+
+        foreach (var point in points)
         {
-            if (nodes[i] is not Point)
+            var (beat, maybeSemitone) = indexOf.TryGetValue(point, out var index)
+                ? PointState(index, point)
+                : (point.Beat, PitchSemitone(point));
+
+            if (maybeSemitone is not int semitone)
             {
-                sequence.Add(null);
-                previous = -1;
+                run = null;
+                previousPoint = null;
+                lastBeat = double.NegativeInfinity;
                 continue;
             }
 
-            if (previous >= 0 && HasTimeGap(points[previous], points[i], segmentById))
-                sequence.Add(null);
+            if (previousPoint is not null && HasTimeGap(previousPoint, point, segmentById))
+            {
+                run = null;
+                lastBeat = double.NegativeInfinity;
+            }
 
-            sequence.Add(nodes[i]);
-            previous = i;
+            var drawBeat = beat > lastBeat + 1e-4 ? beat : lastBeat + Math.Max(1e-4, rampBeats);
+            lastBeat = drawBeat;
+
+            if (run is null)
+            {
+                run = [];
+                runs.Add(run);
+            }
+
+            run.Add(new Point(layout.X(drawBeat), layout.RowCenter(semitone)));
+            previousPoint = point;
         }
 
-        DrawRuns(dc, pen, sequence);
+        foreach (var runPoints in runs)
+            DrawSmoothRun(dc, pen, runPoints);
 
         // Regular control points inside overlap regions are not drawn (those regions are controlled only by transition nodes).
         var overlaps = SegmentLayout.Overlaps(layout.Segments);
@@ -752,20 +776,20 @@ public sealed class PianoRollView : FrameworkElement
         for (var i = 0; i < nodes.Length; i++)
         {
             // Anchors at note edges only pin the curve and do not show a control point.
-            if (nodes[i] is not Point node || points[i].IsEdgeAnchor)
+            if (nodes[i] is not Point node || source[i].IsEdgeAnchor)
                 continue;
 
             var selected = (Mode == PianoRollMode.PitchLine && SelectedPitchIndex == i)
-                || _selectedPoints.Contains(points[i]);
+                || _selectedPoints.Contains(source[i]);
 
-            if (points[i].IsTransition)
+            if (source[i].IsTransition)
             {
                 // Transition nodes: exclusive to overlapping sections, drawn with a heavier outline than regular nodes to distinguish them.
                 DrawDiamond(dc, _pitchFill, _accentPen, node, selected ? NodeRadius + 1 : NodeRadius);
                 continue;
             }
 
-            if (IsInsideOverlap(overlaps, points[i].Beat))
+            if (IsInsideOverlap(overlaps, source[i].Beat))
                 continue;
 
             DrawDiamond(dc,
@@ -808,82 +832,44 @@ public sealed class PianoRollView : FrameworkElement
     }
 
     /// <summary>
-    /// Connect a sequence of nodes (null = break) into a B-spline.
-    /// Nodes on the same beat stay in the same run for a smooth transition; only pitch-less breaks or backward beats split the run.
+    /// Draws one continuous run of nodes with the same interpolation the engine uses:
+    /// x advances linearly while y follows a smoothstep, which is exactly one cubic Bezier
+    /// whose two inner control points stay on the endpoint heights.
     /// </summary>
-    private static void DrawRuns(DrawingContext dc, Pen pen, IEnumerable<Point?> maybeNodes)
-    {
-        var runs = new List<List<Point>>();
-        List<Point>? current = null;
-        foreach (var maybeNode in maybeNodes)
-        {
-            if (maybeNode is not Point node)
-            {
-                current = null;
-                continue;
-            }
-
-            if (current is not null && node.X >= current[^1].X - 0.001)
-            {
-                current.Add(node);
-                continue;
-            }
-
-            current = [node];
-            runs.Add(current);
-        }
-
-        foreach (var runPoints in runs)
-            DrawBspline(dc, pen, runPoints);
-    }
-
-    private static void DrawBspline(DrawingContext dc, Pen pen, List<Point> runPoints)
+    private static void DrawSmoothRun(DrawingContext dc, Pen pen, List<Point> runPoints)
     {
         if (runPoints.Count < 2)
             return;
 
-        // Uniform cubic B-spline: every 4 control points become one cubic Bezier segment.
-        // Two duplicated control points are prepended/appended (clamped) so the curve passes through the first and last nodes;
-        // interior nodes act as handles pulling the curve and do not necessarily lie on it.
-        var controls = new List<Point>(runPoints.Count + 4)
-        {
-            runPoints[0], runPoints[0],
-        };
-        controls.AddRange(runPoints);
-        controls.Add(runPoints[^1]);
-        controls.Add(runPoints[^1]);
-
         var geometry = new StreamGeometry();
         using (var ctx = geometry.Open())
         {
-            BsplineSegment(controls[0], controls[1], controls[2], controls[3],
-                out var start, out _, out _, out _);
-            ctx.BeginFigure(start, isFilled: false, isClosed: false);
-
-            for (var i = 0; i + 3 < controls.Count; i++)
+            ctx.BeginFigure(runPoints[0], isFilled: false, isClosed: false);
+            for (var i = 0; i + 1 < runPoints.Count; i++)
             {
-                BsplineSegment(controls[i], controls[i + 1], controls[i + 2], controls[i + 3],
-                    out _, out var c1, out var c2, out var end);
-                ctx.BezierTo(c1, c2, end, isStroked: true, isSmoothJoin: true);
+                var a = runPoints[i];
+                var b = runPoints[i + 1];
+                var dx = b.X - a.X;
+                if (dx <= 0)
+                    continue;
+
+                ctx.BezierTo(
+                    new Point(a.X + dx / 3, a.Y),
+                    new Point(b.X - dx / 3, b.Y),
+                    b,
+                    isStroked: true,
+                    isSmoothJoin: true);
             }
         }
         geometry.Freeze();
         dc.DrawGeometry(null, pen, geometry);
     }
 
-    /// <summary>
-    /// One segment of a uniform cubic B-spline: compute its four cubic Bezier control points from four control points.
-    /// The segment starts at (P0+4P1+P2)/6 and ends at (P1+4P2+P3)/6; tangents come from the differences at both ends.
-    /// </summary>
-    private static void BsplineSegment(
-        Point p0, Point p1, Point p2, Point p3,
-        out Point start, out Point c1, out Point c2, out Point end)
-    {
-        start = new Point((p0.X + 4 * p1.X + p2.X) / 6, (p0.Y + 4 * p1.Y + p2.Y) / 6);
-        end = new Point((p1.X + 4 * p2.X + p3.X) / 6, (p1.Y + 4 * p2.Y + p3.Y) / 6);
-        c1 = new Point(start.X + (p2.X - p0.X) / 6, start.Y + (p2.Y - p0.Y) / 6);
-        c2 = new Point(end.X - (p3.X - p1.X) / 6, end.Y - (p3.Y - p1.Y) / 6);
-    }
+    /// <summary>Pitch of a node in semitones; null = silent, KEEP = no defined pitch (the line breaks).</summary>
+    private static int? PitchSemitone(PitchPoint point) =>
+        point.Pitch is null || string.Equals(point.Pitch.Trim(), "KEEP", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : SemitoneOf(point.Pitch, 0);
 
     /// <summary>Diamond drag handle: apex up, all four sides equal.</summary>
     private static void DrawDiamond(DrawingContext dc, Brush fill, Pen? pen, Point center, double half)
@@ -1785,7 +1771,7 @@ public sealed class PianoRollView : FrameworkElement
             return (drag.OriginalBeat, drag.OriginalSemitone + drag.SemitoneDelta);
 
         var beat = point.Beat;
-        var maybeSemitone = point.Pitch is null ? (int?)null : SemitoneOf(point.Pitch, 0);
+        var maybeSemitone = PitchSemitone(point);
 
         // Multi-move: points moving with selected notes, plus independently box-selected points.
         if (_drag is { Kind: DragKind.Note } multi)

@@ -171,6 +171,15 @@ SAMPLE_RATE      = 44100      # sample rate
 FRAME_PERIOD     = 5.0        # frame period (ms)
 JOIN_NORMALIZE_SP = False     # before splicing, align each segment's overall SP energy to the FIRST segment
 
+# Click/pop suppression (seam continuity)
+MIN_SEAM_OVER_FRAMES = 3      # 相邻音符首尾相接（无重叠、无休止）时强制的最小交叉淡化帧数。
+                              # 完全不重叠时 sp/ap/gi 与气声会硬拼，接缝处产生咔哒/爆音。
+                              # 交叉淡化只加宽融合区、不改变拍位与总时长。
+PITCH_JUMP_RAMP_MS = 20.0     # pitch line 同拍端点（零长度区间）的过渡窗（ms）：
+                              # 前一个音在段尾、后一个音在段首时会落在同一帧，f0 必须在该窗口内平滑过去，
+                              # 否则 1 帧内跳变会让声码器相位重排，听起来是咔哒。
+SILENCE_FADE_MS = 15.0        # pitch line 静音端点的样本域淡入/淡出窗（ms），消除静音区的硬切
+
 # Beat layout (each segment gives its start/end beat on the beat grid via
 # beat_start/beat_end)
 #   The onset lands exactly on beat_start and the tail stops on beat_end:
@@ -339,7 +348,11 @@ def _smooth_random_walk(n: int, win: int, seed: int = 20260927) -> np.ndarray:
     rng = np.random.default_rng(seed)
     r = rng.normal(0.0, 1.0, n)
     win = min(max(1, int(win)), n)
-    if win > 1:
+    # win must stay >= 3: np.hanning(2) is exactly [0, 0], so kernel/kernel.sum() is 0/0 -> the
+    # whole noise (and every parameter derived from it) becomes NaN. A 2-frame duration
+    # extension used to hit this, poisoning sp/ap/gi and producing a 5~80ms burst at the
+    # note tail. Two frames need no smoothing anyway.
+    if win > 2:
         kernel = np.hanning(win)
         kernel = kernel / kernel.sum()
         r = np.convolve(np.pad(r, win // 2, mode="edge"), kernel, mode="valid")[:n]
@@ -573,6 +586,11 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
     for i in range(n_seg - 1):
         tr = int(seg_cfgs[i + 1].get('transition', 0) or 0)
         ov = max(max(0, L[i] - D[i]), tr)
+        # 音符首尾相接（D<=L，没有真实休止）时给一个最小交叉淡化宽度：
+        # 完全没有重叠会让 sp/ap/gi 与气声在接缝处硬拼，产生咔哒/爆音。
+        # 有真实休止（D>L）时不补，否则会把静音尾巴与下一段混在一起。
+        if D[i] <= L[i]:
+            ov = max(ov, MIN_SEAM_OVER_FRAMES)
         ov = min(ov, L[i], L[i + 1])                           # not longer than either side's note
         overs[i + 1] = ov
         M[i] = D[i] + ov
@@ -1102,6 +1120,45 @@ def _blend_overlap(a: np.ndarray, b: np.ndarray, over: int) -> np.ndarray:
     return out
 
 
+def _blend_overlap_f0(a: np.ndarray, b: np.ndarray, over: int) -> np.ndarray:
+    """Frame-axis f0 splice for two segments.
+
+    f0 must NOT be blended linearly: mixing an unvoiced frame (f0=0) with a voiced one
+    (e.g. 392 Hz) linearly creates a false fundamental (0.7*392 ≈ 274 Hz, 0.3*392 ≈ 118 Hz)
+    inside the overlap, and the vocoder renders it as a loud periodic burst.
+    Rules used here:
+      - both sides voiced  -> interpolate in the semitone domain (perceptually linear)
+      - one side unvoiced -> keep the voiced side (the overlap stays voiced; the real
+                             unvoiced part appears after the overlap, as in speech)
+      - both unvoiced     -> 0
+    """
+    ma, mb = a.shape[0], b.shape[0]
+    over = max(0, min(int(over), ma, mb))
+    out_len = ma + mb - over
+    if over == 0:
+        return np.concatenate([a, b], axis=0)
+
+    out = np.zeros(out_len, dtype=np.float64)
+    start_b = ma - over
+    out[:start_b] = a[:start_b]
+    out[start_b + over:] = b[over:]
+
+    a_ov = np.asarray(a[start_b:], dtype=np.float64)
+    b_ov = np.asarray(b[:over], dtype=np.float64)
+    a_ok = np.isfinite(a_ov) & (a_ov > 0.0)
+    b_ok = np.isfinite(b_ov) & (b_ov > 0.0)
+    both = a_ok & b_ok
+    ov = np.where(a_ok, a_ov, np.where(b_ok, b_ov, 0.0))   # unvoiced/invalid side yields to the voiced side
+    if both.any():
+        c4_hz = 440.0 * 2.0 ** ((60 - 69) / 12.0)
+        w = _bezier_weights(over)
+        sa = 12.0 * np.log2(a_ov[both] / c4_hz)
+        sb = 12.0 * np.log2(b_ov[both] / c4_hz)
+        ov[both] = c4_hz * 2.0 ** ((sa + (sb - sa) * w[both]) / 12.0)
+    out[start_b:start_b + over] = ov
+    return out
+
+
 def _apply_pitch_line(f0: np.ndarray, n_out: int, sr: int, fp: float,
                       pitch_line: list):
     """Override f0 frame by frame according to the waypoint pitch line (splicing is unchanged; only pitch is modified).
@@ -1148,10 +1205,16 @@ def _apply_pitch_line(f0: np.ndarray, n_out: int, sr: int, fp: float,
     f0_new = np.array(f0, dtype=np.float64, copy=True)
     covered = np.zeros(n_out, dtype=bool)
     c4_hz = 440.0 * 2.0 ** ((60 - 69) / 12.0)                  # C4 frequency
+    # 同拍端点 = 零长度区间（前一个音的段尾锚点与后一个音的段首锚点落在同一帧）。
+    # 这种区间原本会被跳过，f0 于是直接在 1 帧内跳到后一个音的音高，
+    # 声码器在下一帧重排相位 -> 咔哒/爆音。这里先记录，循环结束后在边界前插入短过渡。
+    jumps = {}
     for i in range(len(pts) - 1):
         f_a, v_a = pts[i]
         f_b, v_b = pts[i + 1]
         if f_b <= f_a:
+            if v_a is not None and v_b is not None and v_a != KEEP and v_b != KEEP:
+                jumps[f_b] = v_b      # 重复帧按排序顺序保留最后一个值
             continue
         # Pitch-line cut gap: interval is not covered and not silenced; f0 keeps the spliced original value
         if v_a == KEEP or v_b == KEEP:
@@ -1171,9 +1234,40 @@ def _apply_pitch_line(f0: np.ndarray, n_out: int, sr: int, fp: float,
         w = 3.0 * u ** 2 - 2.0 * u ** 3                       # cubic Bézier weights
         f0_new[seg] = c4_hz * 2.0 ** ((st_a + (st_b - st_a) * w) / 12.0)
 
+    # 同拍端点：把音高跳变摊到边界前的短窗内（半音域 smoothstep），
+    # 让 f0 在边界帧之前就到达后一个音的音高，避免单帧跳变。
+    if jumps:
+        k_max = max(1, int(round(PITCH_JUMP_RAMP_MS / fp)))
+        for f_b, v_b in jumps.items():
+            if f_b <= 0 or f_b > n_out:
+                continue
+            k = min(k_max, f_b)
+            base = float(f0_new[f_b - k])
+            if not np.isfinite(base) or base <= 0.0:
+                continue          # 边界前是静音/未覆盖/异常帧，不做音高滑音
+            st_a = 12.0 * np.log2(base / c4_hz)
+            st_b = _parse_semitones(v_b)
+            u = np.linspace(0.0, 1.0, k, endpoint=False, dtype=np.float64)
+            w = 3.0 * u ** 2 - 2.0 * u ** 3
+            f0_new[f_b - k:f_b] = c4_hz * 2.0 ** ((st_a + (st_b - st_a) * w) / 12.0)
+            covered[f_b - k:f_b] = True
+            print(f"[Pitch line] 同拍端点 frame {f_b}：插入 {k} 帧({k * fp:.0f}ms)音高过渡 "
+                  f"({st_a:.2f}→{st_b:.2f} 半音)")
+
     n_cov = int(covered.sum())
     print(f"[Pitch line] {len(pts)} endpoints → covering {n_cov}/{n_out} frames"
           f" ({n_out - n_cov} frames uncovered keep the spliced result), {int(silent.sum())} silent frames")
+
+    # Sanitize: a NaN/Inf/negative value anywhere here reaches pyworld and produces extreme
+    # samples (a burst).  Report the frame positions so the source of the bad value is visible.
+    bad = ~np.isfinite(f0_new) | (f0_new < 0.0)
+    n_bad = int(bad.sum())
+    if n_bad:
+        where = np.flatnonzero(bad)
+        head = ", ".join(str(int(v)) for v in where[:12])
+        print(f"[Pitch line·sanitize] {n_bad} non-finite/negative f0 frames → 0"
+              f" (frames {head}{' …' if n_bad > 12 else ''})")
+        f0_new[bad] = 0.0
     return f0_new, silent
 
 
@@ -1601,6 +1695,25 @@ def run() -> vl.WAVAudio:
     """Main flow: N-segment voiced-frame extraction -> per-segment Bézier fold splicing -> synthesis."""
     os.makedirs(os.path.dirname(os.path.abspath(OUTPUT_WAV)), exist_ok=True)
 
+    def _guard_samples(arr: np.ndarray, stage: str) -> np.ndarray:
+        """Replace non-finite samples with 0 and report the affected frame range.
+
+        soundfile writes NaN into a 24-bit PCM file as a full-scale -1.0 constant block
+        (measured), which is exactly the 80ms "burst" that can appear in the output.
+        Checking every sample-domain array at the boundary keeps such a block out of the
+        wav even if some upstream factor produces NaN; the frame range tells where it came from.
+        """
+        bad = ~np.isfinite(arr)
+        n_bad = int(bad.sum())
+        if not n_bad:
+            return arr
+        idx = np.flatnonzero(bad)
+        spb = max(1e-9, float(sr) * float(fp) / 1000.0)
+        print(f"[Output guard·{stage}] {n_bad} non-finite samples → 0 "
+              f"(frame {int(round(idx[0] / spb))}~{int(round(idx[-1] / spb))}, "
+              f"t={idx[0] / sr:.3f}~{idx[-1] / sr:.3f}s)")
+        return np.where(bad, 0.0, arr)
+
     if len(SEGMENTS) < 2:
         raise ValueError(f"SEGMENTS requires at least 2 entries, currently {len(SEGMENTS)}")
 
@@ -1670,15 +1783,42 @@ def run() -> vl.WAVAudio:
             continue
         acc = segs[0][key]
         for i in range(1, n_seg):
-            acc = _blend_overlap(acc, segs[i][key], overs[i])
+            # f0 needs a dedicated splice: a linear 0↔voiced blend invents a false fundamental
+            # inside the overlap and the vocoder turns it into a burst.
+            acc = (_blend_overlap_f0 if key == 'f0' else _blend_overlap)(
+                acc, segs[i][key], overs[i])
         out[key] = acc
     f0_out, gi_out, sp_out, ap_out = out['f0'], out['gi'], out['sp'], out['ap']
 
-    # Inter-frame energy/value safety clamp
+    # Inter-frame energy/value safety clamp.
+    # NOTE: pyworld's synthesize() turns a single NaN sp/ap frame into NaN samples across
+    # roughly ±6 neighbouring frames (measured: one bad frame poisoned 12~16 frames), and
+    # the 24-bit writer stores NaN as a full-scale -1.0 constant block -> the audible
+    # "burst". f0 NaN is harmless by comparison (WORLD just treats it as unvoiced).
+    # So sp/ap must be finite BEFORE synthesis, and the offending frame positions are
+    # printed here to expose where the bad value was created.
+    spb = max(1e-9, float(sr) * float(fp) / 1000.0)     # samples per frame
+    f0_out = np.nan_to_num(f0_out, nan=0.0, posinf=0.0, neginf=0.0)
     f0_out = np.clip(f0_out, 0.0, None)
     if ap_out is not None:
+        _bad_ap = ~np.isfinite(ap_out)
+        n_bad_ap = int(_bad_ap.sum())
+        if n_bad_ap:
+            _fr = np.flatnonzero(_bad_ap.any(axis=1)).tolist()
+            print(f"[AP sanitize] {n_bad_ap} non-finite ap elements in {len(_fr)} frames "
+                  f"({', '.join(map(str, _fr[:12]))}{' …' if len(_fr) > 12 else ''}) → clamped")
+        ap_out = np.nan_to_num(ap_out, nan=1.0, posinf=1.0, neginf=0.0)
         ap_out = np.clip(ap_out, 0.0, 1.0)
     if sp_out is not None:
+        _bad_sp = ~np.isfinite(sp_out)
+        n_bad_sp = int(_bad_sp.sum())
+        if n_bad_sp:
+            _fr = np.flatnonzero(_bad_sp.any(axis=1)).tolist()
+            print(f"[Spectrum floor] {n_bad_sp} non-finite sp elements in {len(_fr)} frames "
+                  f"({', '.join(map(str, _fr[:12]))}{' …' if len(_fr) > 12 else ''}) → {SP_FLOOR}")
+        # +inf must also fall back to the floor: 1e30 in a log-magnitude bin makes WORLD
+        # emit ~1e15 full-scale samples (another burst source), never a NaN fix.
+        sp_out = np.nan_to_num(sp_out, nan=SP_FLOOR, posinf=SP_FLOOR, neginf=SP_FLOOR)
         n_zero = int((sp_out <= 0).sum())
         if n_zero:
             print(f"[Spectrum floor] {n_zero} sp elements ≤0 → raised to {SP_FLOOR} (avoid NaN in synthesis)")
@@ -1688,6 +1828,27 @@ def run() -> vl.WAVAudio:
     #      is strictly overridden by the curve; frames marked None = silent frames
     #      (forced mute later, including breath)
     f0_out, pl_silent = _apply_pitch_line(f0_out, n_out, sr, fp, PITCH_LINE)
+
+    # 5.6) f0 sanity audit before synthesis: an isolated 0 inside a voiced run makes the
+    #      vocoder switch to unvoiced for a single frame and back -> audible pop.  Repair it.
+    n_nan = int(np.count_nonzero(~np.isfinite(f0_out)))
+    if n_nan:
+        f0_out = np.where(np.isfinite(f0_out), f0_out, 0.0)
+        print(f"[f0 audit] {n_nan} non-finite f0 frames → 0")
+    voiced_run = f0_out > 0.0
+    if voiced_run.any():
+        isolated = (~voiced_run) & np.roll(voiced_run, 1) & np.roll(voiced_run, -1)
+        isolated[0] = False
+        isolated[-1] = False
+        n_iso = int(isolated.sum())
+        if n_iso:
+            prev = np.roll(f0_out, 1)
+            nxt = np.roll(f0_out, -1)
+            f0_out[isolated] = 0.5 * (prev[isolated] + nxt[isolated])
+            print(f"[f0 audit] {n_iso} isolated zero frames inside voiced runs → interpolated"
+                  f" (positions {', '.join(str(int(v)) for v in np.flatnonzero(isolated)[:12])})")
+    print(f"[f0 audit] zero={int(np.count_nonzero(f0_out <= 0))}/{n_out} "
+          f"range={float(np.min(f0_out)):.2f}~{float(np.max(f0_out)):.2f}Hz")
 
     # Main-signal per-frame gain: f0=0 frames must not all be muted -- unvoiced frames
     # such as fricatives have no fundamental frequency (f0=0) yet carry real content;
@@ -1813,6 +1974,7 @@ def run() -> vl.WAVAudio:
     # residue in rest regions and the hard jump from 0 to voiced (unvoiced/fricative
     # frame gains are always 1 and are unaffected).
     out_data = np.asarray(output.data, dtype=np.float64)
+    out_data = _guard_samples(out_data, "synthesized")
     ug_smp = _resample_1d(unvoiced_gain, len(out_data))
     out_data = out_data * ug_smp
     print(f"[Mute] {n_unv} true silent frames zeroed in the time domain with a smooth fade-in"
@@ -1843,6 +2005,7 @@ def run() -> vl.WAVAudio:
     else:
         breath_concat, br_sr = prosses_breath.build_concat_breath()
         assert br_sr == sr, f"breath sample rate {br_sr} does not match the main signal {sr}"
+        breath_concat = _guard_samples(breath_concat, "breath")
 
         # 7.1) Breath spectral coupling: shape the breath spectral envelope to the main signal sp (SP frames are 1025 bins,
         #      i.e. the output grid of pyworld cheaptrick's default fft_size=2048), removing formant misalignment and the disjointed feel
@@ -1864,14 +2027,26 @@ def run() -> vl.WAVAudio:
 
     # 7.5) Silent frames marked None by the pitch line: hard-zero in the sample domain
     #      (together with the already mixed breath), so a "silent frame" is truly mute,
-    #      not merely f0=0
+    #      not merely f0=0.  The mute gain gets a short raised-cosine fade at both
+    #      edges: multiplying a raw 0/1 mask would cut the waveform instantly -> click.
     if pl_silent.any():
-        out_data = out_data * _resample_1d(
-            (~pl_silent).astype(np.float64), len(out_data))
+        mute_gain = np.ones(n_out, dtype=np.float64)
+        fade = max(1, int(round(SILENCE_FADE_MS / fp)))
+        edges = np.diff(np.concatenate([[0], pl_silent.astype(np.int8), [0]]))
+        for s, e in zip(np.where(edges == 1)[0], np.where(edges == -1)[0]):
+            a = max(0, s - fade)
+            u = np.linspace(0.0, 1.0, s - a, endpoint=False, dtype=np.float64)
+            mute_gain[a:s] = np.minimum(mute_gain[a:s], 1.0 - (3.0 * u ** 2 - 2.0 * u ** 3))
+            mute_gain[s:e] = 0.0
+            b = min(n_out, e + fade)
+            u = np.linspace(0.0, 1.0, b - e, endpoint=False, dtype=np.float64)
+            mute_gain[e:b] = np.minimum(mute_gain[e:b], 3.0 * u ** 2 - 2.0 * u ** 3)
+        out_data = out_data * _resample_1d(mute_gain, len(out_data))
         print(f"[Pitch line·mute] {int(pl_silent.sum())} silent frames zeroed in the sample domain"
-              f" (including breath/plosive layers)")
+              f" (including breath/plosive layers, {fade}-frame/{fade * fp:.0f}ms fade at both edges)")
 
     # 8) Start/end fade in/out + save
+    out_data = _guard_samples(out_data, "final")
     out_data = _edge_fade(out_data, sr, EDGE_FADE_MS)
     final = vl.WAVAudio(data=out_data, sample_rate=sr)
     final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)

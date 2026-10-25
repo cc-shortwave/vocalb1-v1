@@ -167,7 +167,7 @@ public sealed class PythonEngineClient : IRenderEngine
                     beatsPerBar = request.Project.BeatsPerBar,
                     beatUnit = request.Project.BeatUnit,
                     segments = request.Track.Segments,
-                    pitchLine = request.Track.PitchLine,
+                    pitchLine = request.Track.BuildRenderPitchLine(),
                     settings = request.Track.Settings,
                 },
             };
