@@ -25,6 +25,19 @@ public sealed class TrackRow(TrackDocument model) : ObservableObject
         }
     }
 
+    /// <summary>Solo toggle: preview playback prefers a soloed track's rendered result.</summary>
+    public bool Solo
+    {
+        get => Model.Solo;
+        set
+        {
+            if (Model.Solo == value)
+                return;
+            Model.Solo = value;
+            OnPropertyChanged();
+        }
+    }
+
     /// <summary>Used for both the accessible name and the default text of the tab header.</summary>
     public override string ToString() => Model.Name;
 }

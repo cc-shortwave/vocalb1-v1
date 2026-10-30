@@ -63,6 +63,9 @@ public partial class MainWindow : Window
     private void OnRollNoteAddRequested(object? sender, NoteAddEventArgs e) =>
         _viewModel?.AddNoteAt(e.Beat, e.Semitone);
 
+    private void OnRollNoteDrawRequested(object? sender, NoteDrawEventArgs e) =>
+        _viewModel?.AddNoteFromDraw(e.BeatStart, e.BeatEnd, e.Semitone);
+
     private void OnRollPlayheadGrabbed(object? sender, EventArgs e) =>
         _viewModel?.PauseForPlayheadDrag();
 

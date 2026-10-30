@@ -18,6 +18,12 @@ public sealed class TrackDocument
     /// <summary>This track's own synthesis parameters (formant follow/gain, energy distribution, etc.).</summary>
     public SynthesisSettings Settings { get; set; } = new();
 
+    /// <summary>
+    /// Solo affects preview playback only: while any track is soloed, playback uses that track's rendered result
+    /// (rendering still targets the active track).
+    /// </summary>
+    public bool Solo { get; set; }
+
     /// <summary>End beat of the last segment on this track.</summary>
     public double TotalBeats => Segments.Count == 0 ? 0 : Segments.Max(s => s.BeatEnd);
 
@@ -124,5 +130,6 @@ public sealed class TrackDocument
         Segments = Segments.Select(s => s.Clone()).ToList(),
         PitchLine = PitchLine.Select(p => p.Clone()).ToList(),
         Settings = Settings.Clone(),
+        Solo = Solo,
     };
 }

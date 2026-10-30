@@ -315,6 +315,8 @@ foreach ($variant in $variants) {
 
     # 5. docs and metadata
     Copy-Item -LiteralPath (Join-Path $Root 'README.md')      -Destination $target -Force
+    Copy-Item -LiteralPath (Join-Path $Root 'README.zh-CN.md') -Destination $target -Force
+    Copy-Item -LiteralPath (Join-Path $Root 'README.ja.md')   -Destination $target -Force
     Copy-Item -LiteralPath (Join-Path $Root 'LICENSE')        -Destination $target -Force
     Copy-Item -LiteralPath (Join-Path $Root 'requirements.txt') -Destination $target -Force
     Copy-Item -LiteralPath (Join-Path $Root 'docs/QUICKSTART.txt') -Destination $target -Force
