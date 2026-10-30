@@ -165,7 +165,7 @@ mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\t
 ```
 dist\vocalb1-1.0.0-win-x64-full.zip
 dist\vocalb1-1.0.0-win-x64-lite.zip
-dist\vocalb1-1.0.0-win-x64-setup.exe
+dist\vocalb1-v1.0.0-win-x64-setup.exe
 ```
 
 `-NoInstaller` 可以跳过第三个（比如临时只想测 lite、机器上又没装 Inno Setup）。
@@ -180,7 +180,7 @@ winget install -e --id JRSoftware.InnoSetup      # 只装一次
 
 三个资产总是一起产出，发布时不会出现只发一半的情况。
 
-产物：`dist\vocalb1-1.0.0-win-x64-setup.exe`
+产物：`dist\vocalb1-v1.0.0-win-x64-setup.exe`
 
 - **按用户安装**到 `%LOCALAPPDATA%\Programs\VocalB1`，不弹管理员权限
 - 开始菜单三项：程序本体、「Voicebank folder」（直接打开声库目录）、卸载器；桌面图标可选
