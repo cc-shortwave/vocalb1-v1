@@ -168,7 +168,7 @@ A plain `package-release.ps1` now produces three assets:
 ```
 dist\vocalb1-1.0.0-win-x64-full.zip
 dist\vocalb1-1.0.0-win-x64-lite.zip
-dist\vocalb1-1.0.0-win-x64-setup.exe
+dist\vocalb1-v1.0.0-win-x64-setup.exe
 ```
 
 `-NoInstaller` skips the third one (useful for a quick lite test without Inno Setup).
@@ -184,7 +184,7 @@ winget install -e --id JRSoftware.InnoSetup      # once
 
 The three assets are always produced together, so a release never ships half of them.
 
-Output: `dist\vocalb1-1.0.0-win-x64-setup.exe`.
+Output: `dist\vocalb1-v1.0.0-win-x64-setup.exe`.
 
 - Installs **per user** into `%LOCALAPPDATA%\Programs\VocalB1`, so no admin prompt
 - Start-menu entries: the app, "Voicebank folder" and the uninstaller; desktop icon optional
