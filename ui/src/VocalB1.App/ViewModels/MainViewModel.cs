@@ -57,6 +57,8 @@ public sealed class MainViewModel : ObservableObject
     private LibraryEntry? _selectedLibraryItem;
     private SegmentRow? _selectedSegment;
     private PianoRollMode _rollMode = PianoRollMode.Notes;
+    private bool _isPencil;
+    private int _gridDivisionIndex;
     private int? _selectedNoteIndex;
     private int? _selectedPitchIndex;
     private int _rollRevision = 1;
@@ -110,6 +112,9 @@ public sealed class MainViewModel : ObservableObject
         StopCommand = new RelayCommand(_ => StopPlayback());
         ToggleThemeCommand = new RelayCommand(_ => ToggleTheme());
         ImportLanguageCommand = new RelayCommand(_ => ImportLanguagePack());
+        ExportTimbreCommand = new RelayCommand(_ => ExportTimbre());
+        ImportTimbreCommand = new RelayCommand(_ => ImportTimbre());
+        OpenHelpCommand = new RelayCommand(_ => OpenHelp());
 
         // The playhead position is converted from the player position to beats at 30fps; the piano roll scrolls the track accordingly.
         _playheadTimer = new DispatcherTimer(DispatcherPriority.Render)
@@ -470,6 +475,67 @@ public sealed class MainViewModel : ObservableObject
     public string RollModeText => LanguageService.Translate(
         RollMode == PianoRollMode.Notes ? "模式：音块（右键加块）" : "模式：Pitch 线（右键加节点）");
 
+    public ICommand OpenHelpCommand { get; }
+
+    /// <summary>Open the bundled README that matches the current UI language (zh-CN / ja / en).</summary>
+    private void OpenHelp()
+    {
+        var root = _services.Options.RepositoryRoot;
+        var fileName = LanguageService.Current.Code.ToLowerInvariant() switch
+        {
+            "ja" => "README.ja.md",
+            "zh" => "README.zh-CN.md",
+            _ => "README.md",
+        };
+
+        var path = Path.Combine(root, fileName);
+        if (!File.Exists(path))
+            path = Path.Combine(root, "README.md");
+        if (!File.Exists(path))
+        {
+            AddLog("warn", $"Help file not found: {fileName}");
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            AddLog("info", $"Opened help: {path}");
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    /// <summary>Pencil tool: left-drag inside the piano roll draws a new note from press to release.</summary>
+    public bool IsPencil
+    {
+        get => _isPencil;
+        set => SetProperty(ref _isPencil, value);
+    }
+
+    /// <summary>Index of the piano-roll minor-grid choice: 0 = off, 1 = eighth notes, 2 = sixteenth notes.</summary>
+    public int GridDivisionIndex
+    {
+        get => _gridDivisionIndex;
+        set
+        {
+            if (!SetProperty(ref _gridDivisionIndex, value))
+                return;
+            OnPropertyChanged(nameof(GridDivision));
+        }
+    }
+
+    /// <summary>Minor grid lines per beat passed to the piano roll: 0 = off, 2 = eighth, 4 = sixteenth.</summary>
+    public int GridDivision => _gridDivisionIndex switch
+    {
+        1 => 2,
+        2 => 4,
+        _ => 0,
+    };
+
     // ------------------------------------------------------------------
     // User dictionary
     // ------------------------------------------------------------------
@@ -566,6 +632,8 @@ public sealed class MainViewModel : ObservableObject
     public ICommand LoadDemoCommand { get; }
     public ICommand OpenProjectCommand { get; }
     public ICommand SaveProjectCommand { get; }
+    public ICommand ExportTimbreCommand { get; }
+    public ICommand ImportTimbreCommand { get; }
     public ICommand UndoCommand { get; }
     public ICommand RedoCommand { get; }
     public ICommand DeleteSelectionCommand { get; }
@@ -702,6 +770,83 @@ public sealed class MainViewModel : ObservableObject
         }
         LoadProject(demo, null);
         AddLog("info", "Demo project loaded (G4 -> G4 -> E4).");
+    }
+
+    /// <summary>Export the core timbre parameters of the active track to a JSON file.</summary>
+    private void ExportTimbre()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "导出音色参数",
+            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json",
+            FileName = SafeFileName(_activeTrack.Name) + TimbreProfile.FileExtension,
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            TimbreProfile.From(_activeTrack.Settings).Save(dialog.FileName);
+            AddLog("info", "Timbre profile exported: " + dialog.FileName);
+            StatusText = "音色参数已导出：" + Path.GetFileName(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            AddLog("error", "Export timbre profile failed: " + ex.Message);
+            StatusText = "导出失败";
+            MessageBox.Show("无法导出音色参数：" + ex.Message, "导出音色参数",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>Read a timbre profile and apply it to the active track.</summary>
+    private void ImportTimbre()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入音色参数",
+            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        TimbreProfile profile;
+        try
+        {
+            profile = TimbreProfile.Load(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            AddLog("error", "Import timbre profile failed: " + ex.Message);
+            StatusText = "导入失败";
+            MessageBox.Show("无法读取音色参数：" + ex.Message, "导入音色参数",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        PushUndo();
+        foreach (var item in profile.ApplyTo(_activeTrack.Settings))
+            AddLog("warn", "Timbre import skipped " + item);
+
+        // The sliders read straight from the track settings, so refresh both the scalar bindings and the band rows.
+        OnPropertyChanged(nameof(BreathyThr));
+        OnPropertyChanged(nameof(ApScale));
+        OnPropertyChanged(nameof(ApMax));
+        OnPropertyChanged(nameof(Jitter));
+        OnPropertyChanged(nameof(Shimmer));
+        RefreshParameterRows();
+
+        AddLog("info", "Timbre profile imported: " + dialog.FileName);
+        StatusText = "音色参数已导入：" + Path.GetFileName(dialog.FileName);
+    }
+
+    /// <summary>File name of the active track without characters the file system rejects.</summary>
+    private static string SafeFileName(string? name)
+    {
+        var text = string.IsNullOrWhiteSpace(name) ? "音色参数" : name.Trim();
+        foreach (var ch in Path.GetInvalidFileNameChars())
+            text = text.Replace(ch, '_');
+        return text;
     }
 
     private void OpenProject()
@@ -1031,6 +1176,37 @@ public sealed class MainViewModel : ObservableObject
 
         AddLog("info",
             $"Note added: {entry.DisplayName} | beat {start:0.##} -> {start + 1:0.##} | {PitchMath.ToPitchName(semitone)}");
+    }
+
+    /// <summary>Pencil drag in the piano roll: create a segment spanning the drawn beat range.</summary>
+    public void AddNoteFromDraw(double beatStart, double beatEnd, int semitone)
+    {
+        var entry = SelectedLibraryItem ?? Library.FirstOrDefault();
+        if (entry is null)
+        {
+            AddLog("warn", "Library is empty; refresh the library before adding notes.");
+            return;
+        }
+
+        PushUndo();
+        var length = Math.Max(0.25, beatEnd - beatStart);
+        var start = FreeStartAfter(beatStart, length);
+        var segment = new VoiceSegment
+        {
+            Audio = entry.Path,
+            SrcPitch = "D4",
+            DstPitch = PitchMath.ToPitchName(semitone),
+            BeatStart = start,
+            BeatEnd = start + length,
+            Transition = DefaultTransitionFrames,
+        };
+        _activeTrack.Segments.Add(segment);
+        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
+        _activeTrack.AddPitchNodes(segment, 5);
+        RefreshSegments();
+
+        AddLog("info",
+            $"Note drawn: {entry.DisplayName} | beat {start:0.##} -> {start + length:0.##} | {PitchMath.ToPitchName(semitone)}");
     }
 
     /// <summary>Starting from <paramref name="desired"/>, find the first free slot that can hold <paramref name="length"/> beats (shifting forward).</summary>
@@ -1502,6 +1678,22 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var path = LastRenderPath;
+        var playbackTrack = _activeTrack;
+
+        // Solo affects preview playback only: with a soloed track, play that track's rendered result.
+        if (_project.Tracks.FirstOrDefault(t => t.Solo) is { } soloTrack)
+        {
+            playbackTrack = soloTrack;
+            path = _trackOutputs.TryGetValue(soloTrack, out var soloOutput) && File.Exists(soloOutput.Path)
+                ? soloOutput.Path
+                : null;
+            if (path is null)
+            {
+                AddLog("warn", $"Solo track \"{soloTrack.Name}\" has not been rendered yet; render it first.");
+                return;
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             AddLog("warn", "Nothing to play; render the track first.");
@@ -1509,7 +1701,7 @@ public sealed class MainViewModel : ObservableObject
         }
 
         // Start from the current playhead position; when there is no playhead yet, or playback already reached the end, restart from beat 1.
-        var endBeat = PlaybackEndBeat();
+        var endBeat = PlaybackEndBeat(playbackTrack);
         var startBeat = Math.Clamp(PlayheadBeat ?? 1, 1, endBeat);
         if (endBeat - startBeat < 0.05)
             startBeat = 1;
@@ -1574,12 +1766,12 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>End beat of the current track's audio (used to clamp the playhead and start time).</summary>
-    private double PlaybackEndBeat()
+    private double PlaybackEndBeat(TrackDocument track)
     {
-        if (_trackOutputs.TryGetValue(_activeTrack, out var output) && output.DurationSeconds > 0.01)
+        if (_trackOutputs.TryGetValue(track, out var output) && output.DurationSeconds > 0.01)
             return 1 + output.DurationSeconds * Math.Max(1, Bpm) / 60;
 
-        return Math.Max(1, _activeTrack.TotalBeats);
+        return Math.Max(1, track.TotalBeats);
     }
 
     private void ReportError(Exception ex)
