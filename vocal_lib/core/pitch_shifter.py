@@ -201,7 +201,8 @@ def enhance_breathiness(ap: np.ndarray, semitones: float,
 
 def warp_spectral_envelope(sp: np.ndarray, semitones: float, sample_rate: int,
                             follow_ratio=0.3,
-                            formants_trajectory=None) -> np.ndarray:
+                            formants_trajectory=None,
+                            f0_values=None) -> np.ndarray:
     """
     Spectral envelope frequency-axis mapping (formant following)
 
@@ -222,6 +223,11 @@ def warp_spectral_envelope(sp: np.ndarray, semitones: float, sample_rate: int,
             frame's actual F1/F2/F3 positions, fixing the misclassification of fixed
             bands for back vowels (/u//o/ with low F2).
             missing or invalid frames automatically fall back to fixed bands.
+        f0_values: per-frame original F0 (Hz), used to reject implausible formant
+            data: a first formant below the fundamental means the peak picker locked
+            onto a harmonic lobe instead of a real formant, and the resulting band
+            layout would jump between the two modes frame by frame (audible crackle).
+            None disables this check.
 
     Returns:
         sp after frequency-axis mapping, same shape as input
@@ -281,6 +287,13 @@ def warp_spectral_envelope(sp: np.ndarray, semitones: float, sample_rate: int,
     # Segmented mode: compute per_bin_ratio frame by frame
     has_dynamic = (formants_trajectory is not None and len(formants_trajectory) > 0)
 
+    # Collect one ratio map per frame before warping. Frames whose formant estimate
+    # is missing/invalid fall back to fixed bands, so neighbouring frames may switch
+    # between two very different band layouts; warping with that switch inside a
+    # single 5ms step produces a broadband spectral discontinuity (heard as
+    # crackle/roughness). The maps are therefore smoothed along time before use.
+    per_bin_ratios = np.empty((n_frames, n_bins), dtype=np.float64)
+
     for i in range(n_frames):
         per_bin_ratio = None
 
@@ -297,7 +310,11 @@ def warp_spectral_envelope(sp: np.ndarray, semitones: float, sample_rate: int,
                     break
 
             # Need at least 2 formants, strictly increasing, with sufficient spacing (>100Hz)
-            if len(formant_freqs) >= 2 and formant_freqs[0] > 50:
+            # F1 must also stay above this frame's F0 (same rule as apply_band_ratios):
+            # otherwise the "formants" are harmonic lobes and the band layout is bogus
+            f0_here = float(f0_values[i]) if f0_values is not None and i < len(f0_values) else 0.0
+            if (len(formant_freqs) >= 2 and formant_freqs[0] > 50
+                    and (f0_here <= 0 or formant_freqs[0] > f0_here)):
                 valid = all(formant_freqs[j+1] > formant_freqs[j] + 100
                            for j in range(len(formant_freqs) - 1))
                 if valid:
@@ -322,8 +339,24 @@ def warp_spectral_envelope(sp: np.ndarray, semitones: float, sample_rate: int,
         if per_bin_ratio is None:
             per_bin_ratio = fallback_per_bin_ratio
 
-        warp_factors = 1.0 + (k - 1.0) * per_bin_ratio
-        old_bins = new_bins / warp_factors
+        per_bin_ratios[i] = per_bin_ratio
+
+    # Triangular 5-frame smoothing along time (weight 1-2-3-2-1): the band layout
+    # now changes gradually instead of step-wise, which removes the spectral jump
+    if n_frames >= 3:
+        acc = np.zeros_like(per_bin_ratios)
+        weight_sum = np.zeros((n_frames, 1), dtype=np.float64)
+        for d in (-2, -1, 0, 1, 2):
+            w = 1.0 - abs(d) / 3.0
+            lo = max(0, -d)
+            hi = min(n_frames, n_frames - d)
+            acc[lo:hi] += w * per_bin_ratios[lo + d:hi + d]
+            weight_sum[lo:hi] += w
+        per_bin_ratios = acc / weight_sum
+
+    warp_factors = 1.0 + (k - 1.0) * per_bin_ratios
+    for i in range(n_frames):
+        old_bins = new_bins / warp_factors[i]
         sp_warped[i] = np.exp(np.interp(old_bins, x_orig, sp_log[i]))
 
     return sp_warped
@@ -495,7 +528,8 @@ def process_pitch_shift(f0: np.ndarray, semitones: float,
 
     if sp is not None:
         sp_warped = warp_spectral_envelope(sp, semitones, sample_rate,
-                                           follow_ratio, formants_trajectory)
+                                           follow_ratio, formants_trajectory,
+                                           f0_values=f0)
         # Compute the warped formant positions for aligning the band_ratios centers
         # warp_spectral_envelope mapping: f_warped = f * (1 + (k-1) * ratio)
         warped_formants = None
