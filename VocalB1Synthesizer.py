@@ -180,6 +180,24 @@ PITCH_JUMP_RAMP_MS = 20.0     # pitch line 同拍端点（零长度区间）的�
                               # 否则 1 帧内跳变会让声码器相位重排，听起来是咔哒。
 SILENCE_FADE_MS = 15.0        # pitch line 静音端点的样本域淡入/淡出窗（ms），消除静音区的硬切
 
+# 起音保护（同一音符连击时第二个音的爆破/起音不被接缝淡化吞掉）
+# 问题：接缝交叉淡化让"进入段"从权重 0 淡入，而进入段的前几帧正是它的起音/爆破
+#       （样本头部静音被裁掉后，第一个保留帧就是爆破峰）。淡化宽度越长，起音被压得越低，
+#       两个カ音连击时第二个的爆破就完全消失了。
+# 判据：进入段头部 RMS 明显低于它自身的持续电平（< ATTACK_QUIET_RATIO）→ 这是一次
+#       从闭合/静音起步的起音（爆破/塞音），而不是延续中的元音。此时：
+#       · 进入段从接缝第一帧起就是全权重（爆破完整保留）
+#       · 前一段的尾巴在 ATTACK_FADE_FRAMES 内快速退出（它的电平低于进入段持续电平，
+#         叠加不会出现音量鼓包），整个过渡只占约 30ms
+ATTACK_HEAD_FRAMES  = 2       # 起音峰所在的帧数（从静音头之后算起）
+ATTACK_DECAY_FRAMES = 3       # 起音峰之后检查衰减的帧数
+ATTACK_DECAY_RATIO  = 0.60    # 峰后电平 ≤ 峰值 × 该比例 → 是瞬间峰（爆破），而不是元音渐入
+ATTACK_QUIET_RATIO  = 0.60    # 起音峰 ≤ 本段中位电平 × 该比例（爆破电平低于持续元音）
+ATTACK_LEAD_FRAMES  = 6       # 起音保护接缝上给进入段补的头部静音（闭合段）帧数（6帧=30ms）
+                              # 前一段的尾音会在这一段静音里退出，爆破才有"闭合→爆破"的落差
+ATTACK_FADE_FRAMES  = 6       # 起音保护接缝上，前一段尾巴退出所占的帧数（6帧=30ms）
+ATTACK_CLIP_FRAMES  = 3       # 前一段尾巴真正衰减到 0 的帧数（3帧=15ms）；之后到爆破之间是真静音
+
 # Beat layout (each segment gives its start/end beat on the beat grid via
 # beat_start/beat_end)
 #   The onset lands exactly on beat_start and the tail stops on beat_end:
@@ -549,8 +567,85 @@ def _pad_silence(seg: dict, head_n: int, tail_n: int, sr: int, fp: float) -> dic
     return out
 
 
-def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list:
-    """Anchor each segment's onset to the beat grid per beat_start/beat_end; returns the per-seam overlap frame counts overs.
+def _attack_head_index(seg: dict):
+    """Frame index (into the segment's kept frames) where the attack starts, skipping a near-silent lead.
+
+    Returns None when the level is unusable, else the index of the first frame whose source
+    RMS rises above 2% of the segment's median level (at most ATTACK_LEAD_FRAMES frames in).
+    0 = the segment starts directly with the attack.
+    """
+    rms = np.asarray(seg.get('src_rms', np.zeros(0)), dtype=np.float64)
+    if rms.size < ATTACK_HEAD_FRAMES + ATTACK_DECAY_FRAMES:
+        return None
+    level = float(np.median(rms))
+    if level <= 0.0:
+        return None
+    quiet = rms <= level * 0.02
+    s = 0
+    while s < min(len(rms), ATTACK_LEAD_FRAMES) and quiet[s]:
+        s += 1
+    return s
+
+
+def _is_attack_head(seg: dict) -> bool:
+    """True when the segment starts with a stop-consonant burst instead of a sustained vowel.
+
+    The seam cross-fade gives the incoming segment weight 0 at the seam and ramps it up
+    over the whole overlap. The incoming segment's first frames ARE its attack (the
+    source's leading silence is dropped by the decomposer, so the first kept frame is
+    the burst peak). The fade therefore erases it and two consecutive カ lose the
+    second one's burst. Criteria (all must hold):
+      · the attack peak is well below the note's own level (a burst, not a vowel),
+      · the level falls right after the peak (a 1~2 frame transient, not a gradual fade-in).
+    """
+    s = _attack_head_index(seg)
+    if s is None:
+        return False
+    rms = np.asarray(seg['src_rms'], dtype=np.float64)
+    if s + ATTACK_HEAD_FRAMES + ATTACK_DECAY_FRAMES > len(rms):
+        return False
+    level = float(np.median(rms))
+    head = float(np.max(rms[s:s + ATTACK_HEAD_FRAMES]))
+    if head <= level * 1e-3 or head > level * ATTACK_QUIET_RATIO:
+        return False
+    decay = float(np.min(rms[s + ATTACK_HEAD_FRAMES:
+                            s + ATTACK_HEAD_FRAMES + ATTACK_DECAY_FRAMES]))
+    return decay <= head * ATTACK_DECAY_RATIO
+
+
+def _attack_head_pad(seg: dict) -> int:
+    """Silent frames to insert before an attack-protected note's head.
+
+    The burst must start from a closure, otherwise the previous note's (louder) tail
+    masks it: the seam cross-fade alone cannot remove that tail at the seam frame.
+    The source's own lead already provides part of it, so only the missing part is padded.
+    """
+    s = _attack_head_index(seg)
+    if s is None:
+        return 0
+    return max(0, ATTACK_LEAD_FRAMES - s)
+
+
+def _attack_weights(over: int) -> tuple:
+    """Weights (w_outgoing, w_incoming) for an attack-protected seam.
+
+    The incoming note is at full weight from its first frame (its burst survives),
+    while the outgoing note's tail is cut within ATTACK_CLIP_FRAMES frames. The rest
+    of the overlap (up to ATTACK_LEAD_FRAMES) is then a true closure before the burst.
+    """
+    w_in = np.ones(over, dtype=np.float64)
+    w_out = np.zeros(over, dtype=np.float64)
+    k = min(over, ATTACK_CLIP_FRAMES)
+    if k > 0:
+        w_out[:k] = 1.0 - _bezier_weights(k)
+    return w_out, w_in
+
+
+def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> tuple:
+    """Anchor each segment's onset to the beat grid per beat_start/beat_end.
+
+    Returns (overs, protects): per-seam overlap frame counts and whether the seam must
+    protect the incoming note's attack (see _is_attack_head / _attack_weights).
 
     Let spb = frames/beat, P(b) = start frame position, L = the note's sounding frame
     count, D = the gap to the next segment's start:
@@ -582,6 +677,7 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
     D = [P[i + 1] - P[i] for i in range(n_seg - 1)]
 
     overs = [0] * n_seg
+    protects = [False] * n_seg
     M = [0] * n_seg
     for i in range(n_seg - 1):
         tr = int(seg_cfgs[i + 1].get('transition', 0) or 0)
@@ -591,6 +687,12 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
         # 有真实休止（D>L）时不补，否则会把静音尾巴与下一段混在一起。
         if D[i] <= L[i]:
             ov = max(ov, MIN_SEAM_OVER_FRAMES)
+        # 进入段以"静音/闭合 → 爆破"起步时，交叉淡化会把它的起音按 0→1 淡入抹掉
+        # （两个カ音连击时第二个的爆破消失）。这类接缝改走起音保护权重：进入段首帧即全权重，
+        # 前一段尾巴在 ATTACK_FADE_FRAMES 内退出，过渡宽度也就收缩到该值。
+        if _is_attack_head(segs[i + 1]):
+            protects[i + 1] = True
+            ov = min(ov, ATTACK_FADE_FRAMES)
         ov = min(ov, L[i], L[i + 1])                           # not longer than either side's note
         overs[i + 1] = ov
         M[i] = D[i] + ov
@@ -600,7 +702,15 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
     print(f"[Beat] BPM={BPM}  time signature={TIME_SIGNATURE[0]}/{TIME_SIGNATURE[1]}  "
           f"{spb:.4g}frames/beat({60000.0 / float(BPM):.0f}ms/beat)")
     for i in range(n_seg):
-        head_n = P[0] if i == 0 else 0
+        if i == 0:
+            head_n = P[0]
+        elif protects[i] and overs[i] > 0:
+            # 起音保护接缝：给进入段补一小段静音，让它的爆破从"闭合"起步；
+            # 这段静音正好落在交叉淡化区内，前一段的尾音在这里退出。
+            # 有真实休止（ov=0）时不需要补：音符本来就从静音开始。
+            head_n = min(_attack_head_pad(segs[i]), max(0, M[i] - 1))
+        else:
+            head_n = 0
         # True rest = gap between the beat ranges (the D > L portion) -> pad silence
         # at the tail; when D <= L, frames beyond L come from transition's extra fade
         # width -> go through sounding extension (true cross-fade). Otherwise the
@@ -619,7 +729,8 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
         if tail_n > 0:
             extra.append(f"rest {tail_n} frames({tail_n * fp:.0f}ms)")
         if overs[i] > 0:
-            extra.append(f"overlap with previous note {overs[i]} frames({overs[i] * fp:.0f}ms) cross-fade")
+            extra.append(f"overlap with previous note {overs[i]} frames({overs[i] * fp:.0f}ms)"
+                         + (" attack-protected cross-fade" if protects[i] else " cross-fade"))
         print(f"[Beat] segment {i + 1}: beat {bs[i]:g}({_bar_beat(bs[i], bpb)}) → "
               f"beat {be[i]:g}({_bar_beat(be[i], bpb)})  "
               f"beat length {L[i]} frames({L[i] * fp:.0f}ms) → material {body_n} frames({act}) "
@@ -628,7 +739,7 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> list
     total = sum(M) - sum(overs)
     print(f"[Beat] output {total} frames({total * fp:.0f}ms), end beat "
           f"beat {be[-1]:g}({_bar_beat(be[-1], bpb)})")
-    return overs
+    return overs, protects
 
 
 def _plosive_gain(breath: np.ndarray, f0: np.ndarray, sr: int, fp: float,
@@ -1091,12 +1202,15 @@ def _match_breath_envelope(breath: np.ndarray, sp: np.ndarray, sr: int, fp: floa
     return shaped
 
 
-def _blend_overlap(a: np.ndarray, b: np.ndarray, over: int) -> np.ndarray:
+def _blend_overlap(a: np.ndarray, b: np.ndarray, over: int,
+                   protect_head: bool = False) -> np.ndarray:
     """Splice two parameter segments along the frame axis with a Bézier overlap.
 
     a: segment A (ma, ...)    b: segment B (mb, ...)   over: overlap frames
     Output length = ma + mb - over; the overlap region is mixed with cubic Bézier
     weights. Supports 1D (frames,) and 2D (frames, features) arrays.
+    protect_head=True uses the attack weights instead (see _attack_weights): B is at
+    full weight from its first frame so its burst/onset survives the seam.
     """
     ma, mb = a.shape[0], b.shape[0]
     over = max(0, min(int(over), ma, mb))
@@ -1112,11 +1226,14 @@ def _blend_overlap(a: np.ndarray, b: np.ndarray, over: int) -> np.ndarray:
     # Pure B suffix (skipping B's first over frames already used in the overlap)
     out[start_b + over:] = b[over:]
     # Overlap region: B's first over frames mixed with A's last over frames via Bézier
-    w = _bezier_weights(over)
+    if protect_head:
+        wA, wB = _attack_weights(over)
+    else:
+        wB = _bezier_weights(over)
+        wA = 1.0 - wB
     for j in range(over):
         idx = start_b + j
-        wA = 1.0 - w[j]
-        out[idx] = wA * a[start_b + j] + w[j] * b[j]
+        out[idx] = wA[j] * a[start_b + j] + wB[j] * b[j]
     return out
 
 
@@ -1272,7 +1389,8 @@ def _apply_pitch_line(f0: np.ndarray, n_out: int, sr: int, fp: float,
 
 
 def _splice_breath(br_a: np.ndarray, br_b: np.ndarray,
-                   ma: int, mb: int, over: int, sr: int, fp: float) -> np.ndarray:
+                   ma: int, mb: int, over: int, sr: int, fp: float,
+                   protect_head: bool = False) -> np.ndarray:
     """Breath sample-level splicing: overlap-add cross-fade matching the frame-domain overlap region.
 
     Rules (same time base as the main-signal frame-domain splice, preventing breath
@@ -1281,6 +1399,9 @@ def _splice_breath(br_a: np.ndarray, br_b: np.ndarray,
       - segment B's breath is mixed in starting at len_a - ov
       - the overlap uses an equal-power cos/sin window: A's weight goes 1->0 and B's 0->1,
         producing a continuous output without jumps (A is no longer added twice)
+    protect_head=True keeps B's breath at full weight from the start and instead fades
+    A out over ATTACK_FADE_FRAMES (the incoming note's burst/aspiration onset must not
+    be faded in from zero, same as the frame-domain attack protection).
     Output length = len(br_a) + len(br_b) - overlap_samples
     """
     len_a = len(br_a)
@@ -1295,10 +1416,18 @@ def _splice_breath(br_a: np.ndarray, br_b: np.ndarray,
     out = np.zeros(len_a + len_b - ov_smp, dtype=np.float64)
     s0 = len_a - ov_smp              # sample where B starts mixing in (i.e. cross-fade start)
     out[:s0] = br_a[:s0]             # pure A part (written only once)
-    # Equal-power cross-fade in the overlap (cos/sin window: A 1->0, B 0->1)
-    t = np.linspace(0.0, np.pi / 2.0, ov_smp, dtype=np.float64)
-    wA = np.cos(t)
-    wB = np.sin(t)
+    if protect_head:
+        k = min(ov_smp, _frame_bound(ATTACK_CLIP_FRAMES, sr, fp))
+        wA = np.zeros(ov_smp, dtype=np.float64)
+        if k > 0:
+            u = np.linspace(0.0, 1.0, k, dtype=np.float64)
+            wA[:k] = 1.0 - (3.0 * u ** 2 - 2.0 * u ** 3)
+        wB = np.ones(ov_smp, dtype=np.float64)
+    else:
+        # Equal-power cross-fade in the overlap (cos/sin window: A 1->0, B 0->1)
+        t = np.linspace(0.0, np.pi / 2.0, ov_smp, dtype=np.float64)
+        wA = np.cos(t)
+        wB = np.sin(t)
     out[s0:s0 + ov_smp] = wA * br_a[s0:] + wB * br_b[:ov_smp]
     if len_b > ov_smp:
         out[s0 + ov_smp:] = br_b[ov_smp:]      # pure B tail
@@ -1358,6 +1487,138 @@ def _print_breath_position_report(name: str, fp: float, diag: dict) -> None:
         print(f"      [Check failed] " + "; ".join(issues))
     else:
         print(f"      [Check passed] three features agree, breath position aligns with the voiced-frame boundary, max deviation ≤2 frames")
+
+
+# ----------------------------------------------------------------------
+# Diagnostic probe: NaN / Inf / abnormal zeroing in any parameter array
+# ----------------------------------------------------------------------
+PROBE = True        # set False to silence all probe output
+
+
+def _probe_runs(mask: np.ndarray) -> list:
+    """Compress a boolean mask into (start, end) inclusive runs."""
+    runs = []
+    idx = np.flatnonzero(np.asarray(mask, dtype=bool))
+    if idx.size == 0:
+        return runs
+    start = prev = int(idx[0])
+    for i in idx[1:]:
+        i = int(i)
+        if i == prev + 1:
+            prev = i
+            continue
+        runs.append((start, prev))
+        start = prev = i
+    runs.append((start, prev))
+    return runs
+
+
+def _probe_runs_text(runs, limit: int = 6) -> str:
+    txt = ", ".join(f"{s}~{e}" if e > s else f"{s}" for s, e in runs[:limit])
+    return txt + (f" …(+{len(runs) - limit})" if len(runs) > limit else "")
+
+
+def _sample_to_frame(i: int, sr: float, fp: float) -> int:
+    spb = max(1e-9, float(sr) * float(fp) / 1000.0)
+    return int(round(i / spb))
+
+
+def _probe(name: str, arr, fp: float = 0.0) -> None:
+    """Report NaN/Inf counts, zeros and abnormal all-zero runs of one frame-domain parameter.
+
+    An abnormal run = consecutive frames where a 1-D parameter is exactly 0 (a parameter
+    collapsing mid-utterance is the classic burst source), or where a whole sp/ap row
+    (all bands of one frame) is 0.
+    """
+    if not PROBE or arr is None:
+        return
+    a = np.asarray(arr, dtype=np.float64)
+    if a.size == 0:
+        print(f"[Probe·{name}] empty")
+        return
+
+    fin = np.isfinite(a)
+    nan = int(np.count_nonzero(np.isnan(a)))
+    pinf = int(np.count_nonzero(np.isposinf(a)))
+    ninf = int(np.count_nonzero(np.isneginf(a)))
+
+    if a.ndim == 1:
+        zero_mask = (a == 0.0) & fin
+        parts = [f"n={a.size}", f"nan={nan}", f"+inf={pinf}", f"-inf={ninf}",
+                 f"zero={int(zero_mask.sum())}"]
+        runs = _probe_runs(zero_mask)
+        if runs:
+            parts.append(f"zero-runs[{_probe_runs_text(runs)}]")
+        if nan or pinf or ninf:
+            parts.append(f"bad[{_probe_runs_text(_probe_runs(~fin))}]")
+    else:
+        parts = [f"{a.shape[0]}×{a.shape[1]}", f"nan={nan}", f"+inf={pinf}", f"-inf={ninf}"]
+        bad_rows = ~fin.all(axis=1)
+        if bad_rows.any():
+            parts.append(f"bad-rows[{_probe_runs_text(_probe_runs(bad_rows))}]")
+        zero_rows = (a == 0.0).all(axis=1)
+        if zero_rows.any():
+            parts.append(f"zero-rows[{_probe_runs_text(_probe_runs(zero_rows))}]")
+
+    fin_vals = a[fin]
+    if fin_vals.size:
+        parts.append(f"range={fin_vals.min():.4g}~{fin_vals.max():.4g}")
+    print(f"[Probe·{name}] " + "  ".join(parts))
+
+
+def _probe_samples(name: str, arr, sr: float, fp: float = 0.0,
+                   jump_thresh: float = 0.25) -> None:
+    """Report non-finite samples and the largest sample-to-sample jumps (burst positions)."""
+    if not PROBE or arr is None:
+        return
+    a = np.asarray(arr, dtype=np.float64)
+    if a.size == 0:
+        print(f"[Probe·{name}] empty")
+        return
+
+    fin = np.isfinite(a)
+    nan = int(np.count_nonzero(np.isnan(a)))
+    pinf = int(np.count_nonzero(np.isposinf(a)))
+    ninf = int(np.count_nonzero(np.isneginf(a)))
+    af = np.where(fin, a, 0.0)
+    parts = [f"n={a.size}", f"nan={nan}", f"+inf={pinf}", f"-inf={ninf}",
+             f"peak={float(np.max(np.abs(af))):.3f}"]
+    if nan or pinf or ninf:
+        parts.append(f"bad[{_probe_runs_text(_probe_runs(~fin))}]smp")
+
+    jumps = np.abs(np.diff(af))
+    idx = np.flatnonzero(jumps >= jump_thresh)
+    if idx.size:
+        top = idx[np.argsort(jumps[idx])[::-1][:5]]
+        parts.append(f"jumps≥{jump_thresh:g}[{idx.size}] top: " + ", ".join(
+            f"#{int(i)}@{i / sr:.3f}s/f{_sample_to_frame(int(i), sr, fp)}Δ{jumps[i]:.2f}"
+            for i in top))
+    print(f"[Probe·{name}] " + "  ".join(parts))
+
+
+def _probe_params() -> None:
+    """Report non-finite or non-positive values among the numeric synthesis parameters."""
+    if not PROBE:
+        return
+    names = ("FOLLOW_RATIO", "AP_SCALE", "AP_MAX", "BREATH_GAIN", "BREATH_SHAPE_GAIN_MIN",
+             "BREATH_SHAPE_GAIN_MAX", "PLOSIVE_GAIN", "PLOSIVE_ENV_GAIN_MIN",
+             "PLOSIVE_ENV_GAIN_MAX", "SP_FLOOR", "EDGE_FADE_MS", "MATCH_RMS_TO")
+    g = globals()
+    shown, bad = [], []
+    for name in names:
+        value = g.get(name)
+        if value is None or isinstance(value, (bool, str)):
+            continue
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            continue
+        shown.append(f"{name}={f:g}")
+        if not np.isfinite(f) or f <= 0.0:
+            bad.append(name)
+    print("[Probe·params] " + ", ".join(shown))
+    if bad:
+        print("[Probe·params] abnormal (non-finite or ≤0): " + ", ".join(bad))
 
 
 # ----------------------------------------------------------------------
@@ -1511,6 +1772,15 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     shimmer_local = float((gp.get('shimmer') or {}).get('shimmer_local', 0.0))
     print(f"    [Jitter features] jitter_local={jitter_local:.3f}%  "
           f"shimmer_local={shimmer_local:.3f}%")
+
+    # Probe: any parameter collapsing to 0 / NaN / Inf right after decomposition + pitch shift
+    _seg_name = os.path.basename(audio_path)
+    _probe(f"seg·{_seg_name}·f0", f0_v, fp)
+    _probe(f"seg·{_seg_name}·sp", sp_v, fp)
+    _probe(f"seg·{_seg_name}·ap", ap_v, fp)
+    _probe(f"seg·{_seg_name}·gi", gi_v, fp)
+    _probe(f"seg·{_seg_name}·breath", breath_v, fp)
+    _probe(f"seg·{_seg_name}·src_rms", src_rms_v, fp)
 
     return dict(f0=f0_v, sp=sp_v, ap=ap_v, gi=gi_v, breath=breath_v,
                 src_rms=src_rms_v,
@@ -1694,6 +1964,7 @@ def synthesize(segments,
 def run() -> vl.WAVAudio:
     """Main flow: N-segment voiced-frame extraction -> per-segment Bézier fold splicing -> synthesis."""
     os.makedirs(os.path.dirname(os.path.abspath(OUTPUT_WAV)), exist_ok=True)
+    _probe_params()
 
     def _guard_samples(arr: np.ndarray, stage: str) -> np.ndarray:
         """Replace non-finite samples with 0 and report the affected frame range.
@@ -1737,7 +2008,7 @@ def run() -> vl.WAVAudio:
     # 1.5) Beat layout: anchor each segment's onset to the beat grid; overlaps/rests are
     #      derived automatically from the beat ranges (see _apply_beat_timeline)
     _sr0, _fp0 = segs[0]['sr'], segs[0]['fp']
-    beat_overs = _apply_beat_timeline(segs, SEGMENTS, _sr0, _fp0)
+    beat_overs, beat_protects = _apply_beat_timeline(segs, SEGMENTS, _sr0, _fp0)
 
     # 2) Cross-segment consistency checks
     sr, fp = segs[0]['sr'], segs[0]['fp']
@@ -1750,11 +2021,13 @@ def run() -> vl.WAVAudio:
     # 3) Per-seam overlap frame count (overs[i] = overlap of segment i with segment i-1, derived from the beat ranges)
     m = [len(s['f0']) for s in segs]
     overs = [0] + [int(beat_overs[i]) for i in range(1, n_seg)]
+    protects = [False] + [bool(beat_protects[i]) for i in range(1, n_seg)]
     n_out = sum(m) - sum(overs)
     print("\n[Concat] " + " + ".join(f"#{i + 1}={m[i]}frames({m[i] * fp:.0f}ms)"
                                      for i in range(n_seg)))
     for i in range(1, n_seg):
         print(f"        seam {i}: Bézier overlap region={overs[i]} frames({overs[i] * fp:.0f}ms)"
+              f"{' (attack-protected)' if protects[i] else ''}"
               f" → segment {i + 1} start frame {sum(m[:i]) - sum(overs[1:i + 1])}")
     print(f"        → output {n_out} frames({n_out * fp:.0f}ms)")
 
@@ -1786,9 +2059,15 @@ def run() -> vl.WAVAudio:
             # f0 needs a dedicated splice: a linear 0↔voiced blend invents a false fundamental
             # inside the overlap and the vocoder turns it into a burst.
             acc = (_blend_overlap_f0 if key == 'f0' else _blend_overlap)(
-                acc, segs[i][key], overs[i])
+                acc, segs[i][key], overs[i],
+                **({} if key == 'f0' else {'protect_head': protects[i]}))
         out[key] = acc
     f0_out, gi_out, sp_out, ap_out = out['f0'], out['gi'], out['sp'], out['ap']
+    # Probe: value sanity right after the multi-segment Bézier fold (before any sanitizing)
+    _probe("spliced·f0", f0_out, fp)
+    _probe("spliced·gi", gi_out, fp)
+    _probe("spliced·sp", sp_out, fp)
+    _probe("spliced·ap", ap_out, fp)
 
     # Inter-frame energy/value safety clamp.
     # NOTE: pyworld's synthesize() turns a single NaN sp/ap frame into NaN samples across
@@ -1824,6 +2103,11 @@ def run() -> vl.WAVAudio:
             print(f"[Spectrum floor] {n_zero} sp elements ≤0 → raised to {SP_FLOOR} (avoid NaN in synthesis)")
         sp_out = np.clip(sp_out, SP_FLOOR, None)
 
+    _probe("sanitized·f0", f0_out, fp)
+    _probe("sanitized·gi", gi_out, fp)
+    _probe("sanitized·sp", sp_out, fp)
+    _probe("sanitized·ap", ap_out, fp)
+
     # 5.5) Per-frame pitch line: the spliced result stays as-is, but every frame's pitch
     #      is strictly overridden by the curve; frames marked None = silent frames
     #      (forced mute later, including breath)
@@ -1849,6 +2133,8 @@ def run() -> vl.WAVAudio:
                   f" (positions {', '.join(str(int(v)) for v in np.flatnonzero(isolated)[:12])})")
     print(f"[f0 audit] zero={int(np.count_nonzero(f0_out <= 0))}/{n_out} "
           f"range={float(np.min(f0_out)):.2f}~{float(np.max(f0_out)):.2f}Hz")
+    # Probe: pitch line application must not introduce NaN/Inf or an abnormal zero run
+    _probe("pitch-line·f0", f0_out, fp)
 
     # Main-signal per-frame gain: f0=0 frames must not all be muted -- unvoiced frames
     # such as fricatives have no fundamental frequency (f0=0) yet carry real content;
@@ -1871,6 +2157,7 @@ def run() -> vl.WAVAudio:
     # The smoothing window leaks gain toward the silent side -> hard-zero on true silent frames so rest regions have strictly no residue.
     unvoiced_gain = np.where(keep, unvoiced_gain, 0.0)
     n_unv = int((~keep).sum())
+    _probe("gain·unvoiced", unvoiced_gain, fp)
 
     # 6) Breath sample-level fold splicing (same time base as the frame-domain fold)
     breath_out = segs[0]['breath']
@@ -1879,7 +2166,8 @@ def run() -> vl.WAVAudio:
     for i in range(1, n_seg):
         seam_info.append((i, len(breath_out)))
         breath_out = _splice_breath(breath_out, segs[i]['breath'],
-                                    frames_acc, m[i], overs[i], sr, fp)
+                                    frames_acc, m[i], overs[i], sr, fp,
+                                    protect_head=protects[i])
         frames_acc += m[i] - overs[i]
     target_samples = int(n_out * fp / 1000.0 * sr)
     breath_out = _align_samples(breath_out, target_samples)
@@ -1892,6 +2180,8 @@ def run() -> vl.WAVAudio:
         PLOSIVE_KEEP_BURST, PLOSIVE_MIN_GRAD_DB,
         PLOSIVE_MIN_CREST, PLOSIVE_MAX_VALLEY)
     unvoiced_gain = unvoiced_gain * plosive_gain
+    _probe("gain·plosive", plosive_gain, fp)
+    _probe("breath·spliced", breath_out, fp)
 
     print("[Breath] " + " + ".join(f"#{i + 1}={len(segs[i]['breath'])}smp"
                                  for i in range(n_seg))
@@ -1975,8 +2265,10 @@ def run() -> vl.WAVAudio:
     # frame gains are always 1 and are unaffected).
     out_data = np.asarray(output.data, dtype=np.float64)
     out_data = _guard_samples(out_data, "synthesized")
+    _probe_samples("synthesized", out_data, sr, fp)
     ug_smp = _resample_1d(unvoiced_gain, len(out_data))
     out_data = out_data * ug_smp
+    _probe_samples("after-mute", out_data, sr, fp)
     print(f"[Mute] {n_unv} true silent frames zeroed in the time domain with a smooth fade-in"
           f" (unvoiced/fricative frames kept) (ramp≈{ramp} frames/{ramp*fp:.0f}ms)")
 
@@ -2006,6 +2298,7 @@ def run() -> vl.WAVAudio:
         breath_concat, br_sr = prosses_breath.build_concat_breath()
         assert br_sr == sr, f"breath sample rate {br_sr} does not match the main signal {sr}"
         breath_concat = _guard_samples(breath_concat, "breath")
+        _probe_samples("breath·concat", breath_concat, sr, fp)
 
         # 7.1) Breath spectral coupling: shape the breath spectral envelope to the main signal sp (SP frames are 1025 bins,
         #      i.e. the output grid of pyworld cheaptrick's default fft_size=2048), removing formant misalignment and the disjointed feel
@@ -2024,6 +2317,7 @@ def run() -> vl.WAVAudio:
         print(f"[Breath mix×{BREATH_GAIN:g}] concatenated breath {len(breath_concat)}smp → "
               f"{n_add}smp mixed in (RMS {np.sqrt(np.mean(breath_concat[:n_add] ** 2)):.4f})")
         out_data[:n_add] += BREATH_GAIN * breath_concat[:n_add]
+        _probe_samples("after-breath-mix", out_data, sr, fp)
 
     # 7.5) Silent frames marked None by the pitch line: hard-zero in the sample domain
     #      (together with the already mixed breath), so a "silent frame" is truly mute,
@@ -2047,6 +2341,7 @@ def run() -> vl.WAVAudio:
 
     # 8) Start/end fade in/out + save
     out_data = _guard_samples(out_data, "final")
+    _probe_samples("final", out_data, sr, fp)
     out_data = _edge_fade(out_data, sr, EDGE_FADE_MS)
     final = vl.WAVAudio(data=out_data, sample_rate=sr)
     final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)
