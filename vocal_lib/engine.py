@@ -14,7 +14,7 @@ from .core.pyworld_processor import (
 )
 
 
-def decompose_vocal(audio_data, sample_rate):
+def decompose_vocal(audio_data, sample_rate, frame_period=5.0):
     """Vocal decomposition: takes audio data and sample rate, returns a decomposition result dict"""
     f0_sequence = detect_f0_sequence(audio_data, sample_rate)
 
@@ -42,7 +42,7 @@ def decompose_vocal(audio_data, sample_rate):
     }
 
     # pyworld is a mandatory dependency: always extract features, raise on failure, no fallback
-    pyworld_result = extract_pyworld_features(audio_data, sample_rate)
+    pyworld_result = extract_pyworld_features(audio_data, sample_rate, frame_period)
 
     f0_pyworld = pyworld_result['f0']
     time_axis = pyworld_result['time_axis']

@@ -700,8 +700,8 @@ glot_loaded = GlottalExcitation.load("_output/glot.npy")
 | End to end | `VocalB1Synthesizer.synthesize` writes to disk successfully and intermediate artifacts are cleaned up |
 
 ```bash
-C:\Python312\python.exe tools\test_vocal_lib.py            # all cases
-C:\Python312\python.exe tools\test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
+python tools\test_vocal_lib.py            # all cases
+python tools\test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
 ```
 
 Test artifacts are written to `_test_output/` for listening and troubleshooting; if any case fails, the exit code is non-zero.

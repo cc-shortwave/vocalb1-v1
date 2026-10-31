@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VocalB1.Core.Serialization;
 
 namespace VocalB1.Core.Dictionaries;
 
@@ -132,6 +133,6 @@ public static class DictionaryJson
         var directory = Path.GetDirectoryName(full);
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
-        File.WriteAllText(full, Serialize(dictionary));
+        AtomicFile.WriteAllText(full, Serialize(dictionary));
     }
 }

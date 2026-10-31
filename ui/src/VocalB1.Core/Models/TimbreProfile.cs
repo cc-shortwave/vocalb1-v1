@@ -101,7 +101,7 @@ public sealed class TimbreProfile
     }
 
     public static TimbreProfile Load(string path) =>
-        JsonSerializer.Deserialize<TimbreProfile>(File.ReadAllText(path), ProjectJson.Options)
+        JsonSerializer.Deserialize<TimbreProfile>(File.ReadAllText(path), ProjectJson.ReadOptions)
         ?? throw new InvalidDataException("音色参数 JSON 为空或无法解析。");
 
     public void Save(string path)
@@ -111,6 +111,6 @@ public sealed class TimbreProfile
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        File.WriteAllText(full, JsonSerializer.Serialize(this, ProjectJson.Options));
+        AtomicFile.WriteAllText(full, JsonSerializer.Serialize(this, ProjectJson.WriteOptions));
     }
 }

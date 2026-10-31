@@ -323,7 +323,7 @@ public sealed class PianoRollView : FrameworkElement
     {
         var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
         var pxPerBeat = Math.Max(MinPxPerBeat, plotWidth / Math.Max(1, TotalBeats()));
-        _viewStartBeat = beat - plotWidth / pxPerBeat / 2;
+        _viewStartBeat = Math.Max(1, beat - plotWidth / pxPerBeat / 2);
         InvalidateVisual();
     }
 
@@ -1052,7 +1052,8 @@ public sealed class PianoRollView : FrameworkElement
 
         // Pencil: dragging inside the plot draws a new note; the press point is the start, the release point the end.
         if (IsPencil && Mode == PianoRollMode.Notes
-            && position.X >= layout.Plot.Left && position.Y >= layout.Plot.Top && position.Y <= layout.Plot.Bottom)
+            && position.X >= layout.Plot.Left && position.X <= layout.Plot.Right
+            && position.Y >= layout.Plot.Top && position.Y <= layout.Plot.Bottom)
         {
             var startBeat = Math.Max(1, Snap(layout.BeatAt(position.X)));
             _drag = new DragState(DragKind.Pencil, -1, position, startBeat, startBeat,
@@ -1587,6 +1588,10 @@ public sealed class PianoRollView : FrameworkElement
             return;
 
         var position = e.GetPosition(this);
+        if (position.X < layout.Plot.Left || position.X > layout.Plot.Right
+            || position.Y < layout.Plot.Top || position.Y > layout.Plot.Bottom)
+            return;
+
         var beat = Math.Max(1, Snap(layout.BeatAt(position.X)));
         var semitone = Math.Clamp(layout.SemitoneAt(position.Y), layout.Low, layout.High);
 
@@ -1819,7 +1824,7 @@ public sealed class PianoRollView : FrameworkElement
         else if (modifiers.HasFlag(ModifierKeys.Alt))
             ZoomPitchAt(position.Y, direction);
         else if (modifiers.HasFlag(ModifierKeys.Shift))
-            _viewStartBeat -= direction * layout.VisibleBeats * 0.12;
+            _viewStartBeat = Math.Max(1, _viewStartBeat - direction * layout.VisibleBeats * 0.12);
         else
             _pitchScroll = Math.Clamp(_pitchScroll + direction, -MaxPitchScroll, MaxPitchScroll);
 
@@ -1843,7 +1848,7 @@ public sealed class PianoRollView : FrameworkElement
         var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
         var basePxPerBeat = Math.Max(MinPxPerBeat, plotWidth / Math.Max(1, TotalBeats()));
         var pxPerBeat = Math.Max(4, basePxPerBeat * _beatZoom);
-        _viewStartBeat = anchor - Math.Max(0, x - GutterWidth) / pxPerBeat;
+        _viewStartBeat = Math.Max(1, anchor - Math.Max(0, x - GutterWidth) / pxPerBeat);
     }
 
     /// <summary>Alt+wheel: zoom the visible pitch range while the row under the cursor stays put.</summary>
@@ -2122,7 +2127,8 @@ public sealed class PianoRollView : FrameworkElement
         }
 
         if (IsPencil && Mode == PianoRollMode.Notes
-            && position.X >= layout.Plot.Left && position.Y >= layout.Plot.Top && position.Y <= layout.Plot.Bottom)
+            && position.X >= layout.Plot.Left && position.X <= layout.Plot.Right
+            && position.Y >= layout.Plot.Top && position.Y <= layout.Plot.Bottom)
         {
             Cursor = Cursors.Cross;
             return;

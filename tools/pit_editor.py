@@ -24,11 +24,11 @@ Features (sketch version):
 Data source: imports SEGMENTS / PITCH_LINE / BPM / TIME_SIGNATURE from VocalB1.py in the same directory
 
 Run:
-    C:\\Python312\\python.exe pit_editor.py
+    python tools\\pit_editor.py
 Selftest (headless, for CI):
-    C:\\Python312\\python.exe pit_editor.py --selftest
+    python tools\\pit_editor.py --selftest
 Headless render of the preview wav (verifies the synthesis chain):
-    C:\\Python312\\python.exe pit_editor.py --render
+    python tools\\pit_editor.py --render
 """
 
 import json

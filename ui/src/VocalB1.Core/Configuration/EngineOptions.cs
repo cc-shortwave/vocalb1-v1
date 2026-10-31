@@ -1,4 +1,5 @@
 using System.Text.Json;
+using VocalB1.Core.Serialization;
 
 namespace VocalB1.Core.Configuration;
 
@@ -69,8 +70,18 @@ public sealed class EngineOptions
         if (!File.Exists(settingsPath))
             return discovered;
 
-        var loaded = JsonSerializer.Deserialize<EngineOptions>(
-            File.ReadAllText(settingsPath), JsonOptions) ?? discovered;
+        EngineOptions loaded;
+        try
+        {
+            loaded = JsonSerializer.Deserialize<EngineOptions>(
+                File.ReadAllText(settingsPath), JsonOptions) ?? discovered;
+        }
+        catch (Exception)
+        {
+            // A damaged or partially written settings file must never prevent startup:
+            // fall back to the discovered defaults.
+            return discovered;
+        }
 
         // Fall back to discovered values for missing fields
         if (string.IsNullOrWhiteSpace(loaded.RepositoryRoot))
@@ -90,7 +101,7 @@ public sealed class EngineOptions
         var dir = Path.GetDirectoryName(Path.GetFullPath(settingsPath));
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
-        File.WriteAllText(settingsPath, JsonSerializer.Serialize(this, JsonOptions));
+        AtomicFile.WriteAllText(settingsPath, JsonSerializer.Serialize(this, JsonOptions));
     }
 
     /// <summary>

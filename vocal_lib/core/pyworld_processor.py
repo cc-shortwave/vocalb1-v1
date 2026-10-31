@@ -7,10 +7,10 @@ MIN_F0 = 60
 MAX_F0 = 500
 FRAME_PERIOD = 5.0
 
-def extract_pyworld_features(audio_data, sample_rate):
+def extract_pyworld_features(audio_data, sample_rate, frame_period=FRAME_PERIOD):
     audio_float = audio_data.astype(np.float64)
 
-    f0, time_axis = pw.dio(audio_float, sample_rate, f0_floor=MIN_F0, f0_ceil=MAX_F0, frame_period=FRAME_PERIOD)
+    f0, time_axis = pw.dio(audio_float, sample_rate, f0_floor=MIN_F0, f0_ceil=MAX_F0, frame_period=frame_period)
     f0 = pw.stonemask(audio_float, f0, time_axis, sample_rate)
 
     sp = pw.cheaptrick(audio_float, f0, time_axis, sample_rate)

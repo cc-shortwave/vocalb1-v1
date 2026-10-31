@@ -81,11 +81,11 @@ internal static class Program
                 new TrackDocument
                 {
                     Name = "主唱",
-                    LibraryRoot = @"C:\lib\lead",
+                    LibraryRoot = @"voicebank\lead",
                     Segments =
                     [
-                        new VoiceSegment { Audio = @"C:\a\_で.wav", SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2 },
-                        new VoiceSegment { Audio = @"C:\a\_い.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 3.5 },
+                        new VoiceSegment { Audio = @"voicebank\_で.wav", SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2 },
+                        new VoiceSegment { Audio = @"voicebank\_い.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 3.5 },
                     ],
                     PitchLine =
                     [
@@ -96,10 +96,10 @@ internal static class Program
                 new TrackDocument
                 {
                     Name = "和声",
-                    LibraryRoot = @"C:\lib\harmony",
+                    LibraryRoot = @"voicebank\harmony",
                     Segments =
                     [
-                        new VoiceSegment { Audio = @"C:\a\_あ.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 1, BeatEnd = 4 },
+                        new VoiceSegment { Audio = @"voicebank\_あ.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 1, BeatEnd = 4 },
                     ],
                 },
             ],
@@ -115,8 +115,8 @@ internal static class Program
         Check("JSON 往返：音轨数", back.Tracks.Count == 2);
         Check("JSON 往返：音轨名与声库独立",
             back.Tracks[0].Name == "主唱" && back.Tracks[1].Name == "和声"
-            && back.Tracks[0].LibraryRoot == @"C:\lib\lead"
-            && back.Tracks[1].LibraryRoot == @"C:\lib\harmony");
+            && back.Tracks[0].LibraryRoot == @"voicebank\lead"
+            && back.Tracks[1].LibraryRoot == @"voicebank\harmony");
         Check("JSON 往返：各轨段数", back.Tracks[0].Segments.Count == 2 && back.Tracks[1].Segments.Count == 1);
         Check("JSON 往返：参数按轨独立",
             Math.Abs(back.Tracks[0].Settings.ApScale - 0.42) < 1e-9
@@ -136,7 +136,7 @@ internal static class Program
               "name": "旧工程",
               "bpm": 120,
               "segments": [
-                { "audio": "C:\\a\\_あ.wav", "srcPitch": "D4", "dstPitch": "G4", "beatStart": 1, "beatEnd": 2 }
+                { "audio": "voicebank\\_あ.wav", "srcPitch": "D4", "dstPitch": "G4", "beatStart": 1, "beatEnd": 2 }
               ],
               "pitchLine": [ { "beat": 1, "pitch": "G4" } ],
               "settings": { "apScale": 0.33 }

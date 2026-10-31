@@ -13,7 +13,8 @@ public static class ProjectJson
 {
     public const string FileExtension = ".vbproj.json";
 
-    public static readonly JsonSerializerOptions Options = new()
+    /// <summary>Read options: tolerant of projects written by older versions (including NaN/Infinity literals).</summary>
+    public static readonly JsonSerializerOptions ReadOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
@@ -23,12 +24,22 @@ public static class ProjectJson
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
+    /// <summary>Write options: rejects NaN/Infinity instead of persisting unusable values.</summary>
+    public static readonly JsonSerializerOptions WriteOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     public static string Serialize(ProjectDocument project) =>
-        JsonSerializer.Serialize(project, Options);
+        JsonSerializer.Serialize(project, WriteOptions);
 
     public static ProjectDocument Deserialize(string json)
     {
-        var project = JsonSerializer.Deserialize<ProjectDocument>(json, Options)
+        var project = JsonSerializer.Deserialize<ProjectDocument>(json, ReadOptions)
             ?? throw new InvalidDataException("工程 JSON 为空或无法解析。");
 
         project.Tracks ??= [];
@@ -36,7 +47,7 @@ public static class ProjectJson
         // 1.x compatibility: top-level segments / pitchLine / settings → migrated to the first track.
         if (project.Tracks.Count == 0)
         {
-            var legacy = JsonSerializer.Deserialize<LegacyProject>(json, Options);
+            var legacy = JsonSerializer.Deserialize<LegacyProject>(json, ReadOptions);
             if (legacy is not null && (legacy.Segments.Count > 0 || legacy.PitchLine.Count > 0))
             {
                 project.Tracks.Add(new TrackDocument
@@ -69,7 +80,7 @@ public static class ProjectJson
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        File.WriteAllText(full, Serialize(project));
+        AtomicFile.WriteAllText(full, Serialize(project));
         project.ProjectDirectory ??= dir;
     }
 

@@ -18,12 +18,12 @@ Library usage (recommended):
     from VocalB1Synthesizer import synthesize
     synthesize(
         segments=[
-            dict(audio=r"D:\\lib\\_で.wav", src_pitch="D4", dst_pitch="G4",
+            dict(audio=r"voicebank\\_で.wav", src_pitch="D4", dst_pitch="G4",
                  keep_unvoiced_head=True, beat_start=1, beat_end=2.5),
-            dict(audio=r"D:\\lib\\_い.wav", src_pitch="D4", dst_pitch="G4",
+            dict(audio=r"voicebank\\_い.wav", src_pitch="D4", dst_pitch="G4",
                  beat_start=2, beat_end=4),
         ],
-        output_path=r"D:\\out\\song.wav",
+        output_path=r"out\\song.wav",
         bpm=120, time_signature=(4, 4),
         verbose=True,
     )
@@ -35,6 +35,8 @@ Run directly:
 import contextlib
 import io
 import os
+import shutil
+import tempfile
 import numpy as np
 
 import vocal_lib as vl
@@ -222,6 +224,8 @@ DUR_JITTER_DECAY_MS = 120.0   # time constant (ms) over which extension-region j
                               # sustained notes get steadier the longer they are held; measured jitter/shimmer includes onset
                               # fluctuation, and applying it at full depth over a long tail creates an audible loudness/pitch wave
 DUR_TAIL_JITTER_RATIO = 0.3  # jitter retention ratio at the far end of the tail (0 = fully steady, 1 = no decay)
+JITTER_EXTRA_PCT  = 0.0       # extra pitch-jitter depth added to measured jitter_local (percentage points, 0~1)
+SHIMMER_EXTRA_PCT = 0.0       # extra amplitude-shimmer depth added to measured shimmer_local (percentage points, 0~1)
 
 # ----------------------------------------------------------------------
 # [5] Synthesis
@@ -465,7 +469,7 @@ def _fit_duration(seg: dict, m_target: int, sr: int, fp: float) -> dict:
     voiced_tail = f0[-W:][f0[-W:] > 0.0]
     base = float(np.median(voiced_tail)) if len(voiced_tail) else 0.0
     if base > 0.0:
-        j_amp = float(seg.get('jitter_local', 0.0)) / 100.0
+        j_amp = (float(seg.get('jitter_local', 0.0)) + JITTER_EXTRA_PCT) / 100.0
         f0_ext = base * (1.0 + j_amp * noise_f0 * jenv)
         ramp_n = min(k, W)
         if ramp_n > 0:
@@ -477,7 +481,7 @@ def _fit_duration(seg: dict, m_target: int, sr: int, fp: float) -> dict:
         f0_ext = np.zeros(k, dtype=np.float64)
     out['f0'] = np.concatenate([f0, f0_ext])
 
-    s_amp = float(seg.get('shimmer_local', 0.0)) / 100.0
+    s_amp = (float(seg.get('shimmer_local', 0.0)) + SHIMMER_EXTRA_PCT) / 100.0
     amp = np.clip(1.0 + s_amp * noise_amp * jenv, 0.2, 3.0)
 
     if seg.get('sp') is not None:
@@ -1840,7 +1844,10 @@ def synthesize(segments,
                plosive_env_tail=PLOSIVE_ENV_TAIL,
                plosive_env_gain_min=PLOSIVE_ENV_GAIN_MIN,
                plosive_env_gain_max=PLOSIVE_ENV_GAIN_MAX,
-               # [8] output
+               # [8] jitter / shimmer intensity (0~100, added on top of the voicebank's measured value)
+               jitter=0.0,
+               shimmer=0.0,
+               # [9] output
                edge_fade_ms=EDGE_FADE_MS,
                bit_depth=BIT_DEPTH,
                clean_intermediate=CLEAN_INTERMEDIATE,
@@ -1855,9 +1862,13 @@ def synthesize(segments,
         transition / keep_unvoiced_head / follow_ratio / band_ratios / breathy_thr.
     output_path : str
         Save path of the resulting wav (the directory is created if missing).
-        Intermediate artifacts (breath_seg*.wav / spliced_frames.txt) are written
-        to the same directory and deleted automatically at the end when
-        clean_intermediate=True.
+        When clean_intermediate=True, intermediate artifacts (breath_seg*.wav /
+        spliced_frames.txt) are written to a temporary directory and removed
+        automatically, so the output directory only receives the final wav.
+        When clean_intermediate=False they stay in the output directory.
+    jitter, shimmer : float
+        Extra jitter/shimmer depth (0~100), added on top of the voicebank's
+        measured jitter_local / shimmer_local.
     verbose : bool
         True prints pipeline logs; False runs silently.
 
@@ -1879,9 +1890,16 @@ def synthesize(segments,
     out_dir = os.path.dirname(output_path)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Intermediate artifacts follow the output directory (prosses_breath reads them from module constants, so they must be injected in sync)
-    breath_fmt = os.path.join(out_dir, "breath_seg{}.wav")
-    frames_txt = os.path.join(out_dir, "spliced_frames.txt")
+    # Intermediate artifacts must never leak into the user's output directory. When cleanup is
+    # enabled they live in a private temp directory; when disabled they stay next to the output
+    # so prosses_breath.py can still be run separately on them.
+    work_dir = out_dir
+    temp_work_dir = None
+    if clean_intermediate:
+        temp_work_dir = tempfile.mkdtemp(prefix="vocalb1-")
+        work_dir = temp_work_dir
+    breath_fmt = os.path.join(work_dir, "breath_seg{}.wav")
+    frames_txt = os.path.join(work_dir, "spliced_frames.txt")
 
     overrides = dict(
         SEGMENTS=list(segments),
@@ -1937,7 +1955,10 @@ def synthesize(segments,
         PLOSIVE_ENV_TAIL=plosive_env_tail,
         PLOSIVE_ENV_GAIN_MIN=plosive_env_gain_min,
         PLOSIVE_ENV_GAIN_MAX=plosive_env_gain_max,
-        # [8]
+        # [8] jitter / shimmer (0~100 -> 0~1 percentage point added to the measured value)
+        JITTER_EXTRA_PCT=float(jitter) / 100.0,
+        SHIMMER_EXTRA_PCT=float(shimmer) / 100.0,
+        # [9]
         EDGE_FADE_MS=edge_fade_ms,
         BIT_DEPTH=bit_depth,
         CLEAN_INTERMEDIATE=clean_intermediate,
@@ -1958,6 +1979,8 @@ def synthesize(segments,
     finally:
         g.update(saved)
         prosses_breath.FRAMES_TXT, prosses_breath.BREATH_FMT = pb_saved
+        if temp_work_dir is not None:
+            shutil.rmtree(temp_work_dir, ignore_errors=True)
     return output_path
 
 

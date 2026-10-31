@@ -40,7 +40,7 @@ The first public release is `1.0.0`. Never edit `VERSION` by hand — the script
 Run these before building anything.
 
 ```powershell
-cd D:\ccwork\vocalb1-v1
+cd <path-to-repo>
 git switch main
 git pull
 git status                 # must be clean: nothing to commit
@@ -134,7 +134,7 @@ $a.Dispose()          # must print nothing
 Unzip somewhere **outside** your working copy, e.g. `%USERPROFILE%\Desktop\reltest\`.
 
 ```powershell
-mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
+mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "<path-to-repo>\voicebank\<your-voicebank>"
 ```
 
 - [ ] double-clicking `VocalB1.exe` opens the window (no console error)
@@ -294,7 +294,7 @@ If a secret was ever in the history, rotate the secret — do not rely on rewrit
 | `pip install failed` / timeouts | mirror unreachable | rerun with `-PipIndex https://pypi.org/simple` |
 | `ModuleNotFoundError: pyworld` in the full build | upstream `pyworld` has no wheels for Python 3.9+ | `requirements.txt` must select `pyworld-prebuilt` on Windows |
 | dialog: `Failed to import the Python engine: ModuleNotFoundError: No module named 'soundfile'` | lite build — the interpreter it picked has no dependencies installed | run `"<interpreter>" -m pip install -r requirements.txt` from the unzipped folder, or use the full build |
-| app starts but says *engine not initialized* | bundled Python not found | check that `python\python.exe` sits next to `VocalB1.exe`; the app looks there before `C:\Python312` |
+| app starts but says *engine not initialized* | bundled Python not found | check that `python\python.exe` sits next to `VocalB1.exe`; the app looks there before a standard Python 3.12 install |
 | app says *voicebank not found* | empty `voicebank\` in the fresh unzip | add a voicebank (this is expected on a clean download) |
 | zip is 300+ MB | self-contained .NET + Python | use `-FrameworkDependent`, or ship lite only |
 | hundreds of DLLs next to the exe | `-NoSingleFile` was passed, so the runtime is published loose | drop the switch (single-file is the default) |

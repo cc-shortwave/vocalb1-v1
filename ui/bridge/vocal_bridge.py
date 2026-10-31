@@ -13,7 +13,7 @@ Startup:
 Requests (C# -> Python):
     {"id": "1", "cmd": "ping"}
     {"id": "2", "cmd": "selfcheck"}
-    {"id": "3", "cmd": "render", "output": "D:/out/a.wav", "project": { ... }}
+    {"id": "3", "cmd": "render", "output": "out/a.wav", "project": { ... }}
     {"id": "4", "cmd": "shutdown"}
 
 Responses (Python -> C#):
@@ -105,7 +105,7 @@ def _pick(d, *names, default=None):
 def _segment_to_dict(seg, fallback_ratios):
     out = {
         "audio": _pick(seg, "audio", "audioPath", "audio_path", default=""),
-        "src_pitch": _pick(seg, "srcPitch", "src_pitch", default="C4"),
+        "src_pitch": _pick(seg, "srcPitch", "src_pitch", default="D4"),
         "dst_pitch": _pick(seg, "dstPitch", "dst_pitch", default="C4"),
         "beat_start": float(_pick(seg, "beatStart", "beat_start", default=1.0)),
         "beat_end": float(_pick(seg, "beatEnd", "beat_end", default=2.0)),
@@ -193,6 +193,9 @@ _SETTING_MAP = {
     "edgeFadeMs": ("edge_fade_ms", "float"),
     "bitDepth": ("bit_depth", "int"),
     "cleanIntermediate": ("clean_intermediate", "bool"),
+    "jitter": ("jitter", "float"),
+    "shimmer": ("shimmer", "float"),
+    "verbose": ("verbose", "bool"),
 }
 
 
@@ -227,8 +230,8 @@ def _build_kwargs(project):
             int(project.get("beatsPerBar") or 3),
             int(project.get("beatUnit") or 4),
         ),
-        # Logs must be forwarded to the UI, so force this on
-        "verbose": True,
+        # Logs are forwarded to the UI by default; a project may opt out with "verbose": false
+        "verbose": bool(settings.get("verbose", True)),
     }
 
     for camel, (snake, kind) in _SETTING_MAP.items():
@@ -289,9 +292,10 @@ def cmd_render(req, req_id):
         return
 
     output = os.path.abspath(output)
-    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
 
     try:
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+
         from VocalB1Synthesizer import synthesize
 
         segments, kwargs = _build_kwargs(project)

@@ -17,7 +17,7 @@ pure signal processing that runs on a 2-core / 2 GB machine.
 - **Zero pretraining** — no model weights, no dataset, no GPU
 - **Offline** — nothing leaves your machine
 - **Desktop UI** (C# / WPF) plus a plain command-line entry point
-- **Fast enough to iterate** — a 25-second song renders in about 60 seconds; unchanged segments come from cache almost instantly
+- **Fast enough to iterate** — a 25-second song renders in about 60 seconds
 
 ---
 
@@ -124,8 +124,7 @@ Each note carries its own settings:
 - **Formant follow ratio** — how much formants track the pitch shift (0 = fixed, 1 = follows fully)
 - **Decay curve** — per-segment volume envelope
 
-These live in the project file, so they can be edited and undone repeatedly, and synthesis
-caches unchanged segments.
+These live in the project file, so they can be edited and undone repeatedly.
 
 ---
 
@@ -135,7 +134,7 @@ Measured on a 2-core / 2 GB machine:
 
 - 4-5 notes: about 2-5 seconds
 - a 25-second song: about 60 seconds (0.42x real time)
-- re-rendering with unchanged parameters: cache hit, effectively instant
+- re-rendering: same cost as the first render (the voicebank is re-analysed each time)
 
 ---
 

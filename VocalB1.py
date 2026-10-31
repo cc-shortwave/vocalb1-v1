@@ -3,7 +3,7 @@
 VocalB1.py -- synthesis entry point (all input parameters given explicitly, no library defaults relied on)
 
 Run:
-    C:\\Python312\\python.exe VocalB1.py
+    python VocalB1.py
 """
 
 import os

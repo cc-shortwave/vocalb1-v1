@@ -865,6 +865,10 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>Load a project file dropped onto the window: prompt for unsaved changes, then replace the workspace.</summary>
     public void OpenProjectFromPath(string path)
     {
+        // Ask before touching the current project: a canceled open must not read (or replace) anything.
+        if (!ConfirmDiscardChanges("载入工程"))
+            return;
+
         ProjectDocument project;
         try
         {
@@ -877,9 +881,6 @@ public sealed class MainViewModel : ObservableObject
             MessageBox.Show("无法打开工程文件：" + ex.Message, "载入工程", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-
-        if (!ConfirmDiscardChanges("载入工程"))
-            return;
 
         LoadProject(project, path);
         AddLog("info", $"Project opened: {path}");
@@ -1163,7 +1164,7 @@ public sealed class MainViewModel : ObservableObject
         var segment = new VoiceSegment
         {
             Audio = entry.Path,
-            SrcPitch = "D4",
+            SrcPitch = VoiceSegment.DefaultSrcPitch,
             DstPitch = PitchMath.ToPitchName(semitone),
             BeatStart = start,
             BeatEnd = start + 1.0,
@@ -1194,7 +1195,7 @@ public sealed class MainViewModel : ObservableObject
         var segment = new VoiceSegment
         {
             Audio = entry.Path,
-            SrcPitch = "D4",
+            SrcPitch = VoiceSegment.DefaultSrcPitch,
             DstPitch = PitchMath.ToPitchName(semitone),
             BeatStart = start,
             BeatEnd = start + length,
@@ -1424,7 +1425,11 @@ public sealed class MainViewModel : ObservableObject
         var root = EffectiveLibraryRoot;
         var path = string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)
             ? null
-            : Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+            : Directory.EnumerateFiles(root, "*", new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                })
                 .FirstOrDefault(p => string.Equals(Path.GetFileName(p), "icon.jpg", StringComparison.OrdinalIgnoreCase));
 
         var icon = LoadLibraryIcon(path);
@@ -1469,7 +1474,7 @@ public sealed class MainViewModel : ObservableObject
         var segment = new VoiceSegment
         {
             Audio = entry.Path,
-            SrcPitch = "D4",
+            SrcPitch = VoiceSegment.DefaultSrcPitch,
             DstPitch = "D4",
             BeatStart = start,
             BeatEnd = start + 1.0,
@@ -1600,7 +1605,10 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            var issues = ProjectValidator.Validate(_activeTrack, _project);
+            // Bind the render to the track that started it: the user may switch tracks while
+            // the engine is running, and the output must not be attributed to the new track.
+            var track = _activeTrack;
+            var issues = ProjectValidator.Validate(track, _project);
             foreach (var issue in issues)
                 AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
 
@@ -1612,28 +1620,28 @@ public sealed class MainViewModel : ObservableObject
 
             var directory = ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot);
             Directory.CreateDirectory(directory);
-            var stem = string.Concat(_activeTrack.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            var stem = string.Concat(track.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
             var output = Path.Combine(directory, $"render_{stem}_{DateTime.Now:yyyyMMdd_HHmmss}.wav");
 
-            AddLog("info", $"Starting the Python engine to render track \"{_activeTrack.Name}\"...");
+            AddLog("info", $"Starting the Python engine to render track \"{track.Name}\"...");
             await _services.Engine.InitializeAsync(_renderCts.Token);
 
             var progress = new Progress<EngineEvent>(OnEngineEvent);
             var result = await _services.Engine.RenderAsync(
-                new RenderRequest(_project, _activeTrack, output), progress, _renderCts.Token);
+                new RenderRequest(_project, track, output), progress, _renderCts.Token);
 
             // The engine output is mono; expand it to stereo here according to the track's vocal balance and distribute left/right energy.
             try
             {
-                if (StereoBalanceProcessor.Apply(result.OutputPath, _activeTrack.Settings.StereoBalance))
-                    AddLog("info", $"Stereo balance {_activeTrack.Settings.StereoBalance:0}: left/right channel energy adjusted.");
+                if (StereoBalanceProcessor.Apply(result.OutputPath, track.Settings.StereoBalance))
+                    AddLog("info", $"Stereo balance {track.Settings.StereoBalance:0}: left/right channel energy adjusted.");
             }
             catch (Exception ex)
             {
                 AddLog("warn", "Stereo balance post-processing failed: " + ex.Message);
             }
 
-            _trackOutputs[_activeTrack] = new RenderedTrack(result.OutputPath, result.DurationSeconds);
+            _trackOutputs[track] = new RenderedTrack(result.OutputPath, result.DurationSeconds);
             LastRenderPath = result.OutputPath;
             PreviewInfo = $"{Path.GetFileName(result.OutputPath)} · {result.DurationSeconds:F2}s";
             StatusText = $"渲染完成（{result.Elapsed.TotalSeconds:F1}s）";
