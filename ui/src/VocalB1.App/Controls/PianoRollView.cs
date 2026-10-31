@@ -30,6 +30,9 @@ public sealed class NoteDrawEventArgs(double beatStart, double beatEnd, int semi
     public int Semitone { get; } = semitone;
 }
 
+/// <summary>A rest region: a deleted lyric unit keeps its beat range but has no note block.</summary>
+public sealed record RestRegion(double BeatStart, double BeatEnd, int Semitone);
+
 /// <summary>
 /// Editable piano roll: horizontal axis is beats, vertical axis is pitch.
 /// Left button selects and drags a note / pitch point; right button adds a note or pitch point at the mouse position according to the current mode.
@@ -221,6 +224,11 @@ public sealed class PianoRollView : FrameworkElement
         nameof(Revision), typeof(int), typeof(PianoRollView),
         new FrameworkPropertyMetadata(0, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    /// <summary>Rest regions (deleted lyric units) drawn as dashed blocks of the same length.</summary>
+    public static readonly DependencyProperty RestRegionsProperty = DependencyProperty.Register(
+        nameof(RestRegions), typeof(IReadOnlyList<RestRegion>), typeof(PianoRollView),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
     public static readonly DependencyProperty PlayheadBeatProperty = DependencyProperty.Register(
         nameof(PlayheadBeat), typeof(double?), typeof(PianoRollView),
         new FrameworkPropertyMetadata(
@@ -282,6 +290,13 @@ public sealed class PianoRollView : FrameworkElement
     {
         get => (int)GetValue(RevisionProperty);
         set => SetValue(RevisionProperty, value);
+    }
+
+    /// <summary>Rest regions (deleted lyric units) drawn as dashed blocks of the same length.</summary>
+    public IReadOnlyList<RestRegion>? RestRegions
+    {
+        get => (IReadOnlyList<RestRegion>?)GetValue(RestRegionsProperty);
+        set => SetValue(RestRegionsProperty, value);
     }
 
     /// <summary>Playhead position (beat); null = hide the playhead.</summary>
@@ -364,13 +379,15 @@ public sealed class PianoRollView : FrameworkElement
         DrawPitchRows(dc, layout, dpi);
         DrawBeats(dc, layout, dpi);
         DrawNotes(dc, layout, segments, dpi);
+        DrawRests(dc, layout, dpi);
         DrawPencilPreview(dc, layout);
         DrawNoteTransitions(dc, layout);
         DrawPitchLine(dc, layout, curve);
         DrawNoteLyrics(dc, layout, segments, dpi);
         DrawSelectionBox(dc);
         DrawPlayhead(dc, layout);
-        DrawEmptyHint(dc, layout, segments.Count, dpi);
+        // A track that only holds rests is not empty: the dashed rest blocks are already on screen.
+        DrawEmptyHint(dc, layout, segments.Count + (RestRegions?.Count ?? 0), dpi);
 
         dc.Pop();
     }
@@ -404,7 +421,7 @@ public sealed class PianoRollView : FrameworkElement
         IReadOnlyList<VoiceSegment> segments,
         IReadOnlyList<PitchPoint> points)
     {
-        var (autoLow, autoHigh) = PitchRange(segments, points);
+        var (autoLow, autoHigh) = PitchRange(segments, points, RestRegions);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
         var low = autoLow + _pitchScroll - (rows - baseRows) / 2;
@@ -420,6 +437,8 @@ public sealed class PianoRollView : FrameworkElement
             total = Math.Max(total, Math.Max(segment.BeatStart, segment.BeatEnd));
         foreach (var point in Track?.PitchLine ?? [])
             total = Math.Max(total, point.Beat);
+        foreach (var rest in RestRegions ?? [])
+            total = Math.Max(total, Math.Max(rest.BeatStart, rest.BeatEnd));
         return total;
     }
 
@@ -557,6 +576,46 @@ public sealed class PianoRollView : FrameworkElement
                 selected ? _noteSelectedFill : _noteFill,
                 selected ? _accentPen : null,
                 box, 3, 3);
+        }
+    }
+
+    /// <summary>
+    /// Rest regions: a dashed block at the same beat range and pitch as the deleted note, so a deleted
+    /// lyric unit still reads as a rest of the same length. They are not editable here.
+    /// </summary>
+    private void DrawRests(DrawingContext dc, RollLayout layout, double dpi)
+    {
+        var rests = RestRegions;
+        if (rests is null || rests.Count == 0)
+            return;
+
+        var pen = new Pen(_labelBrush, 1)
+        {
+            DashStyle = new DashStyle([3, 3], 0),
+            DashCap = PenLineCap.Flat,
+        };
+        pen.Freeze();
+
+        var label = new FormattedText(
+            LanguageService.Translate("休止"), CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight, TextFace, 10, _labelBrush, dpi);
+
+        foreach (var rest in rests)
+        {
+            if (rest.Semitone < layout.Low || rest.Semitone > layout.High)
+                continue;
+
+            var box = layout.NoteBox(rest.BeatStart, rest.BeatEnd, rest.Semitone);
+            if (box.IsEmpty)
+                continue;
+
+            dc.DrawRoundedRectangle(null, pen, box, 3, 3);
+            if (box.Width < label.Width + 4)
+                continue;
+
+            dc.PushClip(new RectangleGeometry(box));
+            dc.DrawText(label, new Point(box.X + 3, box.Y + (box.Height - label.Height) / 2));
+            dc.Pop();
         }
     }
 
@@ -1865,7 +1924,7 @@ public sealed class PianoRollView : FrameworkElement
             return;
         _pitchZoom = zoom;
 
-        var (autoLow, autoHigh) = PitchRange(Track?.Segments ?? [], Track?.PitchLine ?? []);
+        var (autoLow, autoHigh) = PitchRange(Track?.Segments ?? [], Track?.PitchLine ?? [], RestRegions);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
         var desiredLow = semitone - fraction * (rows - 1);
@@ -2231,7 +2290,8 @@ public sealed class PianoRollView : FrameworkElement
 
     private static (int Low, int High) PitchRange(
         IReadOnlyList<VoiceSegment> segments,
-        IReadOnlyList<PitchPoint> points)
+        IReadOnlyList<PitchPoint> points,
+        IReadOnlyList<RestRegion>? rests)
     {
         var any = false;
         var low = 0;
@@ -2256,6 +2316,8 @@ public sealed class PianoRollView : FrameworkElement
             if (point.Pitch is not null && PitchMath.TryParseSemitones(point.Pitch, out var value))
                 Extend((int)Math.Round(value));
         }
+        foreach (var rest in rests ?? [])
+            Extend(rest.Semitone);
 
         if (!any)
             return (0, 11);

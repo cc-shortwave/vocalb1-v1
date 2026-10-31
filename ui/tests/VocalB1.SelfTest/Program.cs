@@ -202,6 +202,24 @@ internal static class Program
         Check("字典解析：首段 transition 归零", segments[0].Transition == 0 && segments[1].Transition == 4);
         Check("字典解析：保留清音头", segments[0].KeepUnvoicedHead);
 
+        var matches = DictionaryResolver.Split(back, "きゃ きゃ、");
+        Check("字典分解：按最长匹配逐条拆开并跳过空白/标点",
+            matches.Count == 2 && matches.All(m => m.Entry.Text == "きゃ"),
+            string.Join(" | ", matches.Select(m => m.Text)));
+
+        var longest = DictionaryResolver.Split(DefaultDictionary.Create(), "私君");
+        Check("字典分解：汉字条目按最长匹配优先",
+            longest.Count == 2 && longest[0].Text == "私" && longest[1].Text == "君",
+            string.Join(" | ", longest.Select(m => m.Text)));
+
+        var tokens = DictionaryResolver.Tokenize(back, "きゃ きゃ、");
+        Check("歌词分行：每个音素一个 token，空白为休止",
+            tokens.Count == 5
+            && tokens[0].Start == 0 && tokens[1].Start == 0
+            && tokens[2].IsRest && tokens[2].Start == 2
+            && !tokens[3].IsRest && tokens[3].Start == 3,
+            string.Join(" | ", tokens.Select(t => t.IsRest ? "休止" : t.Text)));
+
         var missing = new DictionaryEntry
         {
             Text = "x",

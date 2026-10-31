@@ -4,6 +4,17 @@ using VocalB1.Core.Pitch;
 namespace VocalB1.Core.Dictionaries;
 
 /// <summary>
+/// One minimal unit token produced by <see cref="DictionaryResolver.Tokenize"/>: a single entry part
+/// (span = the entry's text) or one whitespace character, which acts as a rest of the same length.
+/// Token order matches the generated note-block order.
+/// </summary>
+public readonly record struct LyricToken(
+    string Text, DictionaryEntry? Entry, DictionaryPart? Part, int Start, int Length)
+{
+    public bool IsRest => Entry is null || Part is null;
+}
+
+/// <summary>
 /// Expands dictionary entries into pronunciation segments for a project.
 /// Performs only a deterministic "text → segment list" conversion: it neither reads/writes file contents nor starts the engine.
 /// </summary>
@@ -11,6 +22,124 @@ public static class DictionaryResolver
 {
     /// <summary>Default beat length per part (when neither the caller nor the entry specifies a length).</summary>
     public const double FallbackBeatsPerPart = 0.5;
+
+    /// <summary>A piece of lyric text matched to one dictionary entry.</summary>
+    public readonly record struct TextMatch(string Text, DictionaryEntry Entry);
+
+    /// <summary>
+    /// Splits lyric text into minimal-unit tokens for the lyric bar: every entry part becomes one token
+    /// sharing the entry's text span, and every whitespace character becomes one rest token.
+    /// Punctuation and characters missing from the dictionary are skipped (they produce no token).
+    /// </summary>
+    public static IReadOnlyList<LyricToken> Tokenize(UserDictionary dictionary, string? text)
+    {
+        ArgumentNullException.ThrowIfNull(dictionary);
+
+        var tokens = new List<LyricToken>();
+        if (string.IsNullOrEmpty(text))
+            return tokens;
+
+        var byText = new Dictionary<string, DictionaryEntry>(StringComparer.Ordinal);
+        var maxLength = 0;
+        foreach (var entry in dictionary.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Text))
+                continue;
+            byText.TryAdd(entry.Text, entry);
+            maxLength = Math.Max(maxLength, entry.Text.Length);
+        }
+
+        var index = 0;
+        while (index < text.Length)
+        {
+            if (char.IsWhiteSpace(text[index]))
+            {
+                tokens.Add(new LyricToken(" ", null, null, index, 1));
+                index++;
+                continue;
+            }
+
+            if (text[index] is '、' or '，' or '。' or '！' or '？')
+            {
+                index++;
+                continue;
+            }
+
+            var matched = false;
+            for (var length = Math.Min(maxLength, text.Length - index); length >= 1; length--)
+            {
+                var candidate = text.Substring(index, length);
+                if (!byText.TryGetValue(candidate, out var entry))
+                    continue;
+
+                foreach (var part in entry.Parts)
+                    tokens.Add(new LyricToken(candidate, entry, part, index, length));
+
+                index += length;
+                matched = true;
+                break;
+            }
+
+            if (!matched)
+                index++;
+        }
+
+        return tokens;
+    }
+
+    /// <summary>
+    /// Splits lyric text into dictionary entries with longest-match-first semantics
+    /// ("わたし" resolves as the word entry when the dictionary contains it, otherwise kana by kana).
+    /// Whitespace and punctuation (、，。 spaces) are skipped; characters missing from the dictionary are ignored.
+    /// </summary>
+    public static IReadOnlyList<TextMatch> Split(UserDictionary dictionary, string? text)
+    {
+        ArgumentNullException.ThrowIfNull(dictionary);
+
+        var matches = new List<TextMatch>();
+        if (string.IsNullOrWhiteSpace(text))
+            return matches;
+
+        var byText = new Dictionary<string, DictionaryEntry>(StringComparer.Ordinal);
+        var maxLength = 0;
+        foreach (var entry in dictionary.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Text))
+                continue;
+            byText.TryAdd(entry.Text, entry);
+            maxLength = Math.Max(maxLength, entry.Text.Length);
+        }
+        if (maxLength == 0)
+            return matches;
+
+        var index = 0;
+        while (index < text.Length)
+        {
+            if (char.IsWhiteSpace(text[index]) || text[index] is '、' or '，' or '。' or '！' or '？')
+            {
+                index++;
+                continue;
+            }
+
+            var matched = false;
+            for (var length = Math.Min(maxLength, text.Length - index); length >= 1; length--)
+            {
+                var candidate = text.Substring(index, length);
+                if (!byText.TryGetValue(candidate, out var entry))
+                    continue;
+
+                matches.Add(new TextMatch(candidate, entry));
+                index += length;
+                matched = true;
+                break;
+            }
+
+            if (!matched)
+                index++;
+        }
+
+        return matches;
+    }
 
     /// <summary>
     /// Resolves a single dictionary entry.

@@ -318,10 +318,118 @@
                 <Grid Grid.Row="1" Margin="0,8,0,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                    <!-- Lyric bar (always visible): type text, Enter / focus loss decomposes it into
+                         minimal voicebank units and appends one D4 note block per unit -->
+                    <Border Grid.Row="0" Margin="0,0,0,8" Padding="10,8"
+                            Background="{DynamicResource InputBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="6">
+                        <StackPanel>
+                            <Grid>
+                                <TextBlock Text="歌词栏" Style="{StaticResource SectionTitle}"
+                                           Margin="0" HorizontalAlignment="Left"
+                                           VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding LyricStatus}" HorizontalAlignment="Right"
+                                           VerticalAlignment="Center" FontSize="11"
+                                           Foreground="{DynamicResource DimBrush}"
+                                           TextTrimming="CharacterEllipsis" MaxWidth="520" />
+                            </Grid>
+
+                            <TextBox x:Name="LyricInputBox" Margin="0,4,0,0"
+                                     Text="{Binding LyricInput, UpdateSourceTrigger=PropertyChanged}"
+                                     KeyDown="OnLyricInputKeyDown"
+                                     PreviewKeyDown="OnLyricInputPreviewKeyDown"
+                                     LostFocus="OnLyricInputLostFocus"
+                                     ToolTip="直接输入歌词；回车或点击别处时按当前字典分解为最小声库单位，并在下方生成 D4 音块。删除歌词时空格代表休止，删除空格即删除休止" />
+
+                            <Grid Margin="0,6,0,0">
+                                <TextBlock Text="分解结果（每个最小单位默认一个四分音符；拖动竖线可调整长度）"
+                                           FontSize="11" Foreground="{DynamicResource DimBrush}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasLyricUnits}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Disabled"
+                                          CanContentScroll="False"
+                                          Focusable="False" MaxHeight="44">
+                                <ItemsControl ItemsSource="{Binding LyricUnits}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <!-- Flat unit strip: one row shows the lyric character the block belongs to -->
+                                            <Grid Height="22" Width="{Binding StripWidth}" Margin="0,0,0,4">
+                                                <Border Width="{Binding PixelWidth}" HorizontalAlignment="Left"
+                                                        BorderThickness="1" CornerRadius="3"
+                                                        Padding="3,0" ToolTip="{Binding Detail}">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+                                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                            <Style.Triggers>
+                                                                <!-- A rest keeps the block's length but has no audio -->
+                                                                <DataTrigger Binding="{Binding IsRest}" Value="True">
+                                                                    <Setter Property="Background" Value="Transparent" />
+                                                                    <Setter Property="BorderBrush" Value="{DynamicResource DimBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <TextBlock Text="{Binding Caption}" FontSize="11" FontWeight="SemiBold"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsRest}" Value="True">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource DimBrush}" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </Border>
+                                                <!-- The length handle is a plain vertical line -->
+                                                <Thumb Width="10" HorizontalAlignment="Right"
+                                                       Cursor="SizeWE"
+                                                       ToolTip="拖动竖线调整该最小单位的拍长"
+                                                       DragDelta="OnLyricUnitThumbDragDelta"
+                                                       DragCompleted="OnLyricUnitThumbDragCompleted">
+                                                    <Thumb.Template>
+                                                        <ControlTemplate TargetType="Thumb">
+                                                            <Grid Background="Transparent">
+                                                                <Rectangle Width="2" HorizontalAlignment="Center"
+                                                                           Fill="{DynamicResource AccentBrush}" />
+                                                            </Grid>
+                                                        </ControlTemplate>
+                                                    </Thumb.Template>
+                                                </Thumb>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,6">
                         <TextBlock Text="{Binding PreviewInfo}" VerticalAlignment="Center"
                                    Foreground="{DynamicResource DimBrush}" />
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
@@ -341,7 +449,7 @@
                         </StackPanel>
                     </Grid>
 
-                    <Border Grid.Row="1"
+                    <Border Grid.Row="2"
                             Background="{DynamicResource InputBrush}"
                             BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="1"
@@ -350,6 +458,7 @@
                         <controls:PianoRollView Track="{Binding ActiveTrack}"
                                                 Bpm="{Binding Bpm}"
                                                 BeatsPerBar="{Binding BeatsPerBar}"
+                                                RestRegions="{Binding RollRestRegions}"
                                                 Mode="{Binding RollMode}"
                                                 IsPencil="{Binding IsPencil}"
                                                 GridDivision="{Binding GridDivision}"

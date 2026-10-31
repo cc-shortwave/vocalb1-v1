@@ -79,6 +79,16 @@ public sealed class MainViewModel : ObservableObject
     private double _dictionaryBeats = 1.0;
     private string _dictionaryDstPitch = "G4";
 
+    /// <summary>Default beat length of one minimal unit: one quarter note (= one beat in a 4/4 grid).</summary>
+    private const double DefaultLyricUnitBeats = 1.0;
+    private const double MinLyricUnitBeats = 0.25;
+    /// <summary>Pitch of every block generated from the lyric bar.</summary>
+    private const string LyricBlockPitch = "D4";
+
+    private string _lyricInput = string.Empty;
+    private string _lyricStatus = "输入歌词后按回车或点击别处，按字典分解为最小声库单位";
+    private string _lyricCommittedText = string.Empty;
+
     public MainViewModel(AppServices services)
     {
         _services = services;
@@ -649,6 +659,371 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _dictionaryDstPitch, value);
     }
 
+    // ------------------------------------------------------------------
+    // Lyric bar (top of the editor): type text, commit -> minimal voicebank units + D4 blocks
+    // ------------------------------------------------------------------
+
+    /// <summary>Raw lyric text typed in the top bar.</summary>
+    public string LyricInput
+    {
+        get => _lyricInput;
+        set => SetProperty(ref _lyricInput, value);
+    }
+
+    /// <summary>One-line feedback under the lyric bar (decomposed unit count, skipped samples, etc.).</summary>
+    public string LyricStatus
+    {
+        get => LanguageService.Translate(_lyricStatus);
+        private set => SetProperty(ref _lyricStatus, value);
+    }
+
+    /// <summary>Minimal units of the last commit; each item is one generated D4 block.</summary>
+    public ObservableCollection<LyricUnitRow> LyricUnits { get; } = [];
+
+    public bool HasLyricUnits => LyricUnits.Count > 0;
+
+    /// <summary>Rest regions (deleted lyric units) drawn as dashed blocks in the piano roll.</summary>
+    public IReadOnlyList<RestRegion> RollRestRegions { get; private set; } = [];
+
+    /// <summary>Result of a lyric deletion key press: the new text and where the caret should sit.</summary>
+    public sealed record LyricTextEdit(string Text, int Caret);
+
+    /// <summary>
+    /// Called when the lyric input loses focus or Enter is pressed: splits the text into minimal voicebank
+    /// units (whitespace becomes a rest), reconciles the existing unit strip in place, and keeps one D4
+    /// note block per non-rest unit. Editing the text after a commit updates the same phrase instead of
+    /// appending a second copy.
+    /// </summary>
+    public void CommitLyricInput()
+    {
+        if (_dictionary is null)
+        {
+            AddLog("warn", "当前没有可用字典，无法分解歌词。");
+            return;
+        }
+
+        var text = _lyricInput ?? string.Empty;
+
+        if (string.Equals(text, _lyricCommittedText, StringComparison.Ordinal) && LyricUnits.Count > 0)
+            return;
+
+        var tokens = DictionaryResolver.Tokenize(_dictionary, text);
+        if (tokens.Count == 0 && LyricUnits.Count == 0)
+        {
+            LyricStatus = string.IsNullOrWhiteSpace(text)
+                ? "歌词为空：输入后按回车或点击别处即可分解"
+                : $"字典中没有可分解的内容：\"{text}\"";
+            if (!string.IsNullOrWhiteSpace(text))
+                AddLog("warn", $"Lyric \"{text}\" matched no dictionary entry.");
+            _lyricCommittedText = text;
+            return;
+        }
+
+        var startBeat = LyricUnits.Count > 0 ? LyricUnits[0].BeatStart : NextLyricStartBeat();
+        var specs = BuildLyricSpecs(tokens, out var skipped);
+
+        PushUndo("lyric:" + text);
+        ReconcileLyricUnits(specs, startBeat);
+        _lyricCommittedText = text;
+
+        if (LyricUnits.Count == 0)
+        {
+            LyricStatus = skipped.Count > 0
+                ? $"声库中找不到音频：{string.Join("、", skipped.Distinct().Take(6))}"
+                : "歌词与休止已全部删除";
+            AddLog("info", "Lyric bar cleared: all generated blocks and rests removed.");
+            return;
+        }
+
+        var realCount = LyricUnits.Count(u => !u.IsRest);
+        var restCount = LyricUnits.Count - realCount;
+        var message = $"已分解为 {LyricUnits.Count} 个最小单位：{realCount} 个 {LyricBlockPitch} 音块";
+        if (restCount > 0)
+            message += $"，{restCount} 个休止";
+        if (skipped.Count > 0)
+            message += $"（跳过 {skipped.Count} 个缺失音频：{string.Join("、", skipped.Distinct().Take(4))}）";
+        LyricStatus = message;
+        AddLog("info", $"Lyric \"{text}\" -> {LyricUnits.Count} unit(s): "
+            + string.Join(" + ", LyricUnits.Select(u => u.Display)) + $", {_activeTrack.Name}");
+    }
+
+    /// <summary>
+    /// Computes the text edit for Backspace/Delete in the lyric bar. The first deletion of a unit replaces
+    /// its text with one space per generated block (the block becomes a rest of the same length); deleting
+    /// a space then removes that rest and pulls the following units together.
+    /// Returns null when this edit cannot be mapped onto the current unit strip (no units, or the text no
+    /// longer lines up because audio was missing), in which case the text box keeps its default behavior.
+    /// </summary>
+    public LyricTextEdit? TryBuildLyricDeletion(string text, int caret, int selectionLength, bool backspace)
+    {
+        if (_dictionary is null || LyricUnits.Count == 0)
+            return null;
+
+        text ??= string.Empty;
+        var tokens = DictionaryResolver.Tokenize(_dictionary, text);
+        if (tokens.Count != LyricUnits.Count)
+            return null;
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].IsRest != LyricUnits[i].IsRest)
+                return null;
+        }
+
+        int start;
+        int end;
+        if (selectionLength > 0)
+        {
+            start = caret;
+            end = caret + selectionLength;
+        }
+        else if (backspace)
+        {
+            if (caret <= 0)
+                return null;
+            start = caret - 1;
+            end = caret;
+        }
+        else
+        {
+            if (caret >= text.Length)
+                return null;
+            start = caret;
+            end = caret + 1;
+        }
+
+        start = Math.Clamp(start, 0, text.Length);
+        end = Math.Clamp(end, start, text.Length);
+        if (end <= start)
+            return null;
+
+        var affected = tokens.Where(t => t.Start < end && t.Start + t.Length > start).ToList();
+        var blocks = affected.Where(t => !t.IsRest).ToList();
+        if (blocks.Count == 0)
+            return new LyricTextEdit(text.Remove(start, end - start), start);
+
+        // Deleting any character of an entry turns every block of that entry into one rest placeholder.
+        var spanStart = blocks.Min(t => t.Start);
+        var spanEnd = blocks.Max(t => t.Start + t.Length);
+        var newText = string.Concat(text.AsSpan(0, spanStart), new string(' ', blocks.Count), text.AsSpan(spanEnd));
+        return new LyricTextEdit(newText, spanStart + blocks.Count);
+    }
+
+    /// <summary>
+    /// Drag on the vertical line at the right edge of one unit: changes that unit's beat length and
+    /// shifts the following units so the strip stays contiguous. Works for rests as well.
+    /// </summary>
+    public void ResizeLyricUnit(LyricUnitRow? row, double deltaBeats)
+    {
+        if (row is null)
+            return;
+
+        var index = LyricUnits.IndexOf(row);
+        if (index < 0)
+            return;
+
+        var newLength = Math.Max(MinLyricUnitBeats, row.Length + deltaBeats);
+        if (Math.Abs(newLength - row.Length) < 0.001)
+            return;
+
+        PushUndo("lyric-length:" + row.Id);
+
+        var delta = newLength - row.Length;
+        RelayoutUnit(row, row.BeatStart, newLength);
+        foreach (var unit in LyricUnits.Skip(index + 1))
+            RelayoutUnit(unit, unit.BeatStart + delta, unit.Length);
+
+        foreach (var unit in LyricUnits)
+            unit.RefreshMetrics();
+
+        RefreshRollRestRegions();
+        RollRevision++;
+    }
+
+    private sealed record LyricUnitSpec(
+        bool IsRest, string Display, string Source,
+        string? Audio, string? SrcPitch, bool KeepUnvoicedHead);
+
+    private List<LyricUnitSpec> BuildLyricSpecs(IReadOnlyList<LyricToken> tokens, out List<string> skipped)
+    {
+        skipped = [];
+        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
+            ? null
+            : Path.GetDirectoryName(_dictionaryPath);
+        var libraryRoot = ResolveDictionaryLibraryRoot();
+        var specs = new List<LyricUnitSpec>(tokens.Count);
+
+        foreach (var token in tokens)
+        {
+            if (token.IsRest)
+            {
+                specs.Add(new LyricUnitSpec(true, "休止", "休止", null, null, false));
+                continue;
+            }
+
+            var audio = DictionaryResolver.ResolveAudioPath(token.Part!.Audio, dictionaryDirectory, libraryRoot);
+            if (audio is null)
+            {
+                skipped.Add(token.Part.Audio);
+                continue;
+            }
+
+            var srcPitch = FirstNonEmpty(token.Part.SrcPitch, token.Entry!.SrcPitch, _dictionary!.DefaultSrcPitch, "D4");
+            specs.Add(new LyricUnitSpec(
+                false, UnitLabel(token.Part.Audio), token.Text,
+                audio, srcPitch, token.Part.KeepUnvoicedHead));
+        }
+
+        return specs;
+    }
+
+    /// <summary>
+    /// Rebuilds the unit strip in place: existing units keep their beat length, rest units lose their
+    /// segment (the block becomes a gap), non-rest units get their D4 block back, and the strip is laid
+    /// out sequentially from <paramref name="startBeat"/>.
+    /// </summary>
+    private void ReconcileLyricUnits(IReadOnlyList<LyricUnitSpec> specs, double startBeat)
+    {
+        while (LyricUnits.Count > specs.Count)
+        {
+            var last = LyricUnits[^1];
+            RemoveUnitSegment(last);
+            LyricUnits.RemoveAt(LyricUnits.Count - 1);
+        }
+
+        for (var i = 0; i < specs.Count; i++)
+        {
+            if (i >= LyricUnits.Count)
+                LyricUnits.Add(new LyricUnitRow(DefaultLyricUnitBeats, startBeat));
+
+            var unit = LyricUnits[i];
+            var spec = specs[i];
+            if (spec.IsRest)
+            {
+                RemoveUnitSegment(unit);
+                unit.SetContent(null, "休止", "休止");
+                continue;
+            }
+
+            var segment = unit.Segment;
+            if (segment is null)
+            {
+                segment = new VoiceSegment
+                {
+                    Audio = spec.Audio!,
+                    SrcPitch = spec.SrcPitch!,
+                    DstPitch = LyricBlockPitch,
+                    BeatStart = unit.BeatStart,
+                    BeatEnd = unit.BeatEnd,
+                    Transition = i == 0 ? 0 : DefaultTransitionFrames,
+                    KeepUnvoicedHead = spec.KeepUnvoicedHead,
+                };
+                _activeTrack.Segments.Add(segment);
+                _activeTrack.AddPitchNodes(segment, 5);
+            }
+            else
+            {
+                segment.Audio = spec.Audio!;
+                segment.SrcPitch = spec.SrcPitch!;
+                segment.DstPitch = LyricBlockPitch;
+            }
+
+            segment.LyricOverride = spec.Source;
+            unit.SetContent(segment, spec.Display, spec.Source);
+        }
+
+        var cursor = startBeat;
+        foreach (var unit in LyricUnits)
+        {
+            RelayoutUnit(unit, cursor, unit.Length);
+            cursor += unit.Length;
+        }
+
+        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
+        RefreshSegments();
+        RefreshRollRestRegions();
+        OnPropertyChanged(nameof(HasLyricUnits));
+    }
+
+    private void RemoveUnitSegment(LyricUnitRow unit)
+    {
+        var segment = unit.Segment;
+        if (segment is null)
+            return;
+
+        _activeTrack.Segments.Remove(segment);
+        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == segment.Id);
+    }
+
+    /// <summary>Moves/resizes a unit and keeps its linked segment and pitch nodes in sync.</summary>
+    private void RelayoutUnit(LyricUnitRow unit, double beatStart, double length)
+    {
+        var segment = unit.Segment;
+        if (segment is not null)
+        {
+            var oldStart = segment.BeatStart;
+            var oldEnd = segment.BeatEnd;
+            var newEnd = beatStart + length;
+            if (Math.Abs(oldStart - beatStart) > 1e-9 || Math.Abs(oldEnd - newEnd) > 1e-9)
+            {
+                ScaleSegmentPoints(segment, oldStart, oldEnd, beatStart, newEnd);
+                segment.BeatStart = beatStart;
+                segment.BeatEnd = newEnd;
+            }
+        }
+
+        unit.SetLayout(beatStart, length);
+    }
+
+    private void ClearLyricUnits()
+    {
+        LyricUnits.Clear();
+        RefreshRollRestRegions();
+        OnPropertyChanged(nameof(HasLyricUnits));
+    }
+
+    /// <summary>Keeps the piano-roll rest markers in sync with the unit strip.</summary>
+    private void RefreshRollRestRegions()
+    {
+        var semitone = PitchMath.TryParseSemitones(LyricBlockPitch, out var value)
+            ? (int)Math.Round(value)
+            : 0;
+        RollRestRegions = LyricUnits
+            .Where(u => u.IsRest)
+            .Select(u => new RestRegion(u.BeatStart, u.BeatEnd, semitone))
+            .ToList();
+        OnPropertyChanged(nameof(RollRestRegions));
+    }
+
+    private double NextLyricStartBeat() => _activeTrack.Segments.Count == 0
+        ? 1.0
+        : Math.Max(1.0, _activeTrack.Segments.Max(s => s.BeatEnd));
+
+    /// <summary>Maps a segment's pitch nodes from one beat range onto another (first/last stay at the ends).</summary>
+    private void ScaleSegmentPoints(
+        VoiceSegment segment, double oldStart, double oldEnd, double newStart, double newEnd)
+    {
+        var oldSpan = Math.Max(0.001, oldEnd - oldStart);
+        var newSpan = Math.Max(0.001, newEnd - newStart);
+        foreach (var point in _activeTrack.PitchLine)
+        {
+            if (point.SegmentId != segment.Id || point.IsTransition)
+                continue;
+            var t = Math.Clamp((point.Beat - oldStart) / oldSpan, 0, 1);
+            point.Beat = newStart + t * newSpan;
+        }
+
+        _activeTrack.SortPitchLine();
+    }
+
+    private static string UnitLabel(string audio)
+    {
+        var name = Path.GetFileNameWithoutExtension(audio).TrimStart('_');
+        return string.IsNullOrEmpty(name) ? audio : name;
+    }
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
+
     public string PreviewInfo
     {
         get => LanguageService.Translate(_previewInfo);
@@ -814,6 +1189,7 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ProjectPathText));
         OnPropertyChanged(nameof(DictionaryName));
         OnPropertyChanged(nameof(DictionaryPathText));
+        OnPropertyChanged(nameof(LyricStatus));
         RefreshParameterRows();
     }
 
@@ -1350,6 +1726,10 @@ public sealed class MainViewModel : ObservableObject
         RefreshLibrary();
         RefreshSegments();
         DictionaryStartBeat = track.TotalBeats > 0 ? track.TotalBeats : 1.0;
+
+        // The lyric strip shows the blocks generated for this track; switching tracks clears it.
+        ClearLyricUnits();
+        _lyricCommittedText = string.Empty;
 
         if (_trackOutputs.TryGetValue(track, out var output) && File.Exists(output.Path))
         {

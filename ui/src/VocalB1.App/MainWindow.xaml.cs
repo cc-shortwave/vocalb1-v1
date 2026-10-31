@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 using VocalB1.App.Controls;
@@ -69,6 +70,60 @@ public partial class MainWindow : Window
         box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
         e.Handled = true;
     }
+
+    /// <summary>Enter or focus loss decomposes the top lyric bar into minimal units and generates D4 blocks.</summary>
+    private void OnLyricInputKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+
+        if (sender is TextBox box)
+            box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        _viewModel?.CommitLyricInput();
+        e.Handled = true;
+    }
+
+    private void OnLyricInputLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox box)
+            box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        _viewModel?.CommitLyricInput();
+    }
+
+    /// <summary>
+    /// Backspace/Delete on committed lyrics: the first deletion turns the unit into a space (a rest of the
+    /// same length); deleting that space then removes the rest and pulls the following units together.
+    /// </summary>
+    private void OnLyricInputPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Back or Key.Delete)
+            || sender is not TextBox box
+            || _viewModel is null
+            || Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            return;
+
+        var edit = _viewModel.TryBuildLyricDeletion(
+            box.Text, box.CaretIndex, box.SelectionLength, e.Key == Key.Back);
+        if (edit is null)
+            return;
+
+        e.Handled = true;
+        box.Text = edit.Text;
+        box.CaretIndex = Math.Clamp(edit.Caret, 0, edit.Text.Length);
+        box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        _viewModel.CommitLyricInput();
+    }
+
+    /// <summary>Dragging the vertical line at a unit's right edge changes its beat length.</summary>
+    private void OnLyricUnitThumbDragDelta(object sender, DragDeltaEventArgs e)
+    {
+        if (sender is Thumb { DataContext: LyricUnitRow row })
+            _viewModel?.ResizeLyricUnit(row, e.HorizontalChange / LyricUnitRow.PixelsPerBeat);
+    }
+
+    /// <summary>After the drag, rebuild the segment list so the right panel shows the new beat ranges.</summary>
+    private void OnLyricUnitThumbDragCompleted(object sender, DragCompletedEventArgs e) =>
+        _viewModel?.RefreshActiveTrack();
 
     private void OnRollNoteAddRequested(object? sender, NoteAddEventArgs e) =>
         _viewModel?.AddNoteAt(e.Beat, e.Semitone);
