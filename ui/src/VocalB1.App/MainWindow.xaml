@@ -518,9 +518,10 @@
                             <TextBlock Grid.Column="0" Text="歌词" Foreground="{DynamicResource DimBrush}"
                                        VerticalAlignment="Center" Margin="0,0,8,0" />
                             <TextBox Grid.Column="1" x:Name="LyricBox" Margin="0"
-                                     Text="{Binding SelectedLyric, UpdateSourceTrigger=PropertyChanged}"
+                                     Text="{Binding SelectedLyric, UpdateSourceTrigger=LostFocus}"
                                      IsEnabled="{Binding HasSelectedSegment}"
-                                     ToolTip="选中音块后直接输入歌词；清空则回到音频名对应的默认文字" />
+                                     KeyDown="OnLyricBoxKeyDown"
+                                     ToolTip="选中音块后输入当前字典中的假名或汉字；失焦或回车后按字典换发音。清空则回到音频名对应的默认文字" />
                         </Grid>
 
                         <!-- Crossfade length between the selected segment and the previous one (stored as synthesis frames, converted to beats at the current tempo) -->

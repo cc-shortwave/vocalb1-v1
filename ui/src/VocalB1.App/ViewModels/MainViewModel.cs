@@ -130,6 +130,7 @@ public sealed class MainViewModel : ObservableObject
         });
 
         LoadProject(_project, null);
+        LoadDefaultDictionary();
         AddLog("info", $"Repository root: {services.Options.RepositoryRoot}");
         AddLog("info", "Empty project created. Use \"Add to project\" in the library or \"Demo\" in the top bar to start.");
     }
@@ -419,7 +420,72 @@ public sealed class MainViewModel : ObservableObject
             PushUndo("lyric:" + row.Model.Id);
             row.Lyric = value ?? string.Empty;
             RollRevision++;
+            ApplyLyricPronunciation(row, value ?? string.Empty);
         }
+    }
+
+    /// <summary>
+    /// Re-resolves a segment's pronunciation from the current dictionary: one part swaps the wav in place,
+    /// a multi-mora entry is split into one segment per part across the same beat range.
+    /// Runs on commit (focus loss / Enter), so a lyric is not re-split on every keystroke.
+    /// </summary>
+    private void ApplyLyricPronunciation(SegmentRow row, string lyric)
+    {
+        if (_dictionary is null || string.IsNullOrWhiteSpace(lyric))
+            return;
+
+        var entry = _dictionary.Entries.FirstOrDefault(e => e.Text == lyric);
+        if (entry is null)
+        {
+            AddLog("warn", $"歌词 \"{lyric}\" 不在当前字典中，发音未改变。");
+            return;
+        }
+
+        List<VoiceSegment> segments;
+        try
+        {
+            segments = DictionaryResolver.Resolve(
+                entry,
+                string.IsNullOrWhiteSpace(_dictionaryPath) ? null : Path.GetDirectoryName(_dictionaryPath),
+                ResolveDictionaryLibraryRoot(),
+                row.Model.BeatStart,
+                row.Model.Length,
+                row.Model.DstPitch,
+                row.Model.SrcPitch).ToList();
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", $"歌词 \"{lyric}\" 换发音失败：{ex.Message}");
+            return;
+        }
+
+        if (segments.Count == 1)
+        {
+            var single = segments[0];
+            row.Model.Audio = single.Audio;
+            row.Model.SrcPitch = single.SrcPitch;
+            row.Model.DstPitch = single.DstPitch;
+            row.Model.KeepUnvoicedHead = single.KeepUnvoicedHead;
+            AddLog("info", $"Lyric \"{lyric}\" -> {Path.GetFileName(single.Audio)} ({_activeTrack.Name})");
+            return;
+        }
+
+        // Multi-part: keep the original beat range and the link to the previous segment.
+        var index = IndexOfSegment(row) ?? 0;
+        var transition = row.Model.Transition;
+        _activeTrack.Segments.Remove(row.Model);
+        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == row.Model.Id);
+        segments[0].Transition = transition;
+        _activeTrack.Segments.AddRange(segments);
+        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
+        foreach (var segment in segments)
+            _activeTrack.AddPitchNodes(segment, 5);
+
+        _selectedNoteIndex = index;
+        RefreshSegments();
+        AddLog("info",
+            $"Lyric \"{lyric}\" -> {segments.Count} segments " +
+            $"({string.Join(" + ", segments.Select(s => Path.GetFileNameWithoutExtension(s.Audio).TrimStart('_')))}), {_activeTrack.Name}");
     }
 
     /// <summary>Index of the selected segment in the piano roll (kept in sync with the segment list).</summary>
@@ -541,8 +607,9 @@ public sealed class MainViewModel : ObservableObject
     // ------------------------------------------------------------------
     public string DictionaryName => _dictionary?.Name ?? LanguageService.Translate("（未导入）");
 
-    public string DictionaryPathText => LanguageService.Translate(
-        _dictionaryPath ?? "导入 .json 字典，按文本组合声库音频");
+    public string DictionaryPathText => _dictionaryPath is null
+        ? LanguageService.Translate("内置默认字典：假名 + 常见汉字（可导入 .json 覆盖）")
+        : _dictionaryPath;
 
     public DictionaryEntryRow? SelectedDictionaryEntry
     {
@@ -1515,19 +1582,7 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             var dictionary = DictionaryJson.Load(dialog.FileName);
-
-            _dictionary = dictionary;
-            _dictionaryPath = dialog.FileName;
-
-            DictionaryEntries.Clear();
-            foreach (var entry in dictionary.Entries)
-                DictionaryEntries.Add(new DictionaryEntryRow(entry));
-
-            OnPropertyChanged(nameof(DictionaryName));
-            OnPropertyChanged(nameof(DictionaryPathText));
-
-            SelectedDictionaryEntry = DictionaryEntries.FirstOrDefault();
-            DictionaryStartBeat = _activeTrack.TotalBeats > 0 ? _activeTrack.TotalBeats : 1.0;
+            ApplyDictionary(dictionary, dialog.FileName);
 
             StatusText = $"已导入字典：{dictionary.Name}";
             AddLog("info", $"User dictionary imported: \"{dictionary.Name}\" ({dictionary.Entries.Count} entries), {dialog.FileName}");
@@ -1540,6 +1595,31 @@ public sealed class MainViewModel : ObservableObject
             AddLog("error", "Dictionary import failed: " + ex.Message);
             StatusText = "导入字典失败";
         }
+    }
+
+    /// <summary>Loads the built-in dictionary (kana + common kanji) so the panel works without importing a file.</summary>
+    private void LoadDefaultDictionary()
+    {
+        var dictionary = DefaultDictionary.Create();
+        ApplyDictionary(dictionary, null);
+        AddLog("info", $"Built-in dictionary loaded: \"{dictionary.Name}\" ({dictionary.Entries.Count} entries).");
+    }
+
+    /// <summary>Points the panel at a dictionary; a null path means the built-in default one.</summary>
+    private void ApplyDictionary(UserDictionary dictionary, string? path)
+    {
+        _dictionary = dictionary;
+        _dictionaryPath = path;
+
+        DictionaryEntries.Clear();
+        foreach (var entry in dictionary.Entries)
+            DictionaryEntries.Add(new DictionaryEntryRow(entry));
+
+        OnPropertyChanged(nameof(DictionaryName));
+        OnPropertyChanged(nameof(DictionaryPathText));
+
+        SelectedDictionaryEntry = DictionaryEntries.FirstOrDefault();
+        DictionaryStartBeat = _activeTrack.TotalBeats > 0 ? _activeTrack.TotalBeats : 1.0;
     }
 
     private void InsertDictionaryEntry()
