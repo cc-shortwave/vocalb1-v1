@@ -47,7 +47,7 @@ def decompose_vocal(
     data_mono = audio.to_mono().data
     sr = audio.sample_rate
 
-    result = _engine_decompose(data_mono, sr)
+    result = _engine_decompose(data_mono, sr, frame_period)
 
     # Wrap F0 (pyworld is mandatory, no fallback)
     f0_values = result['f0_pyworld']

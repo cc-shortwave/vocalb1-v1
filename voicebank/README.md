@@ -31,7 +31,7 @@ The engine picks the **first subdirectory** of `voicebank/`, sorted by name.
 With a single voicebank you do not need to configure anything. To point somewhere else, set:
 
 ```
-set VOCALB1_LIB=D:\my-voicebank\some-voice
+set VOCALB1_LIB=%USERPROFILE%\voicebanks\my-voice
 ```
 
 (macOS / Linux: `export VOCALB1_LIB=/path/to/voicebank`)
@@ -94,7 +94,7 @@ voicebank/
 想指到别处，设置环境变量：
 
 ```
-set VOCALB1_LIB=D:\声库\别的音源
+set VOCALB1_LIB=%USERPROFILE%\voicebanks\音源
 ```
 
 （macOS / Linux：`export VOCALB1_LIB=/path/to/voicebank`）
@@ -158,7 +158,7 @@ voicebank/
 音源が 1 つだけなら設定は不要です。別の場所を指定する場合は環境変数を設定します：
 
 ```
-set VOCALB1_LIB=D:\my-voicebank\some-voice
+set VOCALB1_LIB=%USERPROFILE%\voicebanks\my-voice
 ```
 
 （macOS / Linux：`export VOCALB1_LIB=/path/to/voicebank`）

@@ -700,8 +700,8 @@ glot_loaded = GlottalExcitation.load("_output/glot.npy")
 | エンドツーエンド | `VocalB1Synthesizer.synthesize` が正常にファイル出力し、中間生成物が削除されている |
 
 ```bash
-C:\Python312\python.exe tools\test_vocal_lib.py            # すべてのテストケース
-C:\Python312\python.exe tools\test_vocal_lib.py --no-e2e   # エンドツーエンドを省略（時間短縮）
+python tools\test_vocal_lib.py            # すべてのテストケース
+python tools\test_vocal_lib.py --no-e2e   # エンドツーエンドを省略（時間短縮）
 ```
 
 テスト生成物は `_test_output/` に書き出され、聴感による確認に使える。いずれかのテストケースが失敗した場合、終了コードは非 0 になる。

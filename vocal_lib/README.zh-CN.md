@@ -700,8 +700,8 @@ glot_loaded = GlottalExcitation.load("_output/glot.npy")
 | 端到端 | `VocalB1Synthesizer.synthesize` 落盘成功且中间产物已清理 |
 
 ```bash
-C:\Python312\python.exe tools\test_vocal_lib.py            # 全部用例
-C:\Python312\python.exe tools\test_vocal_lib.py --no-e2e   # 跳过端到端（省时）
+python tools\test_vocal_lib.py            # 全部用例
+python tools\test_vocal_lib.py --no-e2e   # 跳过端到端（省时）
 ```
 
 测试产物写入 `_test_output/` 便于试听排查；任一用例失败时退出码非 0。

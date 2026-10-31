@@ -3,8 +3,8 @@
 test_vocal_lib.py -- vocal_lib functional regression tests
 
 Run:
-    C:\\Python312\\python.exe tools\\test_vocal_lib.py            # all tests
-    C:\\Python312\\python.exe tools\\test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
+    python tools\\test_vocal_lib.py            # all tests
+    python tools\\test_vocal_lib.py --no-e2e   # skip end-to-end (faster)
 
 Coverage:
     [1] Package import and public API completeness

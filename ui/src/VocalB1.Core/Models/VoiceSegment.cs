@@ -14,8 +14,11 @@ public sealed class VoiceSegment
     /// <summary>Absolute path to the voicebank wav.</summary>
     public string Audio { get; set; } = string.Empty;
 
+    /// <summary>Source pitch assumed when a segment or dictionary entry does not specify one (the voicebank's recorded pitch).</summary>
+    public const string DefaultSrcPitch = "D4";
+
     /// <summary>Source pitch of the sample, e.g. "D4", "440Hz", project style "1D".</summary>
-    public string SrcPitch { get; set; } = "C4";
+    public string SrcPitch { get; set; } = DefaultSrcPitch;
 
     /// <summary>Target pitch.</summary>
     public string DstPitch { get; set; } = "C4";

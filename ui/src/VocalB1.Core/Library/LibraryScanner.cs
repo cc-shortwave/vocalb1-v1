@@ -17,7 +17,14 @@ public static class LibraryScanner
         if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
             return [];
 
-        return Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly)
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            MatchCasing = MatchCasing.CaseInsensitive,
+        };
+
+        return Directory.EnumerateFiles(root, "*", options)
             .Where(p => Extensions.Contains(Path.GetExtension(p), StringComparer.OrdinalIgnoreCase))
             .OrderBy(p => Path.GetFileName(p), StringComparer.CurrentCulture)
             .Select(p => new LibraryEntry(

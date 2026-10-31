@@ -24,7 +24,12 @@ public partial class App : Application
     {
         try
         {
-            _services?.DisposeAsync().AsTask().Wait(1500);
+            var shutdown = _services?.DisposeAsync().AsTask();
+            if (shutdown is not null && !shutdown.Wait(TimeSpan.FromSeconds(5)))
+            {
+                // The engine client has already been asked to stop; do not block the UI
+                // forever if a child process hangs during teardown.
+            }
         }
         catch
         {

@@ -43,17 +43,17 @@ public static class ProjectFactory
         [
             new VoiceSegment
             {
-                Audio = paths[0], SrcPitch = "D4", DstPitch = "G4",
+                Audio = paths[0], SrcPitch = VoiceSegment.DefaultSrcPitch, DstPitch = "G4",
                 BeatStart = 1, BeatEnd = 2.5, Transition = 0, KeepUnvoicedHead = true,
             },
             new VoiceSegment
             {
-                Audio = paths[1], SrcPitch = "D4", DstPitch = "G4",
-                BeatStart = 2, BeatEnd = 4, Transition = 0, KeepUnvoicedHead = false,
+                Audio = paths[1], SrcPitch = VoiceSegment.DefaultSrcPitch, DstPitch = "G4",
+                BeatStart = 2.5, BeatEnd = 4, Transition = 0, KeepUnvoicedHead = false,
             },
             new VoiceSegment
             {
-                Audio = paths[2], SrcPitch = "D4", DstPitch = "E4",
+                Audio = paths[2], SrcPitch = VoiceSegment.DefaultSrcPitch, DstPitch = "E4",
                 BeatStart = 4, BeatEnd = 7, Transition = 0, KeepUnvoicedHead = false,
             },
         ];

@@ -39,7 +39,7 @@
 动手打包之前先跑这几条。
 
 ```powershell
-cd D:\ccwork\vocalb1-v1
+cd <仓库路径>
 git switch main
 git pull
 git status                 # 必须是干净的：nothing to commit
@@ -133,7 +133,7 @@ $a.Dispose()          # 必须什么都不打印
 解压到一个**仓库外面**的地方，例如 `%USERPROFILE%\Desktop\reltest\`。
 
 ```powershell
-mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "D:\ccwork\vocalb1-v1\voicebank\重音テト単独音"
+mklink /J "%USERPROFILE%\Desktop\reltest\vocalb1-v1.0.0-win-x64-lite\voicebank\testbank" "<仓库路径>\voicebank\<你的声库>"
 ```
 
 - [ ] 双击 `VocalB1.exe` 能开窗口（不弹控制台报错）
@@ -289,7 +289,7 @@ git push origin v1.0.0
 | `pip install failed` / 超时 | 镜像连不上 | 加 `-PipIndex https://pypi.org/simple` 重跑 |
 | full 版报 `ModuleNotFoundError: pyworld` | 官方 pyworld 没有 Python 3.9+ 的 Windows 轮子 | 确认 `requirements.txt` 在 Windows 下选的是 `pyworld-prebuilt` |
 | 弹窗报 `Python 引擎导入失败: ModuleNotFoundError: No module named 'soundfile'` | 用的是 lite 包，它找到的那个 Python 没装依赖 | 在解压目录里执行 `"<那个解释器>" -m pip install -r requirements.txt`，或直接用 full 包 |
-| 界面能开但提示*引擎尚未初始化* | 没找到内嵌 Python | 确认 `python\python.exe` 和 `VocalB1.exe` 在同一层；程序会先找这个位置，再找 `C:\Python312` |
+| 界面能开但提示*引擎尚未初始化* | 没找到内嵌 Python | 确认 `python\python.exe` 和 `VocalB1.exe` 在同一层；程序会先找这个位置，再找标准 Python 3.12 安装位置 |
 | 提示*找不到声库* | 全新解压的 `voicebank\` 是空的 | 放一个声库进去（这是预期行为，不是 bug） |
 | zip 有 300+ MB | .NET 自包含 + Python | 用 `-FrameworkDependent`，或只发 lite |
 | exe 旁边有两百个 dll | 传了 `-NoSingleFile`，运行时被摊开 | 去掉这个参数（默认就是单文件） |
