@@ -224,8 +224,10 @@ DUR_JITTER_DECAY_MS = 120.0   # time constant (ms) over which extension-region j
                               # sustained notes get steadier the longer they are held; measured jitter/shimmer includes onset
                               # fluctuation, and applying it at full depth over a long tail creates an audible loudness/pitch wave
 DUR_TAIL_JITTER_RATIO = 0.3  # jitter retention ratio at the far end of the tail (0 = fully steady, 1 = no decay)
-JITTER_EXTRA_PCT  = 0.0       # extra pitch-jitter depth added to measured jitter_local (percentage points, 0~1)
-SHIMMER_EXTRA_PCT = 0.0       # extra amplitude-shimmer depth added to measured shimmer_local (percentage points, 0~1)
+JITTER_EXTRA_PCT  = 0.0       # extra pitch-jitter depth (percentage points) layered after the pitch line, so it is not erased by the pitch override
+SHIMMER_EXTRA_PCT = 0.0       # extra amplitude-shimmer depth (percentage points) applied to the voiced sp/gi energy
+JITTER_MAX_DEPTH  = 0.03      # slider 100 -> ~3% f0 deviation (~50 cents RMS): clearly audible wobble
+SHIMMER_MAX_DEPTH = 0.20      # slider 100 -> ~20% amplitude deviation (~1.7 dB): clearly audible tremolo
 
 # ----------------------------------------------------------------------
 # [5] Synthesis
@@ -469,7 +471,7 @@ def _fit_duration(seg: dict, m_target: int, sr: int, fp: float) -> dict:
     voiced_tail = f0[-W:][f0[-W:] > 0.0]
     base = float(np.median(voiced_tail)) if len(voiced_tail) else 0.0
     if base > 0.0:
-        j_amp = (float(seg.get('jitter_local', 0.0)) + JITTER_EXTRA_PCT) / 100.0
+        j_amp = float(seg.get('jitter_local', 0.0)) / 100.0
         f0_ext = base * (1.0 + j_amp * noise_f0 * jenv)
         ramp_n = min(k, W)
         if ramp_n > 0:
@@ -481,7 +483,7 @@ def _fit_duration(seg: dict, m_target: int, sr: int, fp: float) -> dict:
         f0_ext = np.zeros(k, dtype=np.float64)
     out['f0'] = np.concatenate([f0, f0_ext])
 
-    s_amp = (float(seg.get('shimmer_local', 0.0)) + SHIMMER_EXTRA_PCT) / 100.0
+    s_amp = float(seg.get('shimmer_local', 0.0)) / 100.0
     amp = np.clip(1.0 + s_amp * noise_amp * jenv, 0.2, 3.0)
 
     if seg.get('sp') is not None:
@@ -513,6 +515,39 @@ def _fit_duration(seg: dict, m_target: int, sr: int, fp: float) -> dict:
     out['breath'] = np.concatenate([seg['breath'], _loop_tile(tmpl, k_smp, sr)])
 
     return out
+
+
+def _apply_extra_jitter_shimmer(f0: np.ndarray, sp, gi, fp: float):
+    """Layer the user's extra jitter/shimmer depth (0~100 -> 0~1 percentage point) on the final frames.
+
+    This must run AFTER the pitch line, because the pitch line strictly overrides every
+    covered frame's f0: any jitter applied earlier (e.g. in the duration fitting) would be
+    erased, which is why the Jitter slider used to have no audible effect.
+    Jitter modulates voiced f0, shimmer modulates voiced sp/gi energy; unvoiced frames
+    (f0 = 0) stay untouched so consonants do not wobble.
+    """
+    j_extra = float(JITTER_EXTRA_PCT) * JITTER_MAX_DEPTH
+    s_extra = float(SHIMMER_EXTRA_PCT) * SHIMMER_MAX_DEPTH
+    if (j_extra <= 0.0 and s_extra <= 0.0) or len(f0) == 0:
+        return f0, sp, gi
+
+    n = len(f0)
+    voiced = f0 > 0.0
+
+    if j_extra > 0.0:
+        noise = _smooth_random_walk(n, DUR_JITTER_SMOOTH, seed=20260929)
+        f0 = np.asarray(f0, dtype=np.float64).copy()
+        f0[voiced] *= 1.0 + j_extra * noise[voiced]
+
+    if s_extra > 0.0:
+        noise = _smooth_random_walk(n, DUR_JITTER_SMOOTH, seed=20260930)
+        amp = np.where(voiced, np.clip(1.0 + s_extra * noise, 0.2, 3.0), 1.0)
+        if sp is not None:
+            sp = sp * amp[:, None]
+        if gi is not None:
+            gi = gi * amp
+
+    return f0, sp, gi
 
 
 def _parse_beat_pos(v, beats_per_bar: float) -> float:
@@ -1844,7 +1879,7 @@ def synthesize(segments,
                plosive_env_tail=PLOSIVE_ENV_TAIL,
                plosive_env_gain_min=PLOSIVE_ENV_GAIN_MIN,
                plosive_env_gain_max=PLOSIVE_ENV_GAIN_MAX,
-               # [8] jitter / shimmer intensity (0~100, added on top of the voicebank's measured value)
+               # [8] jitter / shimmer intensity (0~100); layering on the final frames after the pitch line
                jitter=0.0,
                shimmer=0.0,
                # [9] output
@@ -1867,8 +1902,9 @@ def synthesize(segments,
         automatically, so the output directory only receives the final wav.
         When clean_intermediate=False they stay in the output directory.
     jitter, shimmer : float
-        Extra jitter/shimmer depth (0~100), added on top of the voicebank's
-        measured jitter_local / shimmer_local.
+        Extra jitter/shimmer depth (0~100). The pitch line overrides every covered f0 frame,
+        so this depth is layered on the final frames AFTER the pitch line (jitter on voiced
+        f0, shimmer on voiced sp/gi energy); 0 keeps the synthesized frames untouched.
     verbose : bool
         True prints pipeline logs; False runs silently.
 
@@ -1955,7 +1991,7 @@ def synthesize(segments,
         PLOSIVE_ENV_TAIL=plosive_env_tail,
         PLOSIVE_ENV_GAIN_MIN=plosive_env_gain_min,
         PLOSIVE_ENV_GAIN_MAX=plosive_env_gain_max,
-        # [8] jitter / shimmer (0~100 -> 0~1 percentage point added to the measured value)
+        # [8] jitter / shimmer intensity (0~100; normalized depth, scaled by JITTER_MAX_DEPTH / SHIMMER_MAX_DEPTH)
         JITTER_EXTRA_PCT=float(jitter) / 100.0,
         SHIMMER_EXTRA_PCT=float(shimmer) / 100.0,
         # [9]
@@ -2158,6 +2194,16 @@ def run() -> vl.WAVAudio:
           f"range={float(np.min(f0_out)):.2f}~{float(np.max(f0_out)):.2f}Hz")
     # Probe: pitch line application must not introduce NaN/Inf or an abnormal zero run
     _probe("pitch-line·f0", f0_out, fp)
+
+    # 5.7) Extra jitter/shimmer from the tone panel. This has to come AFTER the pitch line:
+    #      the pitch line strictly overrides every covered f0 frame, so any jitter applied
+    #      earlier (duration fitting, decomposition) is discarded and the slider would have
+    #      no audible effect.
+    f0_out, sp_out, gi_out = _apply_extra_jitter_shimmer(f0_out, sp_out, gi_out, fp)
+    if JITTER_EXTRA_PCT > 0.0 or SHIMMER_EXTRA_PCT > 0.0:
+        print(f"[Jitter/Shimmer] extra depth jitter={JITTER_EXTRA_PCT:.3f}%  "
+              f"shimmer={SHIMMER_EXTRA_PCT:.3f}% (applied after the pitch line)")
+    _probe("extra-jitter·f0", f0_out, fp)
 
     # Main-signal per-frame gain: f0=0 frames must not all be muted -- unvoiced frames
     # such as fricatives have no fundamental frequency (f0=0) yet carry real content;

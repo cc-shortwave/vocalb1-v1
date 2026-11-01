@@ -178,10 +178,17 @@ most allow personal non-commercial use and prohibit redistribution.
 
 ## How this was built
 
-The idea, requirements, parameter choices and listening-based tuning are the author's.
-**The code was largely written by an AI coding assistant**; the author did the design,
-verification, debugging and final decisions. The project uses open-source libraries
-(numpy, scipy, soundfile, pyworld) and contains no pretrained models.
+**The core algorithm is the author's own code**: the synthesis pipeline in `vocal_lib` —
+voicebank analysis, pitch shifting, duration alignment, crossfade splicing, breath
+handling and loudness normalization. The design decisions, parameter choices and
+listening-based tuning are the author's as well.
+
+AI coding assistants were used for the desktop interface, code refactoring, test code,
+the array conversion between the C# front end and the Python engine, and the phase
+vocoder implementation. The author reviewed and verified the result.
+
+The project uses open-source libraries (numpy, scipy, soundfile, pyworld) and contains no
+pretrained models.
 
 ---
 
