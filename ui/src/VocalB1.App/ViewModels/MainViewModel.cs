@@ -67,6 +67,9 @@ public sealed class MainViewModel : ObservableObject
     private bool _isPlaying;
     private string _statusText = "就绪";
     private string? _lastRenderPath;
+    /// <summary>Cached WAV that already contains the BGM, rebuilt when the vocal/BGM/start time changes.</summary>
+    private string? _bgmMixPath;
+    private string? _bgmMixKey;
     private double? _playheadBeat;
     private bool _isLightTheme;
     private LanguageRow? _selectedLanguage;
@@ -113,6 +116,8 @@ public sealed class MainViewModel : ObservableObject
         RemoveTrackCommand = new RelayCommand(_ => RemoveTrack(), _ => _project.Tracks.Count > 1);
         ToggleRollModeCommand = new RelayCommand(_ => ToggleRollMode());
         ImportDictionaryCommand = new RelayCommand(_ => ImportDictionary());
+        ImportBgmCommand = new RelayCommand(_ => ImportBgm());
+        ClearBgmCommand = new RelayCommand(_ => ClearBgm(), _ => HasBgm);
         InsertDictionaryEntryCommand = new RelayCommand(
             _ => InsertDictionaryEntry(),
             _ => _dictionary is not null && SelectedDictionaryEntry is not null);
@@ -160,6 +165,9 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasLibraryIcon => _libraryIcon is not null;
 
+    /// <summary>当前声库是否有可用音频：没有时整个主界面变灰并锁定，只保留拖入声库的安装入口。</summary>
+    public bool HasVoicebank => Library.Count > 0;
+
     public string ProjectName
     {
         get => _projectName;
@@ -180,6 +188,8 @@ public sealed class MainViewModel : ObservableObject
                 _project.Bpm = value;
                 // Transition parameters are stored as frames; the derived beat width changes when BPM changes.
                 OnPropertyChanged(nameof(SelectedTransitionBeats));
+                // The BGM block width is expressed in beats, so it changes with the tempo.
+                OnPropertyChanged(nameof(BgmDurationBeats));
             }
         }
     }
@@ -690,9 +700,10 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>
     /// Called when the lyric input loses focus or Enter is pressed: splits the text into minimal voicebank
-    /// units (whitespace becomes a rest), reconciles the existing unit strip in place, and keeps one D4
-    /// note block per non-rest unit. Editing the text after a commit updates the same phrase instead of
-    /// appending a second copy.
+    /// units (whitespace becomes a rest) and keeps the existing melody: units already on the track only
+    /// change their sample/text, extra units are appended after the melody end (one default-length block
+    /// each), and extra units at the tail are removed. Editing the text after a commit updates the same
+    /// phrase instead of appending a second copy.
     /// </summary>
     public void CommitLyricInput()
     {
@@ -720,6 +731,7 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var startBeat = LyricUnits.Count > 0 ? LyricUnits[0].BeatStart : NextLyricStartBeat();
+        var previousCount = LyricUnits.Count;
         var specs = BuildLyricSpecs(tokens, out var skipped);
 
         PushUndo("lyric:" + text);
@@ -737,7 +749,16 @@ public sealed class MainViewModel : ObservableObject
 
         var realCount = LyricUnits.Count(u => !u.IsRest);
         var restCount = LyricUnits.Count - realCount;
-        var message = $"已分解为 {LyricUnits.Count} 个最小单位：{realCount} 个 {LyricBlockPitch} 音块";
+        var message = $"已分解为 {LyricUnits.Count} 个最小单位：{realCount} 个音块";
+        if (previousCount > 0)
+        {
+            var reused = Math.Min(previousCount, LyricUnits.Count);
+            message += $"（复用原旋律 {reused} 个";
+            if (LyricUnits.Count > previousCount)
+                message += $"，末尾追加 {LyricUnits.Count - previousCount} 个";
+            message += "）";
+        }
+
         if (restCount > 0)
             message += $"，{restCount} 个休止";
         if (skipped.Count > 0)
@@ -877,9 +898,9 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Rebuilds the unit strip in place: existing units keep their beat length, rest units lose their
-    /// segment (the block becomes a gap), non-rest units get their D4 block back, and the strip is laid
-    /// out sequentially from <paramref name="startBeat"/>.
+    /// Reconciles the unit strip with the new lyric: units that already exist keep their melody
+    /// (pitch, beat range and length stay untouched), rest units lose their segment, and units beyond
+    /// the old count are appended after the end of the original melody, one default-length block each.
     /// </summary>
     private void ReconcileLyricUnits(IReadOnlyList<LyricUnitSpec> specs, double startBeat)
     {
@@ -890,11 +911,9 @@ public sealed class MainViewModel : ObservableObject
             LyricUnits.RemoveAt(LyricUnits.Count - 1);
         }
 
-        for (var i = 0; i < specs.Count; i++)
+        var reusedCount = LyricUnits.Count;
+        for (var i = 0; i < reusedCount; i++)
         {
-            if (i >= LyricUnits.Count)
-                LyricUnits.Add(new LyricUnitRow(DefaultLyricUnitBeats, startBeat));
-
             var unit = LyricUnits[i];
             var spec = specs[i];
             if (spec.IsRest)
@@ -907,6 +926,7 @@ public sealed class MainViewModel : ObservableObject
             var segment = unit.Segment;
             if (segment is null)
             {
+                // The unit used to be a rest: bring its block back inside the same beat range.
                 segment = new VoiceSegment
                 {
                     Audio = spec.Audio!,
@@ -922,20 +942,45 @@ public sealed class MainViewModel : ObservableObject
             }
             else
             {
+                // Reuse the existing melody: only the audio sample and the lyric text change.
                 segment.Audio = spec.Audio!;
                 segment.SrcPitch = spec.SrcPitch!;
-                segment.DstPitch = LyricBlockPitch;
             }
 
             segment.LyricOverride = spec.Source;
             unit.SetContent(segment, spec.Display, spec.Source);
         }
 
-        var cursor = startBeat;
-        foreach (var unit in LyricUnits)
+        // Extra units go after the melody that is already on the track.
+        var cursor = LyricUnits.Count == 0 ? startBeat : LyricUnits.Max(u => u.BeatEnd);
+        for (var i = reusedCount; i < specs.Count; i++)
         {
-            RelayoutUnit(unit, cursor, unit.Length);
-            cursor += unit.Length;
+            var spec = specs[i];
+            var unit = new LyricUnitRow(DefaultLyricUnitBeats, cursor);
+            LyricUnits.Add(unit);
+            if (spec.IsRest)
+            {
+                unit.SetContent(null, "休止", "休止");
+            }
+            else
+            {
+                var segment = new VoiceSegment
+                {
+                    Audio = spec.Audio!,
+                    SrcPitch = spec.SrcPitch!,
+                    DstPitch = LyricBlockPitch,
+                    BeatStart = cursor,
+                    BeatEnd = cursor + DefaultLyricUnitBeats,
+                    Transition = i == 0 ? 0 : DefaultTransitionFrames,
+                    KeepUnvoicedHead = spec.KeepUnvoicedHead,
+                };
+                _activeTrack.Segments.Add(segment);
+                _activeTrack.AddPitchNodes(segment, 5);
+                segment.LyricOverride = spec.Source;
+                unit.SetContent(segment, spec.Display, spec.Source);
+            }
+
+            cursor += DefaultLyricUnitBeats;
         }
 
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
@@ -1068,6 +1113,59 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // ------------------------------------------------------------------
+    // BGM (backing track): project-wide, original speed, adjustable start
+    // ------------------------------------------------------------------
+
+    /// <summary>Project-wide BGM WAV, shared by every track; null = no BGM.</summary>
+    public string? BgmPath => _project.BgmPath;
+
+    public bool HasBgm => !string.IsNullOrWhiteSpace(_project.BgmPath);
+
+    /// <summary>File name shown in the BGM bar below the piano roll.</summary>
+    public string BgmName => string.IsNullOrWhiteSpace(_project.BgmPath)
+        ? "未导入伴奏"
+        : Path.GetFileName(_project.BgmPath);
+
+    /// <summary>
+    /// BGM start offset in beats from the project start (0 = 第 0 小节第 0 音, the default).
+    /// The BGM always plays at its original speed, so this only moves it in time.
+    /// </summary>
+    public double BgmStartBeat
+    {
+        get => _project.BgmStartBeat;
+        set
+        {
+            var clamped = Math.Max(0, value);
+            if (Math.Abs(_project.BgmStartBeat - clamped) < 1e-9)
+                return;
+            _project.BgmStartBeat = clamped;
+            _bgmMixKey = null;
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>
+    /// BGM length in beats at the current tempo. The BGM block in the piano roll uses it as a fixed
+    /// width, so the block can only be moved, never resized.
+    /// </summary>
+    public double BgmDurationBeats
+    {
+        get
+        {
+            if (!HasBgm)
+                return 0;
+            try
+            {
+                return WavReader.ReadInfo(_project.BgmPath!).DurationSeconds * _bpm / 60.0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Commands
     // ------------------------------------------------------------------
     public ICommand NewProjectCommand { get; }
@@ -1086,6 +1184,8 @@ public sealed class MainViewModel : ObservableObject
     public ICommand RemoveTrackCommand { get; }
     public ICommand ToggleRollModeCommand { get; }
     public ICommand ImportDictionaryCommand { get; }
+    public ICommand ImportBgmCommand { get; }
+    public ICommand ClearBgmCommand { get; }
     public ICommand InsertDictionaryEntryCommand { get; }
     public ICommand RenderCommand { get; }
     public ICommand CancelRenderCommand { get; }
@@ -1420,6 +1520,8 @@ public sealed class MainViewModel : ObservableObject
         _selectedTrack = Tracks[0];
         OnPropertyChanged(nameof(SelectedTrack));
 
+        _bgmMixKey = null;
+        RaiseBgmChanged();
         ActivateTrack(_project.Tracks[0]);
         _savedSnapshot = ProjectJson.Serialize(_project);
         (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -1537,6 +1639,8 @@ public sealed class MainViewModel : ObservableObject
             Tracks.Add(new TrackRow(track));
 
         _trackOutputs.Clear();
+        _bgmMixKey = null;
+        RaiseBgmChanged();
         trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Tracks.Count - 1));
         _selectedTrack = Tracks.Count > 0 ? Tracks[trackIndex] : null;
         OnPropertyChanged(nameof(SelectedTrack));
@@ -1616,6 +1720,7 @@ public sealed class MainViewModel : ObservableObject
         _activeTrack.Segments.Add(segment);
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
         _activeTrack.AddPitchNodes(segment, 5);
+        SyncLyricWithManualNote(segment);
         RefreshSegments();
 
         AddLog("info",
@@ -1647,10 +1752,103 @@ public sealed class MainViewModel : ObservableObject
         _activeTrack.Segments.Add(segment);
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
         _activeTrack.AddPitchNodes(segment, 5);
+        SyncLyricWithManualNote(segment);
         RefreshSegments();
 
         AddLog("info",
             $"Note drawn: {entry.DisplayName} | beat {start:0.##} -> {start + length:0.##} | {PitchMath.ToPitchName(semitone)}");
+    }
+
+    /// <summary>
+    /// Keeps the lyric bar aligned after a note is added manually in the piano roll: insert a placeholder
+    /// character for the note's audio into the lyric text, and a matching unit row linked to that segment at
+    /// the same position. The note keeps its own audio and pitch (no re-decomposition).
+    /// </summary>
+    private void SyncLyricWithManualNote(VoiceSegment segment)
+    {
+        if (_dictionary is null)
+            return;
+
+        var placeholder = FindPlaceholderLyric(segment.Audio);
+        if (placeholder is null)
+        {
+            AddLog("warn", $"手动音块 \"{Path.GetFileName(segment.Audio)}\" 在字典中没有对应歌词，歌词栏未同步。");
+            return;
+        }
+
+        var text = _lyricInput ?? string.Empty;
+        var starts = UnitTextStarts(text);
+
+        // Text-driven units and the strip must stay in the same order; when they already diverged, append instead.
+        var index = 0;
+        var textIndex = text.Length;
+        if (starts.Count == LyricUnits.Count)
+        {
+            while (index < LyricUnits.Count && LyricUnits[index].BeatStart < segment.BeatStart - 1e-6)
+                index++;
+            textIndex = index < starts.Count ? starts[index] : text.Length;
+        }
+        else
+        {
+            index = LyricUnits.Count;
+        }
+
+        var newText = text.Insert(Math.Clamp(textIndex, 0, text.Length), placeholder);
+        LyricInput = newText;
+        segment.LyricOverride = placeholder;
+
+        var unit = new LyricUnitRow(segment.BeatEnd - segment.BeatStart, segment.BeatStart);
+        unit.SetContent(segment, UnitLabel(segment.Audio), placeholder);
+        LyricUnits.Insert(index, unit);
+
+        // Treat this as committed so pressing Enter right after adding the note does not re-decompose and reset pitch.
+        _lyricCommittedText = newText;
+        OnPropertyChanged(nameof(HasLyricUnits));
+        AddLog("info", $"歌词栏已同步手动音块：新增占位歌词 \"{placeholder}\"");
+    }
+
+    /// <summary>Finds the dictionary character whose single-part audio is the given voicebank sample.</summary>
+    private string? FindPlaceholderLyric(string audio)
+    {
+        var name = Path.GetFileName(audio);
+        var match = _dictionary!.Entries.FirstOrDefault(entry =>
+            entry.Parts.Count == 1
+            && Path.GetFileName(entry.Parts[0].Audio).Equals(name, StringComparison.OrdinalIgnoreCase));
+        return match?.Text;
+    }
+
+    /// <summary>
+    /// Start offset in the lyric text for each decomposed unit (rests count as one unit), mirroring
+    /// <see cref="BuildLyricSpecs"/> so a placeholder can be inserted at the matching character position.
+    /// </summary>
+    private List<int> UnitTextStarts(string text)
+    {
+        var starts = new List<int>();
+        if (_dictionary is null)
+            return starts;
+
+        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
+            ? null
+            : Path.GetDirectoryName(_dictionaryPath);
+        var libraryRoot = ResolveDictionaryLibraryRoot();
+
+        foreach (var token in DictionaryResolver.Tokenize(_dictionary, text))
+        {
+            if (token.IsRest)
+            {
+                starts.Add(token.Start);
+                continue;
+            }
+
+            foreach (var part in token.Entry!.Parts)
+            {
+                if (DictionaryResolver.ResolveAudioPath(part.Audio, dictionaryDirectory, libraryRoot) is null)
+                    continue;
+                starts.Add(token.Start);
+            }
+        }
+
+        return starts;
     }
 
     /// <summary>Starting from <paramref name="desired"/>, find the first free slot that can hold <paramref name="length"/> beats (shifting forward).</summary>
@@ -1864,6 +2062,7 @@ public sealed class MainViewModel : ObservableObject
             Library.Add(entry);
         RefreshLibraryIcon();
         StatusText = $"声库：{Library.Count} 个音频";
+        OnPropertyChanged(nameof(HasVoicebank));
     }
 
     /// <summary>声库图标与音频文件同级：重新扫描声库时同步查找 icon.jpg。</summary>
@@ -2055,6 +2254,122 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // ------------------------------------------------------------------
+    // BGM (backing track)
+    // ------------------------------------------------------------------
+    /// <summary>Opens a WAV picker and installs it as the project-wide BGM.</summary>
+    private void ImportBgm()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入 BGM 伴奏",
+            Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        SetBgm(dialog.FileName);
+    }
+
+    /// <summary>
+    /// Sets the project-wide BGM and resets its start to the project start (第 0 小节第 0 音).
+    /// The BGM keeps its original speed and is only used for preview playback.
+    /// </summary>
+    public void SetBgm(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            var info = WavReader.ReadInfo(full);
+            PushUndo();
+            _project.BgmPath = full;
+            _project.BgmStartBeat = 0;
+            _bgmMixKey = null;
+            RaiseBgmChanged();
+            StatusText = $"已导入 BGM：{BgmName}";
+            AddLog("info", $"BGM imported: {full} ({info.SampleRate} Hz, {info.Channels} ch, "
+                + $"{info.BitsPerSample} bit, {info.DurationSeconds:F1}s). It plays at its original speed.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", "BGM import failed: " + ex.Message);
+            StatusText = "导入 BGM 失败";
+        }
+    }
+
+    public void ClearBgm()
+    {
+        if (!HasBgm)
+            return;
+
+        PushUndo();
+        _project.BgmPath = null;
+        _project.BgmStartBeat = 0;
+        _bgmMixKey = null;
+        RaiseBgmChanged();
+        StatusText = "已移除 BGM";
+        AddLog("info", "BGM removed.");
+    }
+
+    private void RaiseBgmChanged()
+    {
+        OnPropertyChanged(nameof(BgmPath));
+        OnPropertyChanged(nameof(HasBgm));
+        OnPropertyChanged(nameof(BgmName));
+        OnPropertyChanged(nameof(BgmStartBeat));
+        OnPropertyChanged(nameof(BgmDurationBeats));
+        (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Mixes the BGM under the rendered vocal into a cached WAV for playback. The cache key covers the
+    /// vocal file, the BGM file and the start offset, so a re-render or a start change rebuilds it.
+    /// </summary>
+    private string? EnsureBgmMix(string vocalPath)
+    {
+        var bgmPath = _project.BgmPath;
+        if (string.IsNullOrWhiteSpace(bgmPath))
+            return null;
+        if (!File.Exists(bgmPath))
+        {
+            AddLog("warn", $"BGM file not found: {bgmPath}; playing the vocal track only.");
+            return null;
+        }
+
+        var startSeconds = Math.Max(0, _project.BgmStartBeat) * 60.0 / Math.Max(1, _bpm);
+        var key = $"{vocalPath}|{File.GetLastWriteTimeUtc(vocalPath):O}|"
+            + $"{bgmPath}|{File.GetLastWriteTimeUtc(bgmPath):O}|{startSeconds:R}";
+        if (key == _bgmMixKey && _bgmMixPath is { } cached && File.Exists(cached))
+            return cached;
+
+        try
+        {
+            StatusText = "BGM 混音中…";
+            var directory = Path.Combine(Path.GetTempPath(), "vocalb1-bgm");
+            Directory.CreateDirectory(directory);
+            var output = Path.Combine(directory, $"mix_{Guid.NewGuid():N}.wav");
+            var started = DateTime.Now;
+            BgmMixer.Mix(vocalPath, bgmPath, startSeconds, output);
+
+            if (_bgmMixPath is { } previous && !string.Equals(previous, output, StringComparison.Ordinal))
+            {
+                try { File.Delete(previous); } catch { /* best effort cleanup */ }
+            }
+
+            _bgmMixPath = output;
+            _bgmMixKey = key;
+            AddLog("info", $"BGM mixed at beat {_project.BgmStartBeat:0.##} ({startSeconds:0.##}s), "
+                + $"{(DateTime.Now - started).TotalSeconds:F1}s elapsed.");
+            return output;
+        }
+        catch (Exception ex)
+        {
+            _bgmMixKey = null;
+            AddLog("warn", "BGM mixing failed; playing the vocal track only: " + ex.Message);
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Render / Playback
     // ------------------------------------------------------------------
     private async Task RenderAsync()
@@ -2168,6 +2483,10 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
+        // The project-wide BGM is mixed under the rendered vocal right before playback, so a start
+        // time change takes effect without re-rendering.
+        var playbackPath = EnsureBgmMix(path) ?? path;
+
         // Start from the current playhead position; when there is no playhead yet, or playback already reached the end, restart from beat 1.
         var endBeat = PlaybackEndBeat(playbackTrack);
         var startBeat = Math.Clamp(PlayheadBeat ?? 1, 1, endBeat);
@@ -2179,10 +2498,10 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             PlayheadBeat = startBeat;
-            _services.Playback.Play(path, start);
+            _services.Playback.Play(playbackPath, start);
             IsPlaying = true;
             _playheadTimer.Start();
-            StatusText = $"播放中：{Path.GetFileName(path)}（第 {startBeat:0.##} 拍起）";
+            StatusText = $"播放中：{Path.GetFileName(playbackPath)}（第 {startBeat:0.##} 拍起）";
         }
         catch (Exception ex)
         {

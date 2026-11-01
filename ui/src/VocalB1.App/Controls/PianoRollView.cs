@@ -54,6 +54,8 @@ public sealed class PianoRollView : FrameworkElement
     private const double BoxSelectThreshold = 4;
     private const double GradientGrabRadius = 6;
     private const double MaxGradientBeats = 4;
+    /// <summary>Height of the BGM lane pinned to the bottom of the roll (only reserved while a BGM exists).</summary>
+    private const double BgmLaneHeight = 24;
     private const double MinBeatZoom = 0.25;
     private const double MaxBeatZoom = 6;
     private const int MaxPitchRows = 120;
@@ -82,6 +84,9 @@ public sealed class PianoRollView : FrameworkElement
     private Pen _selectionPen = new();
     private Pen _subGridPen = new();
     private Brush _selectionFill = Brushes.Transparent;
+    private Brush _bgmFill = Brushes.Transparent;
+    private Brush _bgmLabelBrush = Brushes.LightBlue;
+    private Pen _bgmPen = new();
 
     private DragState? _drag;
 
@@ -163,6 +168,16 @@ public sealed class PianoRollView : FrameworkElement
         _selectionFill = Frozen(new SolidColorBrush(light
             ? Color.FromArgb(0x1E, 0x00, 0x00, 0x00)
             : Color.FromArgb(0x24, 0xFF, 0xFF, 0xFF)));
+
+        // The BGM lane uses its own color so it reads as backing material rather than a voice note.
+        _bgmLabelBrush = Frozen(new SolidColorBrush(light
+            ? Color.FromRgb(0x24, 0x5F, 0xC8)
+            : Color.FromRgb(0x8A, 0xBB, 0xFF)));
+        _bgmFill = Frozen(new SolidColorBrush(light
+            ? Color.FromArgb(0x26, 0x24, 0x5F, 0xC8)
+            : Color.FromArgb(0x3A, 0x8A, 0xBB, 0xFF)));
+        _bgmPen = new Pen(_bgmLabelBrush, 1);
+        _bgmPen.Freeze();
     }
 
     // ------------------------------------------------------------------
@@ -228,6 +243,23 @@ public sealed class PianoRollView : FrameworkElement
     public static readonly DependencyProperty RestRegionsProperty = DependencyProperty.Register(
         nameof(RestRegions), typeof(IReadOnlyList<RestRegion>), typeof(PianoRollView),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>Whether a project-wide BGM exists; while true a fixed lane is reserved at the bottom of the roll.</summary>
+    public static readonly DependencyProperty HasBgmProperty = DependencyProperty.Register(
+        nameof(HasBgm), typeof(bool), typeof(PianoRollView),
+        new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>BGM start offset in beats from the project start; only the block's X position follows it.</summary>
+    public static readonly DependencyProperty BgmStartBeatProperty = DependencyProperty.Register(
+        nameof(BgmStartBeat), typeof(double), typeof(PianoRollView),
+        new FrameworkPropertyMetadata(
+            0.0,
+            FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
+
+    /// <summary>BGM length in beats: the block width is fixed by it, so the block cannot be resized.</summary>
+    public static readonly DependencyProperty BgmDurationBeatsProperty = DependencyProperty.Register(
+        nameof(BgmDurationBeats), typeof(double), typeof(PianoRollView),
+        new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public static readonly DependencyProperty PlayheadBeatProperty = DependencyProperty.Register(
         nameof(PlayheadBeat), typeof(double?), typeof(PianoRollView),
@@ -297,6 +329,27 @@ public sealed class PianoRollView : FrameworkElement
     {
         get => (IReadOnlyList<RestRegion>?)GetValue(RestRegionsProperty);
         set => SetValue(RestRegionsProperty, value);
+    }
+
+    /// <summary>Whether a project-wide BGM exists; while true a fixed lane is reserved at the bottom of the roll.</summary>
+    public bool HasBgm
+    {
+        get => (bool)GetValue(HasBgmProperty);
+        set => SetValue(HasBgmProperty, value);
+    }
+
+    /// <summary>BGM start offset in beats from the project start (0 = 第 0 小节第 0 音); dragging the block writes it back.</summary>
+    public double BgmStartBeat
+    {
+        get => (double)GetValue(BgmStartBeatProperty);
+        set => SetValue(BgmStartBeatProperty, value);
+    }
+
+    /// <summary>BGM length in beats; the bottom block keeps this fixed width and cannot be resized.</summary>
+    public double BgmDurationBeats
+    {
+        get => (double)GetValue(BgmDurationBeatsProperty);
+        set => SetValue(BgmDurationBeatsProperty, value);
     }
 
     /// <summary>Playhead position (beat); null = hide the playhead.</summary>
@@ -378,6 +431,7 @@ public sealed class PianoRollView : FrameworkElement
 
         DrawPitchRows(dc, layout, dpi);
         DrawBeats(dc, layout, dpi);
+        DrawBgmLane(dc, layout, dpi);
         DrawNotes(dc, layout, segments, dpi);
         DrawRests(dc, layout, dpi);
         DrawPencilPreview(dc, layout);
@@ -401,15 +455,20 @@ public sealed class PianoRollView : FrameworkElement
         var totalBeats = TotalBeats();
 
         var (low, high) = PitchWindow(segments, points);
+        // The BGM lane is always the last row of the control: pitch rows shrink by its height while a BGM exists.
+        var laneHeight = HasBgm ? BgmLaneHeight : 0;
         var plot = new Rect(
             GutterWidth,
             RulerHeight,
             Math.Max(1, size.Width - GutterWidth - RightPad),
-            Math.Max(1, size.Height - RulerHeight - BottomPad));
+            Math.Max(1, size.Height - RulerHeight - BottomPad - laneHeight));
+        var bgmLane = laneHeight > 0
+            ? new Rect(plot.Left, plot.Bottom, plot.Width, laneHeight)
+            : Rect.Empty;
         var pxPerBeat = Math.Max(4, Math.Max(MinPxPerBeat, plot.Width / Math.Max(1, totalBeats)) * _beatZoom);
 
         return new RollLayout(
-            plot, low, high, high - low + 1, totalBeats, beatsPerBar, segments, points,
+            plot, bgmLane, low, high, high - low + 1, totalBeats, beatsPerBar, segments, points,
             pxPerBeat, _viewStartBeat);
     }
 
@@ -537,6 +596,51 @@ public sealed class PianoRollView : FrameworkElement
         }
     }
 
+    /// <summary>
+    /// BGM block: a fixed-height lane at the bottom of the roll that represents the backing track.
+    /// Its width is the BGM length (never resizable) and only its horizontal position can be dragged.
+    /// </summary>
+    private void DrawBgmLane(DrawingContext dc, RollLayout layout, double dpi)
+    {
+        var lane = layout.BgmLane;
+        if (lane.IsEmpty || lane.Height < 4)
+            return;
+
+        // Separator between the pitch rows and the BGM lane.
+        dc.DrawLine(_barPen, new Point(lane.Left, lane.Top), new Point(lane.Right, lane.Top));
+
+        var label = new FormattedText(
+            "BGM", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, TextFace,
+            Math.Min(9, Math.Max(8, lane.Height - 6)), _labelBrush, dpi);
+        dc.DrawText(label, new Point(
+            GutterWidth - label.Width - 6, lane.Top + (lane.Height - label.Height) / 2));
+
+        if (!HasBgm || BgmDurationBeats <= 0)
+            return;
+
+        // Project start (BGM start beat 0) is beat 1 of the roll timeline, same as the playhead origin.
+        var startBeat = 1 + BgmStartBeat;
+        var left = Math.Max(lane.Left, layout.X(startBeat));
+        var right = Math.Min(lane.Right, layout.X(startBeat + BgmDurationBeats));
+        if (right - left < 1)
+            return;
+
+        var block = new Rect(left + 1, lane.Top + 4,
+            Math.Max(2, right - left - 2), Math.Max(4, lane.Height - 9));
+        dc.DrawRoundedRectangle(_bgmFill, _bgmPen, block, 3, 3);
+
+        var text = new FormattedText(
+            LanguageService.Translate("BGM 伴奏"), CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight, TextFace,
+            Math.Min(10, Math.Max(8, block.Height - 4)), _bgmLabelBrush, dpi);
+        if (block.Width < text.Width + 6)
+            return;
+
+        dc.PushClip(new RectangleGeometry(block));
+        dc.DrawText(text, new Point(block.X + 4, block.Y + (block.Height - text.Height) / 2));
+        dc.Pop();
+    }
+
     /// <summary>Ghost note shown while the pencil tool is dragging.</summary>
     private void DrawPencilPreview(DrawingContext dc, RollLayout layout)
     {
@@ -638,6 +742,9 @@ public sealed class PianoRollView : FrameworkElement
             DrawGradientBand(dc, pen, layout, band.RightEdgeX, band.RightEdgeX + band.LengthX, band.Top, band.Bottom);
             DrawGradientBand(dc, pen, layout, band.LeftEdgeX - band.LengthX, band.LeftEdgeX, band.Top, band.Bottom);
         }
+
+        foreach (var handle in GradientHandles(layout))
+            DrawGradientHandle(dc, layout, Math.Round(handle.X) + 0.5, handle.Top);
     }
 
     /// <summary>Adjacent note index pairs ordered by beat.</summary>
@@ -671,7 +778,10 @@ public sealed class PianoRollView : FrameworkElement
     private readonly record struct GradientBand(
         int SegmentIndex, double LeftEdgeX, double RightEdgeX, double LengthX, double Top, double Bottom);
 
-    /// <summary>Gradient bands between adjacent notes, with length taken from the next segment's transition beats; shared by drawing and hit testing.</summary>
+    /// <summary>
+    /// Gradient bands between adjacent notes, with length taken from the next segment's transition beats.
+    /// Only notes that are contiguous (no gap between them) get a gradient at all.
+    /// </summary>
     private IEnumerable<GradientBand> GradientBands(RollLayout layout)
     {
         var segments = layout.Segments;
@@ -688,6 +798,11 @@ public sealed class PianoRollView : FrameworkElement
 
             var (prevStart, prevEnd, _) = NoteState(prevIndex, previous);
             var (currStart, _, _) = NoteState(currentIndex, current);
+
+            // A gap between the two notes means no crossfade: drop the gradient entirely.
+            if (currStart - prevEnd > 1e-6)
+                continue;
+
             var prevBox = layout.NoteBox(prevStart, prevEnd, SemitoneOf(previous.DstPitch));
             var currBox = layout.NoteBox(currStart, current.BeatEnd, SemitoneOf(current.DstPitch));
             var (top, bottom) = BandBounds(prevBox, currBox);
@@ -705,7 +820,7 @@ public sealed class PianoRollView : FrameworkElement
         }
     }
 
-    /// <summary>Draw a dashed gradient band and a vertical handle at its end away from the note.</summary>
+    /// <summary>Draw a dashed gradient band; the shared drag handle is drawn once per pair by the caller.</summary>
     private void DrawGradientBand(
         DrawingContext dc,
         Pen pen,
@@ -721,22 +836,18 @@ public sealed class PianoRollView : FrameworkElement
             return;
 
         dc.DrawRectangle(null, pen, new Rect(left, top, right - left, bottom - top));
-
-        var x = Math.Round(to) + 0.5;
-        if (x < layout.Plot.Left || x > layout.Plot.Right)
-            return;
-
-        DrawGradientHandle(dc, x, top, bottom);
     }
 
-    /// <summary>Gradient handle: a vertical line spanning the band height with an inverted triangle and a short horizontal line at the top (same style as the playhead).</summary>
-    private void DrawGradientHandle(DrawingContext dc, double x, double top, double bottom)
+    /// <summary>
+    /// Gradient handle: floats one note-block height above the notes (not all the way up to the track top) and is
+    /// drawn like the playhead (vertical line + inverted triangle + short horizontal tick).
+    /// </summary>
+    private void DrawGradientHandle(DrawingContext dc, RollLayout layout, double x, double bandTop)
     {
-        dc.DrawLine(_accentPen, new Point(x, top), new Point(x, bottom));
-
-        var tip = top - 3;
-        var baseY = tip - 7;
-        dc.DrawLine(_accentPen, new Point(x - 7, baseY - 4), new Point(x + 7, baseY - 4));
+        var tip = Math.Max(layout.Plot.Top - 3, bandTop - layout.RowHeight - 3);
+        var baseY = tip - 8;
+        dc.DrawLine(_playheadPen, new Point(x, tip), new Point(x, bandTop));
+        dc.DrawLine(_playheadPen, new Point(x - 8, baseY - 5), new Point(x + 8, baseY - 5));
 
         var triangle = new StreamGeometry();
         using (var ctx = triangle.Open())
@@ -746,12 +857,12 @@ public sealed class PianoRollView : FrameworkElement
             ctx.LineTo(new Point(x, tip), true, true);
         }
         triangle.Freeze();
-        dc.DrawGeometry(_accentPen.Brush, null, triangle);
+        dc.DrawGeometry(_pitchFill, null, triangle);
     }
 
-    /// <summary>Draggable gradient handle: dragging changes the next segment's transition length.</summary>
+    /// <summary>Draggable gradient handle: exactly one per adjacent pair, on the right edge of the gradient band.</summary>
     private readonly record struct GradientHandle(
-        int SegmentIndex, double X, double Top, double Bottom, int Direction);
+        int SegmentIndex, double X, double Top);
 
     /// <summary>Compute gradient handle positions; drawing and hit testing share the same geometry.</summary>
     private IEnumerable<GradientHandle> GradientHandles(RollLayout layout)
@@ -761,9 +872,9 @@ public sealed class PianoRollView : FrameworkElement
             if (band.LengthX < 1)
                 continue;
 
-            // direction = -1: the handle is at the band's left end and dragging left increases the length; +1: at the right end, dragging right increases it.
-            yield return new GradientHandle(band.SegmentIndex, band.RightEdgeX + band.LengthX, band.Top, band.Bottom, 1);
-            yield return new GradientHandle(band.SegmentIndex, band.LeftEdgeX - band.LengthX, band.Top, band.Bottom, -1);
+            // One handle per pair, placed at the right edge of the gradient band so it follows the cursor while dragging.
+            var edgeX = Math.Max(band.RightEdgeX + band.LengthX, band.LeftEdgeX);
+            yield return new GradientHandle(band.SegmentIndex, edgeX, band.Top);
         }
     }
 
@@ -771,7 +882,8 @@ public sealed class PianoRollView : FrameworkElement
     {
         foreach (var handle in GradientHandles(layout))
         {
-            if (position.Y < handle.Top - 2 || position.Y > handle.Bottom + 2)
+            // Only the lifted handle itself is grabbable, so note dragging inside the band keeps working.
+            if (position.Y > handle.Top + 2 || position.Y < handle.Top - layout.RowHeight - 18)
                 continue;
             if (Math.Abs(position.X - handle.X) > GradientGrabRadius)
                 continue;
@@ -794,7 +906,7 @@ public sealed class PianoRollView : FrameworkElement
         if (track is null || drag.Index < 0 || drag.Index >= track.Segments.Count)
             return;
 
-        var delta = (layout.BeatAt(position.X) - drag.OriginalBeat) * drag.Direction;
+        var delta = layout.BeatAt(position.X) - drag.OriginalBeat;
         var beats = Math.Clamp(drag.OriginalBeatEnd + delta, 0, MaxGradientBeats);
         var frames = Math.Round(beats * FramesPerBeatConstant / Math.Max(1, Bpm));
         var segment = track.Segments[drag.Index];
@@ -1140,15 +1252,22 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
+        // BGM block in the bottom lane: horizontal move only (no pitch change, no resize).
+        if (HitBgmBlock(layout, position))
+        {
+            _drag = new DragState(DragKind.Bgm, -1, position, BgmStartBeat, 0, 0);
+            CaptureMouse();
+            Cursor = Cursors.SizeWE;
+            e.Handled = true;
+            return;
+        }
+
         // Gradient handle: dragging only adjusts the transition length between adjacent segments, not note positions.
         if (HitGradientHandle(layout, position) is { } handle)
         {
             var segment = Track!.Segments[handle.SegmentIndex];
             _drag = new DragState(DragKind.Gradient, handle.SegmentIndex, position,
-                layout.BeatAt(position.X), SegmentGradientBeats(segment), 0)
-            {
-                Direction = handle.Direction,
-            };
+                layout.BeatAt(position.X), SegmentGradientBeats(segment), 0);
             CaptureMouse();
             Cursor = Cursors.SizeWE;
             e.Handled = true;
@@ -1351,6 +1470,24 @@ public sealed class PianoRollView : FrameworkElement
         if (_drag.Kind == DragKind.Playhead)
         {
             PlayheadBeat = ClampBeat(_drag.OriginalBeat + (position.X - _drag.Start.X) / layout.PxPerBeat);
+            e.Handled = true;
+            return;
+        }
+
+        if (_drag.Kind == DragKind.Bgm)
+        {
+            // The block only moves left/right; its width and vertical position are fixed by the lane.
+            var next = Math.Max(0, Snap(_drag.OriginalBeat + (position.X - _drag.Start.X) / layout.PxPerBeat));
+            if (Math.Abs(next - BgmStartBeat) > 1e-9)
+            {
+                if (!_drag.EditBegun)
+                {
+                    _drag.EditBegun = true;
+                    EditStarted?.Invoke(this, EventArgs.Empty);
+                }
+                BgmStartBeat = next;
+                InvalidateVisual();
+            }
             e.Handled = true;
             return;
         }
@@ -1587,6 +1724,19 @@ public sealed class PianoRollView : FrameworkElement
             ReleaseMouseCapture();
             Cursor = Cursors.Arrow;
             NoteDrawRequested?.Invoke(this, new NoteDrawEventArgs(start, end, semitone));
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+        if (_drag.Kind == DragKind.Bgm)
+        {
+            var edited = _drag.EditBegun;
+            _drag = null;
+            ReleaseMouseCapture();
+            Cursor = Cursors.Arrow;
+            if (edited)
+                EditCommitted?.Invoke(this, EventArgs.Empty);
             InvalidateVisual();
             e.Handled = true;
             return;
@@ -2206,6 +2356,12 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
+        if (HitBgmBlock(layout, position))
+        {
+            Cursor = Cursors.SizeWE;
+            return;
+        }
+
         if (Mode == PianoRollMode.Notes)
         {
             var index = HitNote(layout, position);
@@ -2237,6 +2393,20 @@ public sealed class PianoRollView : FrameworkElement
 
     /// <summary>The playhead is clamped between beat 1 and the end of the track.</summary>
     private double ClampBeat(double beat) => Math.Clamp(beat, 1, Math.Max(1, TotalBeats()));
+
+    /// <summary>Hit test for the BGM block: the whole fixed lane row is grabbable where the block is visible.</summary>
+    private bool HitBgmBlock(RollLayout layout, Point position)
+    {
+        if (!HasBgm || BgmDurationBeats <= 0 || layout.BgmLane.IsEmpty)
+            return false;
+        if (position.Y < layout.BgmLane.Top || position.Y > layout.BgmLane.Bottom)
+            return false;
+
+        var startBeat = 1 + BgmStartBeat;
+        var left = Math.Max(layout.Plot.Left, layout.X(startBeat));
+        var right = Math.Min(layout.Plot.Right, layout.X(startBeat + BgmDurationBeats));
+        return right - left >= 1 && position.X >= left && position.X <= right;
+    }
 
     private static int HitNote(RollLayout layout, Point position)
     {
@@ -2365,6 +2535,7 @@ public sealed class PianoRollView : FrameworkElement
         Box,
         Gradient,
         Pencil,
+        Bgm,
     }
 
     /// <summary>Original and preview ranges of each note during a multi-selection drag.</summary>
@@ -2407,9 +2578,6 @@ public sealed class PianoRollView : FrameworkElement
         /// <summary>Current mouse position of the box-selection rectangle.</summary>
         public Point Current { get; set; } = start;
 
-        /// <summary>Gradient handle drag direction: -1 at the band's left end, +1 at the right end.</summary>
-        public int Direction { get; set; } = 1;
-
         /// <summary>Pencil: current end beat of the drawn range.</summary>
         public double DrawEndBeat { get; set; }
 
@@ -2420,6 +2588,7 @@ public sealed class PianoRollView : FrameworkElement
     /// <summary>Geometry mapping shared by one draw/hit-test pass.</summary>
     private sealed class RollLayout(
         Rect plot,
+        Rect bgmLane,
         int low,
         int high,
         int rows,
@@ -2431,6 +2600,8 @@ public sealed class PianoRollView : FrameworkElement
         double viewStartBeat)
     {
         public Rect Plot { get; } = plot;
+        /// <summary>Fixed-height lane at the bottom of the control that shows the BGM block.</summary>
+        public Rect BgmLane { get; } = bgmLane;
         public int Low { get; } = low;
         public int High { get; } = high;
         public double TotalBeats { get; } = totalBeats;

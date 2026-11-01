@@ -320,6 +320,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <!-- Lyric bar (always visible): type text, Enter / focus loss decomposes it into
@@ -344,7 +345,7 @@
                                      KeyDown="OnLyricInputKeyDown"
                                      PreviewKeyDown="OnLyricInputPreviewKeyDown"
                                      LostFocus="OnLyricInputLostFocus"
-                                     ToolTip="直接输入歌词；回车或点击别处时按当前字典分解为最小声库单位，并在下方生成 D4 音块。删除歌词时空格代表休止，删除空格即删除休止" />
+                                     ToolTip="直接输入歌词；回车或点击别处时按当前字典分解为最小声库单位。重新填写时复用原旋律，多出的单位追加在原旋律之后（每个默认一拍）。删除歌词时空格代表休止，删除空格即删除休止" />
 
                             <Grid Margin="0,6,0,0">
                                 <TextBlock Text="分解结果（每个最小单位默认一个四分音符；拖动竖线可调整长度）"
@@ -459,6 +460,9 @@
                                                 Bpm="{Binding Bpm}"
                                                 BeatsPerBar="{Binding BeatsPerBar}"
                                                 RestRegions="{Binding RollRestRegions}"
+                                                HasBgm="{Binding HasBgm}"
+                                                BgmStartBeat="{Binding BgmStartBeat}"
+                                                BgmDurationBeats="{Binding BgmDurationBeats}"
                                                 Mode="{Binding RollMode}"
                                                 IsPencil="{Binding IsPencil}"
                                                 GridDivision="{Binding GridDivision}"
@@ -472,6 +476,47 @@
                                                 NoteDrawRequested="OnRollNoteDrawRequested"
                                                 PlayheadGrabbed="OnRollPlayheadGrabbed"
                                                 MinHeight="220" />
+                    </Border>
+
+                    <!-- BGM（伴奏）：位于钢琴卷帘下方；工程全局共用，原速播放，不可缩放。
+                         默认从第0小节第0音开始，起始拍可调 -->
+                    <Border Grid.Row="3" Margin="0,6,0,0" Padding="10,6"
+                            Background="{DynamicResource InputBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1" CornerRadius="6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0" Text="BGM 伴奏" Style="{StaticResource SectionTitle}"
+                                       Margin="0" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Content="导入 WAV" Margin="10,0,0,0"
+                                    Command="{Binding ImportBgmCommand}"
+                                    ToolTip="导入一个 WAV 作为伴奏：工程全局共用，原速播放，不支持缩放" />
+                            <Button Grid.Column="2" Content="清除" Margin="6,0,0,0"
+                                    Command="{Binding ClearBgmCommand}"
+                                    ToolTip="移除当前伴奏" />
+                            <TextBlock Grid.Column="3" Text="{Binding BgmName}" Margin="10,0,10,0"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                       Foreground="{DynamicResource DimBrush}" ToolTip="{Binding BgmPath}" />
+                            <TextBlock Grid.Column="4" Text="起始拍" Margin="0,0,6,0"
+                                       VerticalAlignment="Center" Foreground="{DynamicResource DimBrush}"
+                                       ToolTip="伴奏开始位置：0 = 第 0 小节第 0 音（工程起点），单位为拍" />
+                            <TextBox Grid.Column="5" Width="64" VerticalAlignment="Center"
+                                     IsEnabled="{Binding HasBgm}"
+                                     Text="{Binding BgmStartBeat, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="伴奏从第几拍开始（相对工程起点，0 = 起点）" />
+                            <TextBlock Grid.Column="6" Text="原速 · 不缩放" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" FontSize="11"
+                                       Foreground="{DynamicResource DimBrush}" />
+                        </Grid>
                     </Border>
                 </Grid>
 
@@ -678,5 +723,33 @@
                 </ScrollViewer>
             </Border>
         </Grid>
+
+        <!-- 无可用声库时：整个主界面覆盖半透明遮罩变灰并锁定操作，仅保留拖入声库与刷新入口 -->
+        <Border Grid.RowSpan="5" AllowDrop="True" Background="{DynamicResource OverlayBrush}">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasVoicebank}" Value="False">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <Border Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8"
+                    Padding="28,22" MaxWidth="420"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="未检测到可用声库" FontSize="18" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="将声库文件夹拖入窗口即可安装，安装完成后界面自动恢复。"
+                               Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap"
+                               TextAlignment="Center" Margin="0,10,0,0" />
+                    <Button Content="刷新声库" Command="{Binding RefreshLibraryCommand}"
+                            HorizontalAlignment="Center" Margin="0,18,0,0" />
+                </StackPanel>
+            </Border>
+        </Border>
     </Grid>
 </Window>
