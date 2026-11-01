@@ -22,6 +22,7 @@
     <Color x:Key="ThumbBorderColor">#4A4A4A</Color>
     <Color x:Key="ThumbHoverColor">#F4F4F4</Color>
     <Color x:Key="ThumbPressColor">#FFFFFF</Color>
+    <Color x:Key="OverlayColor">#B31C1C1C</Color>
 
     <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}" />
     <SolidColorBrush x:Key="PanelBrush" Color="{StaticResource PanelColor}" />
@@ -43,5 +44,6 @@
     <SolidColorBrush x:Key="ThumbBorderBrush" Color="{StaticResource ThumbBorderColor}" />
     <SolidColorBrush x:Key="ThumbHoverBrush" Color="{StaticResource ThumbHoverColor}" />
     <SolidColorBrush x:Key="ThumbPressBrush" Color="{StaticResource ThumbPressColor}" />
+    <SolidColorBrush x:Key="OverlayBrush" Color="{StaticResource OverlayColor}" />
 
 </ResourceDictionary>
