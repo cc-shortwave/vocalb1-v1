@@ -184,7 +184,7 @@ handling and loudness normalization. The design decisions, parameter choices and
 listening-based tuning are the author's as well.
 
 AI coding assistants were used for the desktop interface, code refactoring, test code,
-the array conversion between the C# front end and the Python engine, and the phase
+the data plumbing between the C# front end and the Python engine, and the phase
 vocoder implementation. The author reviewed and verified the result.
 
 The project uses open-source libraries (numpy, scipy, soundfile, pyworld) and contains no

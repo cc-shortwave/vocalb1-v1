@@ -182,7 +182,7 @@ python VocalB1Synthesizer.py
 要件定義、パラメータ設計、聴感に基づく調整も作者が行っています。
 
 AI コーディングアシスタントは、デスクトップ UI、コードのリファクタリング、テストコード、
-C# フロントエンドと Python エンジン間の配列変換、phase vocoder の実装を担当しました。
+C# フロントエンドと Python エンジン間のデータの受け渡し、phase vocoder の実装を担当しました。
 結果は作者が確認・検証しています。
 
 numpy / scipy / soundfile / pyworld などのオープンソースライブラリを使用しており、
