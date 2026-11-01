@@ -42,6 +42,22 @@ public sealed class TrackRow(TrackDocument model) : ObservableObject
     public override string ToString() => Model.Name;
 }
 
+/// <summary>A selectable track row in the pre-render dialog; the box is checked by default.</summary>
+public sealed class RenderTrackOption(TrackDocument model) : ObservableObject
+{
+    private bool _isSelected = true;
+
+    public TrackDocument Model { get; } = model;
+
+    public string Name => Model.Name;
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set => SetProperty(ref _isSelected, value);
+    }
+}
+
 /// <summary>A row of the segment list: the lyric is directly editable, all other fields are read-only.</summary>
 public sealed class SegmentRow(VoiceSegment model, int index) : ObservableObject
 {

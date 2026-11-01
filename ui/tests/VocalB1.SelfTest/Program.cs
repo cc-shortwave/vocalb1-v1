@@ -279,6 +279,20 @@ internal static class Program
         var b = provider.Read(wav, 128);
         Check("波形缓存返回同一实例", ReferenceEquals(a, b));
 
+        // Track mixer: the selected tracks are rendered to one shared timeline and summed into one WAV.
+        var trackA = Path.Combine(dir, "track_a.wav");
+        var trackB = Path.Combine(dir, "track_b.wav");
+        WriteMonoSineWav(trackA, 44100, 0.2, 440, 0.3);
+        WriteMonoSineWav(trackB, 44100, 0.4, 440, 0.4);
+        var mixed = Path.Combine(dir, "track_mix.wav");
+        TrackMixer.Mix([trackA, trackB], mixed);
+        var mixedInfo = WavReader.ReadInfo(mixed);
+        Check("音轨合并：时长取最长音轨", Math.Abs(mixedInfo.DurationSeconds - 0.4) < 0.01,
+            mixedInfo.DurationSeconds.ToString("F3"));
+        Check("音轨合并：输出为立体声", mixedInfo.Channels == 2);
+        Check("音轨合并：振幅按帧相加", Math.Abs(WavReader.ReadPeaks(mixed, 256).PeakAmplitude - 0.7) < 0.02,
+            WavReader.ReadPeaks(mixed, 256).PeakAmplitude.ToString("F3"));
+
         // Stereo balance: the engine outputs mono; after rendering, convert to stereo and split left/right energy.
         var mono = Path.Combine(dir, "mono.wav");
         WriteMonoSineWav(mono, 44100, 0.2, 440, 0.5);
