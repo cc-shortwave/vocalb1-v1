@@ -26,6 +26,17 @@ public sealed class ProjectDocument
     /// <summary>Tracks in tab order (at least 1).</summary>
     public List<TrackDocument> Tracks { get; set; } = [];
 
+    /// <summary>
+    /// Project-wide BGM (backing track) WAV. It is shared by every track and always plays at its
+    /// original speed (no scaling).
+    /// </summary>
+    public string? BgmPath { get; set; }
+
+    /// <summary>
+    /// BGM start offset in beats from the project start (0 = 第 0 小节第 0 音).
+    /// </summary>
+    public double BgmStartBeat { get; set; }
+
     /// <summary>Total project length in beats, taken as the maximum across all tracks.</summary>
     public double TotalBeats => Tracks.Count == 0 ? 0 : Tracks.Max(t => t.TotalBeats);
 
@@ -37,6 +48,8 @@ public sealed class ProjectDocument
         Bpm = Bpm,
         BeatsPerBar = BeatsPerBar,
         BeatUnit = BeatUnit,
+        BgmPath = BgmPath,
+        BgmStartBeat = BgmStartBeat,
         Tracks = Tracks.Select(t => t.Clone()).ToList(),
     };
 }
