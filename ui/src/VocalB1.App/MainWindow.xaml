@@ -654,68 +654,6 @@
 
                         <Border Style="{StaticResource Divider}" />
 
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="发音段" Style="{StaticResource SectionTitle}" Margin="0" />
-                            <TextBlock Grid.Column="1" Text="{Binding Segments.Count}" Foreground="{DynamicResource DimBrush}" />
-                        </Grid>
-
-                        <!-- Lyrics of the selected segment: edit directly; the text inside the clip in the piano roll updates in sync -->
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="歌词" Foreground="{DynamicResource DimBrush}"
-                                       VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <TextBox Grid.Column="1" x:Name="LyricBox" Margin="0"
-                                     Text="{Binding SelectedLyric, UpdateSourceTrigger=LostFocus}"
-                                     IsEnabled="{Binding HasSelectedSegment}"
-                                     KeyDown="OnLyricBoxKeyDown"
-                                     ToolTip="选中音块后输入当前字典中的假名或汉字；失焦或回车后按字典换发音。清空则回到音频名对应的默认文字" />
-                        </Grid>
-
-                        <!-- Crossfade length between the selected segment and the previous one (stored as synthesis frames, converted to beats at the current tempo) -->
-                        <Grid Margin="0,0,0,4">
-                            <TextBlock Text="渐变长度（拍）" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
-                            <TextBlock Text="{Binding SelectedTransitionBeats, StringFormat={}{0:0.##}}"
-                                       HorizontalAlignment="Right" />
-                        </Grid>
-                        <Slider Minimum="0" Maximum="4" SmallChange="0.05" LargeChange="0.5"
-                                TickFrequency="0.05" IsSnapToTickEnabled="True"
-                                Value="{Binding SelectedTransitionBeats}"
-                                IsEnabled="{Binding HasSelectedSegment}"
-                                ToolTip="该音块与前一段之间的交叉渐变宽度（拍）；0 表示按时间重叠或硬拼接" />
-
-                        <ListBox x:Name="SegmentList" ItemsSource="{Binding Segments}"
-                                 SelectedItem="{Binding SelectedSegment}" MinHeight="120">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="18" />
-                                            <ColumnDefinition Width="52" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding Number}" Foreground="{DynamicResource DimBrush}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Lyric}" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="2" Text="{Binding RangeText}" Foreground="{DynamicResource DimBrush}" />
-                                        <TextBlock Grid.Column="3" Text="{Binding PitchText}" Foreground="{DynamicResource PitchBrush}" />
-                                    </Grid>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-
-                        <Button Content="移除所选段" Margin="0,8,0,0"
-                                Command="{Binding RemoveSegmentCommand}"
-                                CommandParameter="{Binding SelectedItem, ElementName=SegmentList}" />
-
-                        <Border Style="{StaticResource Divider}" />
-
                         <TextBlock Text="说明" Style="{StaticResource SectionTitle}" />
                         <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
                                    Text="每个标签页是一条独立音轨：声库、发音段、共振峰跟随/增益、气声与 AP 参数互不影响。BPM 与拍型属于整个工程。" />

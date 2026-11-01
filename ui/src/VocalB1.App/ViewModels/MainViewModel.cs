@@ -111,7 +111,6 @@ public sealed class MainViewModel : ObservableObject
         DeleteSelectionCommand = new RelayCommand(_ => DeleteSelection(), _ => CanDeleteSelection);
         RefreshLibraryCommand = new RelayCommand(_ => RefreshLibrary());
         AddLibraryItemCommand = new RelayCommand(p => AddLibraryItem(p as LibraryEntry));
-        RemoveSegmentCommand = new RelayCommand(p => RemoveSegment(p as SegmentRow));
         AddTrackCommand = new RelayCommand(_ => AddTrack());
         RemoveTrackCommand = new RelayCommand(_ => RemoveTrack(), _ => _project.Tracks.Count > 1);
         ToggleRollModeCommand = new RelayCommand(_ => ToggleRollMode());
@@ -283,6 +282,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             _activeTrack.Settings.Jitter = value;
             OnPropertyChanged();
+            InvalidateRender();
         }
     }
 
@@ -296,6 +296,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             _activeTrack.Settings.Shimmer = value;
             OnPropertyChanged();
+            InvalidateRender();
         }
     }
 
@@ -308,6 +309,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             _activeTrack.Settings.BreathyThr = value;
             OnPropertyChanged();
+            InvalidateRender();
         }
     }
 
@@ -320,6 +322,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             _activeTrack.Settings.ApScale = value;
             OnPropertyChanged();
+            InvalidateRender();
         }
     }
 
@@ -332,6 +335,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             _activeTrack.Settings.ApMax = value;
             OnPropertyChanged();
+            InvalidateRender();
         }
     }
 
@@ -392,12 +396,11 @@ public sealed class MainViewModel : ObservableObject
             }
 
             OnPropertyChanged(nameof(HasSelectedSegment));
-            OnPropertyChanged(nameof(SelectedLyric));
             OnPropertyChanged(nameof(SelectedTransitionBeats));
         }
     }
 
-    /// <summary>Whether a segment is selected (the lyric input box is enabled based on this).</summary>
+    /// <summary>Whether a segment is selected (the transition slider is enabled based on this).</summary>
     public bool HasSelectedSegment => _selectedSegment is not null;
 
     /// <summary>
@@ -424,88 +427,6 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
             RollRevision++;
         }
-    }
-
-    /// <summary>Lyric of the selected segment: typed input is written back to the model and the piano roll redraws immediately.</summary>
-    public string SelectedLyric
-    {
-        get => _selectedSegment?.Lyric ?? string.Empty;
-        set
-        {
-            var row = _selectedSegment;
-            if (row is null || row.Lyric == value)
-                return;
-
-            // Consecutive edits within the same segment's lyric are coalesced into one undo step, so each keystroke does not take a slot.
-            PushUndo("lyric:" + row.Model.Id);
-            row.Lyric = value ?? string.Empty;
-            RollRevision++;
-            ApplyLyricPronunciation(row, value ?? string.Empty);
-        }
-    }
-
-    /// <summary>
-    /// Re-resolves a segment's pronunciation from the current dictionary: one part swaps the wav in place,
-    /// a multi-mora entry is split into one segment per part across the same beat range.
-    /// Runs on commit (focus loss / Enter), so a lyric is not re-split on every keystroke.
-    /// </summary>
-    private void ApplyLyricPronunciation(SegmentRow row, string lyric)
-    {
-        if (_dictionary is null || string.IsNullOrWhiteSpace(lyric))
-            return;
-
-        var entry = _dictionary.Entries.FirstOrDefault(e => e.Text == lyric);
-        if (entry is null)
-        {
-            AddLog("warn", $"歌词 \"{lyric}\" 不在当前字典中，发音未改变。");
-            return;
-        }
-
-        List<VoiceSegment> segments;
-        try
-        {
-            segments = DictionaryResolver.Resolve(
-                entry,
-                string.IsNullOrWhiteSpace(_dictionaryPath) ? null : Path.GetDirectoryName(_dictionaryPath),
-                ResolveDictionaryLibraryRoot(),
-                row.Model.BeatStart,
-                row.Model.Length,
-                row.Model.DstPitch,
-                row.Model.SrcPitch).ToList();
-        }
-        catch (Exception ex)
-        {
-            AddLog("warn", $"歌词 \"{lyric}\" 换发音失败：{ex.Message}");
-            return;
-        }
-
-        if (segments.Count == 1)
-        {
-            var single = segments[0];
-            row.Model.Audio = single.Audio;
-            row.Model.SrcPitch = single.SrcPitch;
-            row.Model.DstPitch = single.DstPitch;
-            row.Model.KeepUnvoicedHead = single.KeepUnvoicedHead;
-            AddLog("info", $"Lyric \"{lyric}\" -> {Path.GetFileName(single.Audio)} ({_activeTrack.Name})");
-            return;
-        }
-
-        // Multi-part: keep the original beat range and the link to the previous segment.
-        var index = IndexOfSegment(row) ?? 0;
-        var transition = row.Model.Transition;
-        _activeTrack.Segments.Remove(row.Model);
-        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == row.Model.Id);
-        segments[0].Transition = transition;
-        _activeTrack.Segments.AddRange(segments);
-        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
-        foreach (var segment in segments)
-            _activeTrack.AddPitchNodes(segment, 5);
-
-        _selectedNoteIndex = index;
-        RefreshSegments();
-        AddLog("info",
-            $"Lyric \"{lyric}\" -> {segments.Count} segments " +
-            $"({string.Join(" + ", segments.Select(s => Path.GetFileNameWithoutExtension(s.Audio).TrimStart('_')))}), {_activeTrack.Name}");
     }
 
     /// <summary>Index of the selected segment in the piano roll (kept in sync with the segment list).</summary>
@@ -1179,7 +1100,6 @@ public sealed class MainViewModel : ObservableObject
     public ICommand DeleteSelectionCommand { get; }
     public ICommand RefreshLibraryCommand { get; }
     public ICommand AddLibraryItemCommand { get; }
-    public ICommand RemoveSegmentCommand { get; }
     public ICommand AddTrackCommand { get; }
     public ICommand RemoveTrackCommand { get; }
     public ICommand ToggleRollModeCommand { get; }
@@ -1546,7 +1466,6 @@ public sealed class MainViewModel : ObservableObject
             : null;
         OnPropertyChanged(nameof(SelectedSegment));
         OnPropertyChanged(nameof(HasSelectedSegment));
-        OnPropertyChanged(nameof(SelectedLyric));
         // After dragging a transition handle in the piano roll, the slider on the right must show the new transition length.
         OnPropertyChanged(nameof(SelectedTransitionBeats));
     }
@@ -2132,19 +2051,6 @@ public sealed class MainViewModel : ObservableObject
         AddLog("info", $"Segment added: {entry.DisplayName} ({_activeTrack.Name}, beat {start:0.##} -> {start + 1:0.##})");
     }
 
-    private void RemoveSegment(SegmentRow? row)
-    {
-        if (row is null)
-            return;
-
-        PushUndo();
-        _activeTrack.Segments.Remove(row.Model);
-        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == row.Model.Id);
-        SegmentLayout.SyncTransitionPoints(_activeTrack);
-        RefreshSegments();
-        AddLog("info", $"Segment removed: {row.Lyric} ({_activeTrack.Name})");
-    }
-
     // ------------------------------------------------------------------
     // User dictionary
     // ------------------------------------------------------------------
@@ -2372,6 +2278,24 @@ public sealed class MainViewModel : ObservableObject
     // ------------------------------------------------------------------
     // Render / Playback
     // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Drop the cached render of the active track after a synthesis parameter changed.
+    /// Playback replays the last rendered WAV, so without this a slider change would
+    /// still play the audio produced with the old value and look like it had no effect.
+    /// </summary>
+    private void InvalidateRender()
+    {
+        if (!_trackOutputs.Remove(_activeTrack, out var output))
+            return;
+
+        if (string.Equals(LastRenderPath, output.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            LastRenderPath = null;
+            PreviewInfo = "参数已修改，需要重新渲染";
+        }
+    }
+
     private async Task RenderAsync()
     {
         IsBusy = true;

@@ -781,6 +781,8 @@ public sealed class PianoRollView : FrameworkElement
     /// <summary>
     /// Gradient bands between adjacent notes, with length taken from the next segment's transition beats.
     /// Only notes that are contiguous (no gap between them) get a gradient at all.
+    /// A zero-length transition is still reported so the pair keeps its drag handle: the band draws nothing,
+    /// but the handle at the junction lets the user drag a gradient back in.
     /// </summary>
     private IEnumerable<GradientBand> GradientBands(RollLayout layout)
     {
@@ -793,8 +795,6 @@ public sealed class PianoRollView : FrameworkElement
             var previous = segments[prevIndex];
             var current = segments[currentIndex];
             var gradient = SegmentGradientBeats(current);
-            if (gradient <= 1e-9)
-                continue;
 
             var (prevStart, prevEnd, _) = NoteState(prevIndex, previous);
             var (currStart, _, _) = NoteState(currentIndex, current);
@@ -869,10 +869,8 @@ public sealed class PianoRollView : FrameworkElement
     {
         foreach (var band in GradientBands(layout))
         {
-            if (band.LengthX < 1)
-                continue;
-
             // One handle per pair, placed at the right edge of the gradient band so it follows the cursor while dragging.
+            // A zero-length band keeps its handle on the junction so the gradient can be dragged back in.
             var edgeX = Math.Max(band.RightEdgeX + band.LengthX, band.LeftEdgeX);
             yield return new GradientHandle(band.SegmentIndex, edgeX, band.Top);
         }
