@@ -61,16 +61,6 @@ public partial class MainWindow : Window
 
     private void OnRollEditCommitted(object? sender, EventArgs e) => _viewModel?.RefreshActiveTrack();
 
-    /// <summary>Enter commits the lyric edit immediately instead of waiting for focus to leave.</summary>
-    private void OnLyricBoxKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Enter || sender is not TextBox box)
-            return;
-
-        box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
-        e.Handled = true;
-    }
-
     /// <summary>Enter or focus loss decomposes the top lyric bar into minimal units and generates D4 blocks.</summary>
     private void OnLyricInputKeyDown(object sender, KeyEventArgs e)
     {
