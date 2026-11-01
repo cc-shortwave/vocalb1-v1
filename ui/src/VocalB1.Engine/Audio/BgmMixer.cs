@@ -71,9 +71,9 @@ public static class BgmMixer
         return outputPath;
     }
 
-    private sealed record PcmBuffer(double[] Left, double[] Right, int SampleRate, long FrameCount);
+    internal sealed record PcmBuffer(double[] Left, double[] Right, int SampleRate, long FrameCount);
 
-    private static PcmBuffer Decode(string path)
+    internal static PcmBuffer Decode(string path)
     {
         using var stream = File.OpenRead(path);
         var layout = ParseLayout(path, stream);
@@ -119,7 +119,7 @@ public static class BgmMixer
         return new PcmBuffer(left, right, layout.SampleRate, frameCount);
     }
 
-    private static void WriteHeader(Stream output, int sampleRate, long dataBytes)
+    internal static void WriteHeader(Stream output, int sampleRate, long dataBytes)
     {
         const ushort channels = 2;
         const ushort bits = 16;
@@ -147,7 +147,7 @@ public static class BgmMixer
             target[offset + i] = (byte)text[i];
     }
 
-    private static short EncodeSample(double value) =>
+    internal static short EncodeSample(double value) =>
         (short)Math.Clamp((int)Math.Round(value * 32768), short.MinValue, short.MaxValue);
 
     private static double DecodeSample(ReadOnlySpan<byte> sample, int bits, bool isFloat)

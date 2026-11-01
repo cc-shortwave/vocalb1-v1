@@ -9,6 +9,7 @@ using Microsoft.Win32;
 using VocalB1.App.Controls;
 using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
+using VocalB1.App.Views;
 using VocalB1.Core.Abstractions;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Library;
@@ -67,6 +68,10 @@ public sealed class MainViewModel : ObservableObject
     private bool _isPlaying;
     private string _statusText = "就绪";
     private string? _lastRenderPath;
+    /// <summary>Merged WAV of the last render and the tracks it contains; playback prefers it.</summary>
+    private string? _lastMixPath;
+    private List<TrackDocument>? _lastMixTracks;
+    private double _lastMixDurationSeconds;
     /// <summary>Cached WAV that already contains the BGM, rebuilt when the vocal/BGM/start time changes.</summary>
     private string? _bgmMixPath;
     private string? _bgmMixKey;
@@ -1437,6 +1442,7 @@ public sealed class MainViewModel : ObservableObject
             Tracks.Add(new TrackRow(track));
 
         _trackOutputs.Clear();
+        ClearMergedRender();
         _selectedTrack = Tracks[0];
         OnPropertyChanged(nameof(SelectedTrack));
 
@@ -1558,6 +1564,7 @@ public sealed class MainViewModel : ObservableObject
             Tracks.Add(new TrackRow(track));
 
         _trackOutputs.Clear();
+        ClearMergedRender();
         _bgmMixKey = null;
         RaiseBgmChanged();
         trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Tracks.Count - 1));
@@ -1813,6 +1820,8 @@ public sealed class MainViewModel : ObservableObject
         var index = Tracks.IndexOf(row);
         _project.Tracks.Remove(row.Model);
         _trackOutputs.Remove(row.Model);
+        if (_lastMixTracks?.Contains(row.Model) == true)
+            ClearMergedRender();
         Tracks.Remove(row);
 
         (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -1848,7 +1857,14 @@ public sealed class MainViewModel : ObservableObject
         ClearLyricUnits();
         _lyricCommittedText = string.Empty;
 
-        if (_trackOutputs.TryGetValue(track, out var output) && File.Exists(output.Path))
+        if (_lastMixTracks is { } mixTracks && _lastMixPath is { } mixPath
+            && mixTracks.Contains(track) && File.Exists(mixPath))
+        {
+            // Playback of this track replays the merged WAV so every rendered track is heard together.
+            LastRenderPath = mixPath;
+            PreviewInfo = $"{Path.GetFileName(mixPath)} · {_lastMixDurationSeconds:F2}s";
+        }
+        else if (_trackOutputs.TryGetValue(track, out var output) && File.Exists(output.Path))
         {
             LastRenderPath = output.Path;
             PreviewInfo = $"{Path.GetFileName(output.Path)} · {output.DurationSeconds:F2}s";
@@ -2289,6 +2305,13 @@ public sealed class MainViewModel : ObservableObject
         if (!_trackOutputs.Remove(_activeTrack, out var output))
             return;
 
+        // A merged WAV containing this track is stale as well.
+        if (_lastMixTracks is { } sources && sources.Contains(_activeTrack))
+        {
+            ClearMergedRender();
+            return;
+        }
+
         if (string.Equals(LastRenderPath, output.Path, StringComparison.OrdinalIgnoreCase))
         {
             LastRenderPath = null;
@@ -2296,22 +2319,58 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Forget the merged render; it no longer reflects the current project.</summary>
+    private void ClearMergedRender()
+    {
+        if (_lastMixTracks is null && _lastMixPath is null)
+            return;
+
+        if (_lastMixPath is not null && string.Equals(LastRenderPath, _lastMixPath, StringComparison.OrdinalIgnoreCase))
+        {
+            LastRenderPath = null;
+            PreviewInfo = "参数已修改，需要重新渲染";
+        }
+
+        _lastMixPath = null;
+        _lastMixTracks = null;
+        _lastMixDurationSeconds = 0;
+    }
+
     private async Task RenderAsync()
     {
+        // Ask which tracks to render before starting the engine; cancel leaves everything untouched.
+        var dialog = new RenderTrackDialog(_project.Tracks);
+        if (dialog.ShowDialog() != true)
+        {
+            StatusText = "已取消渲染";
+            return;
+        }
+
+        var tracks = dialog.SelectedTracks;
+        if (tracks.Count == 0)
+        {
+            StatusText = "未选择音轨";
+            AddLog("warn", "No track selected; nothing to render.");
+            return;
+        }
+
         IsBusy = true;
         StatusText = "渲染中…";
         _renderCts = new CancellationTokenSource();
+        var started = DateTime.Now;
 
         try
         {
-            // Bind the render to the track that started it: the user may switch tracks while
-            // the engine is running, and the output must not be attributed to the new track.
-            var track = _activeTrack;
-            var issues = ProjectValidator.Validate(track, _project);
-            foreach (var issue in issues)
-                AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
+            var blocked = false;
+            foreach (var track in tracks)
+            {
+                var issues = ProjectValidator.Validate(track, _project);
+                foreach (var issue in issues)
+                    AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
+                blocked |= ProjectValidator.HasError(issues);
+            }
 
-            if (ProjectValidator.HasError(issues))
+            if (blocked)
             {
                 StatusText = "工程校验未通过";
                 return;
@@ -2319,32 +2378,52 @@ public sealed class MainViewModel : ObservableObject
 
             var directory = ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot);
             Directory.CreateDirectory(directory);
-            var stem = string.Concat(track.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-            var output = Path.Combine(directory, $"render_{stem}_{DateTime.Now:yyyyMMdd_HHmmss}.wav");
+            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
-            AddLog("info", $"Starting the Python engine to render track \"{track.Name}\"...");
+            AddLog("info", $"Starting the Python engine to render {tracks.Count} track(s)...");
             await _services.Engine.InitializeAsync(_renderCts.Token);
 
             var progress = new Progress<EngineEvent>(OnEngineEvent);
-            var result = await _services.Engine.RenderAsync(
-                new RenderRequest(_project, track, output), progress, _renderCts.Token);
-
-            // The engine output is mono; expand it to stereo here according to the track's vocal balance and distribute left/right energy.
-            try
+            var outputs = new List<string>(tracks.Count);
+            for (var i = 0; i < tracks.Count; i++)
             {
-                if (StereoBalanceProcessor.Apply(result.OutputPath, track.Settings.StereoBalance))
-                    AddLog("info", $"Stereo balance {track.Settings.StereoBalance:0}: left/right channel energy adjusted.");
-            }
-            catch (Exception ex)
-            {
-                AddLog("warn", "Stereo balance post-processing failed: " + ex.Message);
+                var track = tracks[i];
+                var stem = string.Concat(track.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+                var output = Path.Combine(directory, $"render_{i + 1}_{stem}_{timestamp}.wav");
+
+                StatusText = $"渲染中（{i + 1}/{tracks.Count}）：{track.Name}";
+                AddLog("info", $"Rendering track \"{track.Name}\" ({i + 1}/{tracks.Count})...");
+                var result = await _services.Engine.RenderAsync(
+                    new RenderRequest(_project, track, output), progress, _renderCts.Token);
+
+                // The engine output is mono; expand it to stereo here according to the track's vocal balance and distribute left/right energy.
+                try
+                {
+                    if (StereoBalanceProcessor.Apply(result.OutputPath, track.Settings.StereoBalance))
+                        AddLog("info", $"Stereo balance {track.Settings.StereoBalance:0}: left/right channel energy adjusted.");
+                }
+                catch (Exception ex)
+                {
+                    AddLog("warn", "Stereo balance post-processing failed: " + ex.Message);
+                }
+
+                _trackOutputs[track] = new RenderedTrack(result.OutputPath, result.DurationSeconds);
+                outputs.Add(result.OutputPath);
             }
 
-            _trackOutputs[track] = new RenderedTrack(result.OutputPath, result.DurationSeconds);
-            LastRenderPath = result.OutputPath;
-            PreviewInfo = $"{Path.GetFileName(result.OutputPath)} · {result.DurationSeconds:F2}s";
-            StatusText = $"渲染完成（{result.Elapsed.TotalSeconds:F1}s）";
-            AddLog("info", $"Output: {result.OutputPath}");
+            // All selected tracks were rendered to one shared timeline; sum them into a single WAV.
+            StatusText = "合并音轨…";
+            var mixPath = Path.Combine(directory, $"render_mix_{timestamp}.wav");
+            TrackMixer.Mix(outputs, mixPath);
+            var mixInfo = WavReader.ReadInfo(mixPath);
+
+            _lastMixPath = mixPath;
+            _lastMixTracks = tracks.ToList();
+            _lastMixDurationSeconds = mixInfo.DurationSeconds;
+            LastRenderPath = mixPath;
+            PreviewInfo = $"{Path.GetFileName(mixPath)} · {mixInfo.DurationSeconds:F2}s";
+            StatusText = $"渲染完成（{(DateTime.Now - started).TotalSeconds:F1}s）";
+            AddLog("info", $"{tracks.Count} track(s) merged into: {mixPath}");
         }
         catch (OperationCanceledException)
         {
@@ -2413,6 +2492,12 @@ public sealed class MainViewModel : ObservableObject
 
         // Start from the current playhead position; when there is no playhead yet, or playback already reached the end, restart from beat 1.
         var endBeat = PlaybackEndBeat(playbackTrack);
+        if (_lastMixPath is not null && _lastMixDurationSeconds > 0.01
+            && string.Equals(path, _lastMixPath, StringComparison.OrdinalIgnoreCase))
+        {
+            // The merged WAV may outlast the active track, so clamp against its own length.
+            endBeat = 1 + _lastMixDurationSeconds * Math.Max(1, Bpm) / 60;
+        }
         var startBeat = Math.Clamp(PlayheadBeat ?? 1, 1, endBeat);
         if (endBeat - startBeat < 0.05)
             startBeat = 1;
