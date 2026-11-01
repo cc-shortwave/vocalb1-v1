@@ -175,7 +175,7 @@ python VocalB1Synthesizer.py
 交叉淡化拼接、气声处理与响度归一化。创意、需求定义、参数取舍与听感调整也由作者完成。
 
 AI 编程助手负责：桌面界面、代码重构、测试代码、C# 前端与 Python 引擎之间的数组转换，
-以及 phase vocoder 部分。结果由作者逐段复核与验证。
+以及 phase vocoder 部分。结果由作者复核与验证。
 
 项目使用了 numpy / scipy / soundfile / pyworld 等开源库，未包含任何预训练模型。
 
