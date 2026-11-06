@@ -53,7 +53,7 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <!-- 声库根目录下的 icon.jpg（与音频文件同级），无图标时自动隐藏 -->
+                    <!-- 声库内任意图片；找不到时显示 VocalB1 自带图标 -->
                     <Image Source="{Binding LibraryIcon}" Height="26" MaxWidth="72" Margin="0,0,8,0"
                            VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality"
                            ToolTip="{Binding LibraryRoot}">

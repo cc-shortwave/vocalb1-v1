@@ -13,6 +13,12 @@ public sealed class TrackDocument
 
     public List<VoiceSegment> Segments { get; set; } = [];
 
+    /// <summary>
+    /// Persisted lyric object graph for this track: the lyric bar's single source of truth.
+    /// The text box is only a projection of these words/units.
+    /// </summary>
+    public LyricPhrase LyricPhrase { get; set; } = new();
+
     public List<PitchPoint> PitchLine { get; set; } = [];
 
     /// <summary>This track's own synthesis parameters (formant follow/gain, energy distribution, etc.).</summary>
@@ -128,6 +134,7 @@ public sealed class TrackDocument
         Name = Name,
         LibraryRoot = LibraryRoot,
         Segments = Segments.Select(s => s.Clone()).ToList(),
+        LyricPhrase = LyricPhrase.Clone(),
         PitchLine = PitchLine.Select(p => p.Clone()).ToList(),
         Settings = Settings.Clone(),
         Solo = Solo,

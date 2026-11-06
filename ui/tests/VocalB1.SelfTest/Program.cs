@@ -30,6 +30,7 @@ internal static class Program
         TestPitchMath();
         TestProjectJson();
         TestDictionary();
+        TestLyricPhrase();
         TestWaveform();
         TestSegmentLayout();
         await TestEngineHandshakeAsync(runRender);
@@ -255,7 +256,156 @@ internal static class Program
     }
 
     // ------------------------------------------------------------------
-    // 4. WAV reading
+    // 4. Lyric object model: word/unit parsing, object diff, rests, persistence
+    // ------------------------------------------------------------------
+    private static void TestLyricPhrase()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "lyric");
+        Directory.CreateDirectory(dir);
+        WriteSineWav(Path.Combine(dir, "a.wav"), 44100, 0.2, 440, 0.2);
+        WriteSineWav(Path.Combine(dir, "b.wav"), 44100, 0.2, 660, 0.2);
+
+        var dictionary = new UserDictionary
+        {
+            Name = "歌词自检字典",
+            DefaultSrcPitch = "D4",
+            Entries =
+            [
+                new DictionaryEntry
+                {
+                    Text = "きゃ",
+                    Parts =
+                    [
+                        new DictionaryPart { Audio = "a.wav" },
+                        new DictionaryPart { Audio = "b.wav" },
+                    ],
+                },
+                new DictionaryEntry { Text = "あ", Parts = [new DictionaryPart { Audio = "a.wav" }] },
+                new DictionaryEntry { Text = "い", Parts = [new DictionaryPart { Audio = "b.wav" }] },
+            ],
+        };
+
+        var parsed = LyricPhraseParser.Parse(dictionary, "きゃ あ", dir, null);
+        Check("歌词解析：词→发音单位两级结构",
+            parsed.Words.Count == 3
+            && parsed.Words[0].Units.Count == 2
+            && parsed.Words[1].Units.Count == 1
+            && parsed.Words[2].Units.Count == 1,
+            $"{parsed.Words.Count} 词 / {string.Join(",", parsed.Words.Select(w => w.Units.Count))} 单位");
+        Check("歌词解析：音块已定位到音频",
+            parsed.Words[0].Units.All(u => !u.IsRest && File.Exists(u.Audio)));
+        Check("歌词解析：空白成为休止词",
+            parsed.Words[1].IsRest && parsed.Words[1].Projection == " ");
+
+        var track = new TrackDocument();
+        var phrase = track.LyricPhrase;
+        var applied = LyricPhraseComposer.Apply(
+            phrase, parsed.Words, track, 1.0, 0, "D4");
+        Check("歌词应用：每个发音单位生成一个音块",
+            track.Segments.Count == 3 && applied.Added == 3 && applied.Reused == 0,
+            $"{track.Segments.Count} 段 / 新增 {applied.Added}");
+        Check("歌词应用：拍位按单位依次排开（休止也占拍）",
+            Math.Abs(track.Segments[0].BeatStart - 1) < 1e-9
+            && Math.Abs(track.Segments[1].BeatStart - 2) < 1e-9
+            && Math.Abs(track.Segments[2].BeatStart - 4) < 1e-9
+            && Math.Abs(phrase.Words[1].BeatStart - 3) < 1e-9,
+            string.Join(", ", track.Segments.Select(s => s.BeatStart)));
+        Check("文本投影：原歌词", phrase.Text == "きゃ あ", phrase.Text);
+        Check("对象真值：单位已绑定音块",
+            phrase.Words[0].Units.All(u => u.SegmentId is not null)
+            && phrase.Words[2].Units[0].SegmentId == track.Segments[2].Id);
+
+        var firstUnitSegment = phrase.Words[0].Units[0].SegmentId;
+
+        // Full re-parse + object diff: "あ" is replaced by "い" while "きゃ" and the space keep their melody.
+        var reparsed = LyricPhraseParser.Parse(dictionary, "きゃ い", dir, null);
+        var diff = LyricPhraseComposer.Apply(phrase, reparsed.Words, track, 1.0, 0, "D4");
+        Check("歌词 diff：相同词复用旋律",
+            phrase.Words[0].Units[0].SegmentId == firstUnitSegment
+            && Math.Abs(phrase.Words[0].BeatStart - 1) < 1e-9);
+        Check("歌词 diff：替换词与移除旧词计数",
+            diff.Reused == 2 && diff.Added == 1 && diff.Removed == 1,
+            $"reuse={diff.Reused} add={diff.Added} remove={diff.Removed}");
+        Check("歌词 diff：新词接在上一词之后",
+            phrase.Text == "きゃ い"
+            && Math.Abs(phrase.Words[2].BeatStart - 4) < 1e-9
+            && Math.Abs(phrase.Words[2].BeatEnd - 5) < 1e-9,
+            $"{phrase.Text} / {phrase.Words[2].BeatStart}-{phrase.Words[2].BeatEnd}");
+        Check("歌词 diff：旧词音块已移除", track.Segments.Count == 3);
+
+        // Deleting a rest word pulls the following words left.
+        var restWord = phrase.Words[1];
+        var restLength = restWord.BeatEnd - restWord.BeatStart;
+        var followingStart = phrase.Words[2].BeatStart;
+        LyricPhraseComposer.RemoveWord(phrase, restWord, track, pullFollowing: true);
+        Check("删除休止：后续单位前移",
+            phrase.Text == "きゃい"
+            && Math.Abs(phrase.Words[1].BeatStart - (followingStart - restLength)) < 1e-9,
+            $"{phrase.Text} / {phrase.Words[1].BeatStart}");
+
+        // Deleting a real word mutes every pronunciation unit into a same-length rest.
+        var wordToMute = phrase.Words[0];
+        var muteStart = wordToMute.BeatStart;
+        var muteEnd = wordToMute.BeatEnd;
+        LyricPhraseComposer.MuteWord(phrase, wordToMute, track);
+        Check("删除歌词：整词发音单位变为同长休止",
+            wordToMute.IsRest && wordToMute.Units.Count == 2
+            && Math.Abs(wordToMute.BeatStart - muteStart) < 1e-9
+            && Math.Abs(wordToMute.BeatEnd - muteEnd) < 1e-9);
+        Check("删除歌词：音块移除，文本投影为空格",
+            track.Segments.Count == 1
+            && phrase.Text == "  " + phrase.Words[1].Surface,
+            phrase.Text);
+        Check("删除歌词：原字符仍保留在单位上",
+            wordToMute.Units.All(u => u.Text == "きゃ" && u.Display == "休止"));
+
+        // Unmatched characters become rests but keep their original character for the detail tooltip.
+        var unmatched = LyricPhraseParser.Parse(dictionary, "ん", dir, null);
+        Check("歌词解析：字典未匹配字符记录为休止",
+            unmatched.Words.Count == 1 && unmatched.Unmatched.Count == 1
+            && unmatched.Words[0].IsRest && unmatched.Words[0].Units[0].Text == "ん");
+        Check("歌词解析：缺音频记录为休止",
+            LyricPhraseParser.Parse(
+                new UserDictionary
+                {
+                    Name = "缺音频",
+                    Entries = [new DictionaryEntry { Text = "x", Parts = [new DictionaryPart { Audio = "nope.wav" }] }],
+                },
+                "x", dir, null).MissingAudio.Count == 1);
+
+        // Persistence: the phrase is part of the track and survives save/load, segment ids included.
+        var project = new ProjectDocument { Name = "歌词持久化", Tracks = [track] };
+        var json = ProjectJson.Serialize(project);
+        var loaded = ProjectJson.Deserialize(json);
+        Check("歌词持久化：JSON 往返保留词与单位",
+            loaded.Tracks[0].LyricPhrase.Words.Count == phrase.Words.Count
+            && loaded.Tracks[0].LyricPhrase.Text == phrase.Text,
+            loaded.Tracks[0].LyricPhrase.Text);
+        Check("歌词持久化：休止与音块身份保留",
+            loaded.Tracks[0].LyricPhrase.Words[0].IsRest
+            && loaded.Tracks[0].LyricPhrase.Words[0].Units[0].Text == "きゃ"
+            && loaded.Tracks[0].LyricPhrase.Words[1].Units[0].SegmentId == phrase.Words[1].Units[0].SegmentId);
+
+        // Old projects without a lyric phrase rebuild it from their segments.
+        var legacyTrack = new TrackDocument
+        {
+            Segments =
+            [
+                new VoiceSegment { Audio = "x.wav", BeatStart = 1, BeatEnd = 2, LyricOverride = "あ" },
+                new VoiceSegment { Audio = "y.wav", BeatStart = 2, BeatEnd = 3, LyricOverride = "い" },
+            ],
+        };
+        var legacy = ProjectJson.Deserialize(
+            ProjectJson.Serialize(new ProjectDocument { Tracks = [legacyTrack] }).Replace(
+                "\"lyricPhrase\": {", "\"lyricPhraseDisabled\": {", StringComparison.Ordinal));
+        Check("旧工程：无歌词对象时按段重建",
+            legacy.Tracks[0].LyricPhrase.Words.Count == 2
+            && legacy.Tracks[0].LyricPhrase.Text == "あい",
+            legacy.Tracks[0].LyricPhrase.Text);
+    }
+
+    // ------------------------------------------------------------------
+    // 5. WAV reading
     // ------------------------------------------------------------------
     private static void TestWaveform()
     {

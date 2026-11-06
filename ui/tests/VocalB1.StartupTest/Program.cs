@@ -76,6 +76,9 @@ internal static class Program
             Check("歌词栏：分解为最小单位并生成 D4 音块", () =>
             {
                 viewModel!.LibraryRoot = bank;
+                viewModel.RefreshLibraryCommand.Execute(null);
+                viewModel.SelectedLibraryItem = viewModel.Library.First(
+                    e => Path.GetFileNameWithoutExtension(e.Path).TrimStart('_') == "あ");
                 viewModel.LyricInput = "あいう";
                 viewModel.CommitLyricInput();
                 return viewModel.LyricUnits.Count == 3
@@ -130,7 +133,7 @@ internal static class Program
                 viewModel!.AddNoteAt(4.0, 9);
                 return viewModel.LyricInput == "あいあ"
                     && viewModel.LyricUnits.Count == 3
-                    && viewModel.LyricUnits[^1].Segment is not null
+                    && viewModel.LyricUnits[^1].Model.SegmentId is not null
                     && viewModel.LyricUnits[^1].Source == "あ"
                     && Math.Abs(viewModel.LyricUnits[^1].BeatStart - 4.0) < 1e-9
                     && Math.Abs(viewModel.LyricUnits[^1].Length - 1.0) < 1e-9
@@ -145,15 +148,15 @@ internal static class Program
                 viewModel.CommitLyricInput();
                 return viewModel.LyricUnits.Count == 5
                     && viewModel.Segments.Count == 5
-                    && viewModel.LyricUnits[0].Segment!.DstPitch == "C5"
+                    && viewModel.Segments[0].Model.DstPitch == "C5"
                     && Math.Abs(viewModel.LyricUnits[0].BeatStart - 1.0) < 1e-9
                     && Math.Abs(viewModel.LyricUnits[0].Length - 1.5) < 1e-6
                     && Math.Abs(viewModel.LyricUnits[1].BeatStart - 2.5) < 1e-9
-                    && Math.Abs(viewModel.LyricUnits[2].BeatStart - 4.0) < 1e-9
-                    && Math.Abs(viewModel.LyricUnits[3].BeatStart - 5.0) < 1e-9
-                    && Math.Abs(viewModel.LyricUnits[4].BeatStart - 6.0) < 1e-9
+                    && Math.Abs(viewModel.LyricUnits[2].BeatStart - 3.5) < 1e-9
+                    && Math.Abs(viewModel.LyricUnits[3].BeatStart - 4.0) < 1e-9
+                    && Math.Abs(viewModel.LyricUnits[4].BeatStart - 5.0) < 1e-9
                     && Math.Abs(viewModel.LyricUnits[3].Length - 1.0) < 1e-9
-                    && viewModel.LyricUnits[3].Segment!.DstPitch == "D4";
+                    && viewModel.Segments[3].Model.DstPitch == "A4";
             });
 
             // BGM is project-wide: importing resets the start to the project start (第 0 小节第 0 音).
