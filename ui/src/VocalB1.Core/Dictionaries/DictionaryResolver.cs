@@ -209,7 +209,8 @@ public static class DictionaryResolver
 
     /// <summary>
     /// Resolves the audio path of a part: absolute path → dictionary directory → the dictionary's own voicebank root → voicebank root.
-    /// Returns null when none of them exist.
+    /// Voicebanks differ in the leading underscore ("_あ.wav" vs "あ.wav"), so a missing name is retried
+    /// against the sorted sample names with the underscore stripped. Returns null when none of them exist.
     /// </summary>
     public static string? ResolveAudioPath(string? audio, string? dictionaryDirectory, string? libraryRoot)
     {
@@ -228,8 +229,63 @@ public static class DictionaryResolver
                 return candidate;
         }
 
+        // Some voicebanks name samples "あ.wav" instead of "_あ.wav". Match the normalized names
+        // (leading underscores ignored) and prefer the longest name so a plain file is not
+        // mistaken for a shorter kana that happens to share a prefix.
+        var normalized = NormalizeAudioName(audio);
+        if (normalized.Length == 0)
+            return null;
+
+        foreach (var root in new[] { dictionaryDirectory, libraryRoot })
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+                continue;
+            var match = FindNormalizedName(root, normalized);
+            if (match is not null)
+                return match;
+        }
+
         return null;
     }
+
+    private static readonly string[] AudioExtensions = [".wav", ".wave"];
+
+    private static string NormalizeAudioName(string audio) =>
+        Path.GetFileNameWithoutExtension(audio).TrimStart('_');
+
+    /// <summary>
+    /// Finds a sample in <paramref name="root"/> whose name equals <paramref name="normalized"/> once
+    /// leading underscores are ignored. When several files qualify, the longest raw file name wins
+    /// (stable and predictable, e.g. "_あ" over "あ"), matching UTAU voicebanks that omit the underscore.
+    /// </summary>
+    private static string? FindNormalizedName(string root, string normalized)
+    {
+        string? best = null;
+        var bestLength = -1;
+
+        foreach (var path in Directory.EnumerateFiles(root, "*", new EnumerationOptions
+                 {
+                     RecurseSubdirectories = true,
+                     IgnoreInaccessible = true,
+                     MatchCasing = MatchCasing.CaseInsensitive,
+                 }))
+        {
+            if (!AudioExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+                continue;
+            if (!NormalizeAudioName(path).Equals(normalized, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var length = Path.GetFileNameWithoutExtension(path).Length;
+            if (length <= bestLength)
+                continue;
+
+            best = Path.GetFullPath(path);
+            bestLength = length;
+        }
+
+        return best;
+    }
+
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;

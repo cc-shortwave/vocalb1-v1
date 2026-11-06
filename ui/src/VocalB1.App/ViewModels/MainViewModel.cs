@@ -95,7 +95,6 @@ public sealed class MainViewModel : ObservableObject
 
     private string _lyricInput = string.Empty;
     private string _lyricStatus = "输入歌词后按回车或点击别处，按字典分解为最小声库单位";
-    private string _lyricCommittedText = string.Empty;
 
     public MainViewModel(AppServices services)
     {
@@ -245,10 +244,19 @@ public sealed class MainViewModel : ObservableObject
         {
             if (value is null || SamePath(_activeTrack.LibraryRoot, value.Path))
                 return;
+
+            // Notes store absolute wav paths, so a switch alone would keep the old singer in the project.
+            var previousRoot = EffectiveLibraryRoot;
             LibraryRoot = value.Path;
+            var missing = RetargetSegments(previousRoot, value.Path);
+
+            InvalidateRender();
+            RefreshSegments();
             OnPropertyChanged();
             RefreshLibrary();
-            StatusText = $"声库：{value.Name}";
+            StatusText = missing > 0
+                ? $"声库：{value.Name}（{missing} 个音符无同名采样）"
+                : $"声库：{value.Name}";
         }
     }
 
@@ -625,11 +633,11 @@ public sealed class MainViewModel : ObservableObject
     public sealed record LyricTextEdit(string Text, int Caret);
 
     /// <summary>
-    /// Called when the lyric input loses focus or Enter is pressed: splits the text into minimal voicebank
-    /// units (whitespace becomes a rest) and keeps the existing melody: units already on the track only
-    /// change their sample/text, extra units are appended after the melody end (one default-length block
-    /// each), and extra units at the tail are removed. Editing the text after a commit updates the same
-    /// phrase instead of appending a second copy.
+    /// Called when the lyric input loses focus or Enter is pressed: parses the whole text into word/unit
+    /// objects and applies an object-level diff onto the track's persisted <see cref="LyricPhrase"/>.
+    /// Matched words keep their melody; dropped words lose their segments; new words are appended.
+    /// The text box is then rewritten to the phrase projection (missing audio / unmatched characters
+    /// become rests and therefore appear as spaces).
     /// </summary>
     public void CommitLyricInput()
     {
@@ -640,82 +648,82 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var text = _lyricInput ?? string.Empty;
+        var phrase = _activeTrack.LyricPhrase;
 
-        if (string.Equals(text, _lyricCommittedText, StringComparison.Ordinal) && LyricUnits.Count > 0)
+        // The box already shows the projection: nothing to diff.
+        if (string.Equals(text, phrase.Text, StringComparison.Ordinal))
             return;
 
-        var tokens = DictionaryResolver.Tokenize(_dictionary, text);
-        if (tokens.Count == 0 && LyricUnits.Count == 0)
-        {
-            LyricStatus = string.IsNullOrWhiteSpace(text)
-                ? "歌词为空：输入后按回车或点击别处即可分解"
-                : $"字典中没有可分解的内容：\"{text}\"";
-            if (!string.IsNullOrWhiteSpace(text))
-                AddLog("warn", $"Lyric \"{text}\" matched no dictionary entry.");
-            _lyricCommittedText = text;
-            return;
-        }
-
-        var startBeat = LyricUnits.Count > 0 ? LyricUnits[0].BeatStart : NextLyricStartBeat();
-        var previousCount = LyricUnits.Count;
-        var specs = BuildLyricSpecs(tokens, out var skipped);
+        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
+            ? null
+            : Path.GetDirectoryName(_dictionaryPath);
+        var parsed = LyricPhraseParser.Parse(
+            _dictionary, text, dictionaryDirectory, ResolveDictionaryLibraryRoot(), _dictionary.DefaultSrcPitch);
 
         PushUndo("lyric:" + text);
-        ReconcileLyricUnits(specs, startBeat);
-        _lyricCommittedText = text;
+        var result = LyricPhraseComposer.Apply(
+            phrase, parsed.Words, _activeTrack,
+            DefaultLyricUnitBeats, DefaultTransitionFrames, LyricBlockPitch);
 
-        if (LyricUnits.Count == 0)
+        // Full refresh: kept units follow their segments, new units get rows, the box shows the projection.
+        RefreshSegments();
+
+        var units = phrase.AllUnits;
+        var realCount = units.Count(u => !u.IsRest);
+        var restCount = units.Count - realCount;
+
+        if (units.Count == 0)
         {
-            LyricStatus = skipped.Count > 0
-                ? $"声库中找不到音频：{string.Join("、", skipped.Distinct().Take(6))}"
+            LyricStatus = parsed.MissingAudio.Count > 0
+                ? $"声库中找不到音频：{string.Join("、", parsed.MissingAudio.Distinct().Take(6))}"
                 : "歌词与休止已全部删除";
             AddLog("info", "Lyric bar cleared: all generated blocks and rests removed.");
             return;
         }
 
-        var realCount = LyricUnits.Count(u => !u.IsRest);
-        var restCount = LyricUnits.Count - realCount;
-        var message = $"已分解为 {LyricUnits.Count} 个最小单位：{realCount} 个音块";
-        if (previousCount > 0)
+        var message = $"已分解为 {units.Count} 个最小单位：{realCount} 个音块";
+        if (result.Reused > 0 || result.Removed > 0)
         {
-            var reused = Math.Min(previousCount, LyricUnits.Count);
-            message += $"（复用原旋律 {reused} 个";
-            if (LyricUnits.Count > previousCount)
-                message += $"，末尾追加 {LyricUnits.Count - previousCount} 个";
+            message += $"（复用原旋律 {result.Reused} 个词";
+            if (result.Added > 0)
+                message += $"，新增 {result.Added} 个词";
+            if (result.Removed > 0)
+                message += $"，移除 {result.Removed} 个词";
             message += "）";
         }
 
         if (restCount > 0)
             message += $"，{restCount} 个休止";
-        if (skipped.Count > 0)
-            message += $"（跳过 {skipped.Count} 个缺失音频：{string.Join("、", skipped.Distinct().Take(4))}）";
+        if (parsed.Unmatched.Count > 0)
+            message += $"（字典未匹配，已保存为休止：{string.Join("、", parsed.Unmatched.Distinct().Take(6))}）";
+        if (parsed.MissingAudio.Count > 0)
+            message += $"（音频缺失，已保存为休止：{string.Join("、", parsed.MissingAudio.Distinct().Take(6))}）";
+
         LyricStatus = message;
-        AddLog("info", $"Lyric \"{text}\" -> {LyricUnits.Count} unit(s): "
-            + string.Join(" + ", LyricUnits.Select(u => u.Display)) + $", {_activeTrack.Name}");
+        AddLog("info", $"Lyric \"{text}\" -> {units.Count} unit(s): "
+            + string.Join(" + ", units.Select(u => u.Display)) + $", {_activeTrack.Name}");
+        foreach (var character in parsed.Unmatched.Distinct())
+            AddLog("warn", $"Lyric character \"{character}\" has no dictionary entry; saved as a rest.");
     }
 
     /// <summary>
-    /// Computes the text edit for Backspace/Delete in the lyric bar. The first deletion of a unit replaces
-    /// its text with one space per generated block (the block becomes a rest of the same length); deleting
-    /// a space then removes that rest and pulls the following units together.
-    /// Returns null when this edit cannot be mapped onto the current unit strip (no units, or the text no
-    /// longer lines up because audio was missing), in which case the text box keeps its default behavior.
+    /// Backspace/Delete on committed lyrics, expressed on the object graph: deleting a word mutes all of
+    /// its pronunciation units (each becomes a rest of the same beat span); deleting a rest word removes
+    /// it and pulls the following words left. Returns null when the text box no longer matches the
+    /// projection (uncommitted typing), so the box keeps its default editing behavior.
     /// </summary>
     public LyricTextEdit? TryBuildLyricDeletion(string text, int caret, int selectionLength, bool backspace)
     {
-        if (_dictionary is null || LyricUnits.Count == 0)
+        var phrase = _activeTrack.LyricPhrase;
+        if (phrase.Words.Count == 0)
             return null;
 
         text ??= string.Empty;
-        var tokens = DictionaryResolver.Tokenize(_dictionary, text);
-        if (tokens.Count != LyricUnits.Count)
+        var projection = phrase.Text;
+        if (!string.Equals(text, projection, StringComparison.Ordinal))
             return null;
-        for (var i = 0; i < tokens.Count; i++)
-        {
-            if (tokens[i].IsRest != LyricUnits[i].IsRest)
-                return null;
-        }
 
+        var spans = WordTextSpans(phrase);
         int start;
         int end;
         if (selectionLength > 0)
@@ -743,16 +751,80 @@ public sealed class MainViewModel : ObservableObject
         if (end <= start)
             return null;
 
-        var affected = tokens.Where(t => t.Start < end && t.Start + t.Length > start).ToList();
-        var blocks = affected.Where(t => !t.IsRest).ToList();
-        if (blocks.Count == 0)
-            return new LyricTextEdit(text.Remove(start, end - start), start);
+        var affected = new List<int>();
+        for (var i = 0; i < spans.Count; i++)
+        {
+            if (spans[i].Start < end && spans[i].End > start)
+                affected.Add(i);
+        }
 
-        // Deleting any character of an entry turns every block of that entry into one rest placeholder.
-        var spanStart = blocks.Min(t => t.Start);
-        var spanEnd = blocks.Max(t => t.Start + t.Length);
-        var newText = string.Concat(text.AsSpan(0, spanStart), new string(' ', blocks.Count), text.AsSpan(spanEnd));
-        return new LyricTextEdit(newText, spanStart + blocks.Count);
+        if (affected.Count == 0)
+            return null;
+
+        PushUndo();
+
+        if (affected.Count == 1)
+        {
+            var index = affected[0];
+            var word = phrase.Words[index];
+            if (word.IsRest)
+            {
+                LyricPhraseComposer.RemoveWord(phrase, word, _activeTrack, pullFollowing: true);
+                caret = WordOffset(phrase, index);
+            }
+            else
+            {
+                var endLength = word.Units.Count;
+                LyricPhraseComposer.MuteWord(phrase, word, _activeTrack);
+                caret = WordOffset(phrase, index) + endLength;
+            }
+        }
+        else
+        {
+            var firstIndex = affected[0];
+            for (var i = affected.Count - 1; i >= 0; i--)
+            {
+                var word = phrase.Words[affected[i]];
+                if (word.IsRest)
+                    LyricPhraseComposer.RemoveWord(phrase, word, _activeTrack, pullFollowing: false);
+                else
+                    LyricPhraseComposer.MuteWord(phrase, word, _activeTrack);
+            }
+
+            caret = WordOffset(phrase, firstIndex);
+        }
+
+        RefreshSegments();
+        if (phrase.Words.Count == 0)
+            LyricStatus = "歌词与休止已全部删除";
+        else
+            LyricStatus = "已删除歌词：对应音块已变为同拍长休止";
+
+        return new LyricTextEdit(phrase.Text, Math.Clamp(caret, 0, phrase.Text.Length));
+    }
+
+    /// <summary>Character spans of each word in the projected text.</summary>
+    private static List<(int Start, int End)> WordTextSpans(LyricPhrase phrase)
+    {
+        var spans = new List<(int, int)>(phrase.Words.Count);
+        var offset = 0;
+        foreach (var word in phrase.Words)
+        {
+            var length = word.Projection.Length;
+            spans.Add((offset, offset + length));
+            offset += length;
+        }
+
+        return spans;
+    }
+
+    /// <summary>Character offset where the given word starts in the current projection.</summary>
+    private static int WordOffset(LyricPhrase phrase, int wordIndex)
+    {
+        var offset = 0;
+        for (var i = 0; i < wordIndex && i < phrase.Words.Count; i++)
+            offset += phrase.Words[i].Projection.Length;
+        return offset;
     }
 
     /// <summary>
@@ -764,171 +836,34 @@ public sealed class MainViewModel : ObservableObject
         if (row is null)
             return;
 
-        var index = LyricUnits.IndexOf(row);
+        var flat = _activeTrack.LyricPhrase.AllUnits;
+        var index = flat.IndexOf(row.Model);
         if (index < 0)
             return;
 
-        var newLength = Math.Max(MinLyricUnitBeats, row.Length + deltaBeats);
-        if (Math.Abs(newLength - row.Length) < 0.001)
+        var unit = row.Model;
+        var newLength = Math.Max(MinLyricUnitBeats, unit.Length + deltaBeats);
+        if (Math.Abs(newLength - unit.Length) < 0.001)
             return;
 
-        PushUndo("lyric-length:" + row.Id);
+        PushUndo("lyric-length:" + unit.Id);
 
-        var delta = newLength - row.Length;
-        RelayoutUnit(row, row.BeatStart, newLength);
-        foreach (var unit in LyricUnits.Skip(index + 1))
-            RelayoutUnit(unit, unit.BeatStart + delta, unit.Length);
+        var delta = newLength - unit.Length;
+        RelayoutUnit(unit, unit.BeatStart, newLength);
+        foreach (var following in flat.Skip(index + 1))
+            RelayoutUnit(following, following.BeatStart + delta, following.Length);
 
-        foreach (var unit in LyricUnits)
-            unit.RefreshMetrics();
+        foreach (var item in LyricUnits)
+            item.RefreshMetrics();
 
         RefreshRollRestRegions();
         RollRevision++;
     }
 
-    private sealed record LyricUnitSpec(
-        bool IsRest, string Display, string Source,
-        string? Audio, string? SrcPitch, bool KeepUnvoicedHead);
-
-    private List<LyricUnitSpec> BuildLyricSpecs(IReadOnlyList<LyricToken> tokens, out List<string> skipped)
+    /// <summary>Moves/resizes a unit object and keeps its linked segment and pitch nodes in sync.</summary>
+    private void RelayoutUnit(LyricUnit unit, double beatStart, double length)
     {
-        skipped = [];
-        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
-            ? null
-            : Path.GetDirectoryName(_dictionaryPath);
-        var libraryRoot = ResolveDictionaryLibraryRoot();
-        var specs = new List<LyricUnitSpec>(tokens.Count);
-
-        foreach (var token in tokens)
-        {
-            if (token.IsRest)
-            {
-                specs.Add(new LyricUnitSpec(true, "休止", "休止", null, null, false));
-                continue;
-            }
-
-            var audio = DictionaryResolver.ResolveAudioPath(token.Part!.Audio, dictionaryDirectory, libraryRoot);
-            if (audio is null)
-            {
-                skipped.Add(token.Part.Audio);
-                continue;
-            }
-
-            var srcPitch = FirstNonEmpty(token.Part.SrcPitch, token.Entry!.SrcPitch, _dictionary!.DefaultSrcPitch, "D4");
-            specs.Add(new LyricUnitSpec(
-                false, UnitLabel(token.Part.Audio), token.Text,
-                audio, srcPitch, token.Part.KeepUnvoicedHead));
-        }
-
-        return specs;
-    }
-
-    /// <summary>
-    /// Reconciles the unit strip with the new lyric: units that already exist keep their melody
-    /// (pitch, beat range and length stay untouched), rest units lose their segment, and units beyond
-    /// the old count are appended after the end of the original melody, one default-length block each.
-    /// </summary>
-    private void ReconcileLyricUnits(IReadOnlyList<LyricUnitSpec> specs, double startBeat)
-    {
-        while (LyricUnits.Count > specs.Count)
-        {
-            var last = LyricUnits[^1];
-            RemoveUnitSegment(last);
-            LyricUnits.RemoveAt(LyricUnits.Count - 1);
-        }
-
-        var reusedCount = LyricUnits.Count;
-        for (var i = 0; i < reusedCount; i++)
-        {
-            var unit = LyricUnits[i];
-            var spec = specs[i];
-            if (spec.IsRest)
-            {
-                RemoveUnitSegment(unit);
-                unit.SetContent(null, "休止", "休止");
-                continue;
-            }
-
-            var segment = unit.Segment;
-            if (segment is null)
-            {
-                // The unit used to be a rest: bring its block back inside the same beat range.
-                segment = new VoiceSegment
-                {
-                    Audio = spec.Audio!,
-                    SrcPitch = spec.SrcPitch!,
-                    DstPitch = LyricBlockPitch,
-                    BeatStart = unit.BeatStart,
-                    BeatEnd = unit.BeatEnd,
-                    Transition = i == 0 ? 0 : DefaultTransitionFrames,
-                    KeepUnvoicedHead = spec.KeepUnvoicedHead,
-                };
-                _activeTrack.Segments.Add(segment);
-                _activeTrack.AddPitchNodes(segment, 5);
-            }
-            else
-            {
-                // Reuse the existing melody: only the audio sample and the lyric text change.
-                segment.Audio = spec.Audio!;
-                segment.SrcPitch = spec.SrcPitch!;
-            }
-
-            segment.LyricOverride = spec.Source;
-            unit.SetContent(segment, spec.Display, spec.Source);
-        }
-
-        // Extra units go after the melody that is already on the track.
-        var cursor = LyricUnits.Count == 0 ? startBeat : LyricUnits.Max(u => u.BeatEnd);
-        for (var i = reusedCount; i < specs.Count; i++)
-        {
-            var spec = specs[i];
-            var unit = new LyricUnitRow(DefaultLyricUnitBeats, cursor);
-            LyricUnits.Add(unit);
-            if (spec.IsRest)
-            {
-                unit.SetContent(null, "休止", "休止");
-            }
-            else
-            {
-                var segment = new VoiceSegment
-                {
-                    Audio = spec.Audio!,
-                    SrcPitch = spec.SrcPitch!,
-                    DstPitch = LyricBlockPitch,
-                    BeatStart = cursor,
-                    BeatEnd = cursor + DefaultLyricUnitBeats,
-                    Transition = i == 0 ? 0 : DefaultTransitionFrames,
-                    KeepUnvoicedHead = spec.KeepUnvoicedHead,
-                };
-                _activeTrack.Segments.Add(segment);
-                _activeTrack.AddPitchNodes(segment, 5);
-                segment.LyricOverride = spec.Source;
-                unit.SetContent(segment, spec.Display, spec.Source);
-            }
-
-            cursor += DefaultLyricUnitBeats;
-        }
-
-        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
-        RefreshSegments();
-        RefreshRollRestRegions();
-        OnPropertyChanged(nameof(HasLyricUnits));
-    }
-
-    private void RemoveUnitSegment(LyricUnitRow unit)
-    {
-        var segment = unit.Segment;
-        if (segment is null)
-            return;
-
-        _activeTrack.Segments.Remove(segment);
-        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == segment.Id);
-    }
-
-    /// <summary>Moves/resizes a unit and keeps its linked segment and pitch nodes in sync.</summary>
-    private void RelayoutUnit(LyricUnitRow unit, double beatStart, double length)
-    {
-        var segment = unit.Segment;
+        var segment = FindSegment(unit.SegmentId);
         if (segment is not null)
         {
             var oldStart = segment.BeatStart;
@@ -942,14 +877,38 @@ public sealed class MainViewModel : ObservableObject
             }
         }
 
-        unit.SetLayout(beatStart, length);
+        unit.BeatStart = beatStart;
+        unit.Length = Math.Max(0.01, length);
     }
 
-    private void ClearLyricUnits()
+    private VoiceSegment? FindSegment(string? segmentId) => segmentId is null
+        ? null
+        : _activeTrack.Segments.FirstOrDefault(s => s.Id == segmentId);
+
+    /// <summary>Rebuilds the unit strip from the track's persisted lyric objects and rewrites the text projection.</summary>
+    private void RebuildLyricRows()
     {
         LyricUnits.Clear();
-        RefreshRollRestRegions();
+        foreach (var word in _activeTrack.LyricPhrase.Words)
+        foreach (var unit in word.Units)
+            LyricUnits.Add(new LyricUnitRow(unit));
+
+        var projection = _activeTrack.LyricPhrase.Text;
+        if (!string.Equals(_lyricInput, projection, StringComparison.Ordinal))
+        {
+            _lyricInput = projection;
+            OnPropertyChanged(nameof(LyricInput));
+        }
+
         OnPropertyChanged(nameof(HasLyricUnits));
+        RefreshRollRestRegions();
+    }
+
+    /// <summary>Shows the active track's persisted lyric phrase (track switch / project load / undo).</summary>
+    private void LoadLyricFromTrack()
+    {
+        RebuildLyricRows();
+        LyricStatus = "输入歌词后按回车或点击别处，按字典分解为最小声库单位";
     }
 
     /// <summary>Keeps the piano-roll rest markers in sync with the unit strip.</summary>
@@ -958,16 +917,12 @@ public sealed class MainViewModel : ObservableObject
         var semitone = PitchMath.TryParseSemitones(LyricBlockPitch, out var value)
             ? (int)Math.Round(value)
             : 0;
-        RollRestRegions = LyricUnits
+        RollRestRegions = _activeTrack.LyricPhrase.AllUnits
             .Where(u => u.IsRest)
             .Select(u => new RestRegion(u.BeatStart, u.BeatEnd, semitone))
             .ToList();
         OnPropertyChanged(nameof(RollRestRegions));
     }
-
-    private double NextLyricStartBeat() => _activeTrack.Segments.Count == 0
-        ? 1.0
-        : Math.Max(1.0, _activeTrack.Segments.Max(s => s.BeatEnd));
 
     /// <summary>Maps a segment's pitch nodes from one beat range onto another (first/last stay at the ends).</summary>
     private void ScaleSegmentPoints(
@@ -986,14 +941,71 @@ public sealed class MainViewModel : ObservableObject
         _activeTrack.SortPitchLine();
     }
 
-    private static string UnitLabel(string audio)
+    /// <summary>Adds a lyric word object for a segment created outside the lyric bar.</summary>
+    private void AddLyricWordForSegment(VoiceSegment segment)
     {
-        var name = Path.GetFileNameWithoutExtension(audio).TrimStart('_');
-        return string.IsNullOrEmpty(name) ? audio : name;
+        var surface = FindPlaceholderLyric(segment.Audio) ?? segment.Lyric;
+        segment.LyricOverride ??= surface;
+
+        var word = new LyricWord
+        {
+            Surface = surface,
+            Units =
+            [
+                new LyricUnit
+                {
+                    Text = surface,
+                    Audio = segment.Audio,
+                    Display = LyricPhrase.SampleLabel(segment.Audio),
+                    SrcPitch = segment.SrcPitch,
+                    KeepUnvoicedHead = segment.KeepUnvoicedHead,
+                    IsRest = false,
+                    SegmentId = segment.Id,
+                    BeatStart = segment.BeatStart,
+                    Length = Math.Max(0.01, segment.BeatEnd - segment.BeatStart),
+                },
+            ],
+        };
+        InsertLyricWord(word, segment.BeatStart);
     }
 
-    private static string FirstNonEmpty(params string?[] values) =>
-        values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
+    /// <summary>Adds one word object covering the segments of a dictionary entry inserted from the panel.</summary>
+    private void AddLyricWordForSegments(string surface, IReadOnlyList<VoiceSegment> segments)
+    {
+        if (segments.Count == 0)
+            return;
+
+        var word = new LyricWord { Surface = surface };
+        foreach (var segment in segments)
+        {
+            segment.LyricOverride ??= surface;
+            word.Units.Add(new LyricUnit
+            {
+                Text = surface,
+                Audio = segment.Audio,
+                Display = LyricPhrase.SampleLabel(segment.Audio),
+                SrcPitch = segment.SrcPitch,
+                KeepUnvoicedHead = segment.KeepUnvoicedHead,
+                IsRest = false,
+                SegmentId = segment.Id,
+                BeatStart = segment.BeatStart,
+                Length = Math.Max(0.01, segment.BeatEnd - segment.BeatStart),
+            });
+        }
+
+        InsertLyricWord(word, segments[0].BeatStart);
+    }
+
+    /// <summary>Inserts a word at its time position so the phrase order matches the timeline.</summary>
+    private void InsertLyricWord(LyricWord word, double startBeat)
+    {
+        var words = _activeTrack.LyricPhrase.Words;
+        var index = words.FindIndex(w => w.BeatStart > startBeat + 1e-9);
+        if (index < 0)
+            words.Add(word);
+        else
+            words.Insert(index, word);
+    }
 
     public string PreviewInfo
     {
@@ -1458,6 +1470,10 @@ public sealed class MainViewModel : ObservableObject
     {
         var selectedIndex = _selectedNoteIndex;
 
+        // Keep the lyric object graph in sync with segments edited outside the lyric bar
+        // (piano roll moves/resizes, segment deletion, undo, voicebank retargeting).
+        LyricPhraseComposer.SyncWithSegments(_activeTrack.LyricPhrase, _activeTrack);
+
         // Rebuild transition points after overlap changes so that regular control points never fall inside overlapping segments.
         SegmentLayout.SyncTransitionPoints(_activeTrack);
 
@@ -1466,6 +1482,7 @@ public sealed class MainViewModel : ObservableObject
             Segments.Add(new SegmentRow(_activeTrack.Segments[i], i));
 
         RollRevision++;
+        RebuildLyricRows();
 
         _selectedSegment = selectedIndex is int index && index >= 0 && index < Segments.Count
             ? Segments[index]
@@ -1646,7 +1663,7 @@ public sealed class MainViewModel : ObservableObject
         _activeTrack.Segments.Add(segment);
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
         _activeTrack.AddPitchNodes(segment, 5);
-        SyncLyricWithManualNote(segment);
+        AddLyricWordForSegment(segment);
         RefreshSegments();
 
         AddLog("info",
@@ -1678,103 +1695,26 @@ public sealed class MainViewModel : ObservableObject
         _activeTrack.Segments.Add(segment);
         _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
         _activeTrack.AddPitchNodes(segment, 5);
-        SyncLyricWithManualNote(segment);
+        AddLyricWordForSegment(segment);
         RefreshSegments();
 
         AddLog("info",
             $"Note drawn: {entry.DisplayName} | beat {start:0.##} -> {start + length:0.##} | {PitchMath.ToPitchName(semitone)}");
     }
 
-    /// <summary>
-    /// Keeps the lyric bar aligned after a note is added manually in the piano roll: insert a placeholder
-    /// character for the note's audio into the lyric text, and a matching unit row linked to that segment at
-    /// the same position. The note keeps its own audio and pitch (no re-decomposition).
-    /// </summary>
-    private void SyncLyricWithManualNote(VoiceSegment segment)
-    {
-        if (_dictionary is null)
-            return;
-
-        var placeholder = FindPlaceholderLyric(segment.Audio);
-        if (placeholder is null)
-        {
-            AddLog("warn", $"手动音块 \"{Path.GetFileName(segment.Audio)}\" 在字典中没有对应歌词，歌词栏未同步。");
-            return;
-        }
-
-        var text = _lyricInput ?? string.Empty;
-        var starts = UnitTextStarts(text);
-
-        // Text-driven units and the strip must stay in the same order; when they already diverged, append instead.
-        var index = 0;
-        var textIndex = text.Length;
-        if (starts.Count == LyricUnits.Count)
-        {
-            while (index < LyricUnits.Count && LyricUnits[index].BeatStart < segment.BeatStart - 1e-6)
-                index++;
-            textIndex = index < starts.Count ? starts[index] : text.Length;
-        }
-        else
-        {
-            index = LyricUnits.Count;
-        }
-
-        var newText = text.Insert(Math.Clamp(textIndex, 0, text.Length), placeholder);
-        LyricInput = newText;
-        segment.LyricOverride = placeholder;
-
-        var unit = new LyricUnitRow(segment.BeatEnd - segment.BeatStart, segment.BeatStart);
-        unit.SetContent(segment, UnitLabel(segment.Audio), placeholder);
-        LyricUnits.Insert(index, unit);
-
-        // Treat this as committed so pressing Enter right after adding the note does not re-decompose and reset pitch.
-        _lyricCommittedText = newText;
-        OnPropertyChanged(nameof(HasLyricUnits));
-        AddLog("info", $"歌词栏已同步手动音块：新增占位歌词 \"{placeholder}\"");
-    }
-
     /// <summary>Finds the dictionary character whose single-part audio is the given voicebank sample.</summary>
     private string? FindPlaceholderLyric(string audio)
     {
-        var name = Path.GetFileName(audio);
-        var match = _dictionary!.Entries.FirstOrDefault(entry =>
-            entry.Parts.Count == 1
-            && Path.GetFileName(entry.Parts[0].Audio).Equals(name, StringComparison.OrdinalIgnoreCase));
-        return match?.Text;
-    }
-
-    /// <summary>
-    /// Start offset in the lyric text for each decomposed unit (rests count as one unit), mirroring
-    /// <see cref="BuildLyricSpecs"/> so a placeholder can be inserted at the matching character position.
-    /// </summary>
-    private List<int> UnitTextStarts(string text)
-    {
-        var starts = new List<int>();
         if (_dictionary is null)
-            return starts;
+            return null;
 
-        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
-            ? null
-            : Path.GetDirectoryName(_dictionaryPath);
-        var libraryRoot = ResolveDictionaryLibraryRoot();
-
-        foreach (var token in DictionaryResolver.Tokenize(_dictionary, text))
-        {
-            if (token.IsRest)
-            {
-                starts.Add(token.Start);
-                continue;
-            }
-
-            foreach (var part in token.Entry!.Parts)
-            {
-                if (DictionaryResolver.ResolveAudioPath(part.Audio, dictionaryDirectory, libraryRoot) is null)
-                    continue;
-                starts.Add(token.Start);
-            }
-        }
-
-        return starts;
+        // Voicebank names may or may not carry the leading underscore ("_あ.wav" vs "あ.wav").
+        var name = Path.GetFileNameWithoutExtension(audio).TrimStart('_');
+        var match = _dictionary.Entries.FirstOrDefault(entry =>
+            entry.Parts.Count == 1
+            && Path.GetFileNameWithoutExtension(entry.Parts[0].Audio).TrimStart('_')
+                .Equals(name, StringComparison.OrdinalIgnoreCase));
+        return match?.Text;
     }
 
     /// <summary>Starting from <paramref name="desired"/>, find the first free slot that can hold <paramref name="length"/> beats (shifting forward).</summary>
@@ -1853,9 +1793,8 @@ public sealed class MainViewModel : ObservableObject
         RefreshSegments();
         DictionaryStartBeat = track.TotalBeats > 0 ? track.TotalBeats : 1.0;
 
-        // The lyric strip shows the blocks generated for this track; switching tracks clears it.
-        ClearLyricUnits();
-        _lyricCommittedText = string.Empty;
+        // The lyric strip shows this track's persisted lyric objects (kept across track switches and restarts).
+        LoadLyricFromTrack();
 
         if (_lastMixTracks is { } mixTracks && _lastMixPath is { } mixPath
             && mixTracks.Contains(track) && File.Exists(mixPath))
@@ -1940,10 +1879,6 @@ public sealed class MainViewModel : ObservableObject
                 if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
                     return "声库格式错误：没有 wav 音频文件。";
 
-                if (!Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
-                        .Any(file => string.Equals(Path.GetFileName(file), "icon.jpg", StringComparison.OrdinalIgnoreCase)))
-                    return "声库格式错误：缺少 icon.jpg。";
-
                 Directory.CreateDirectory(VoicebankRoot);
                 CopyDirectory(source, target);
                 return null;
@@ -1962,10 +1897,16 @@ public sealed class MainViewModel : ObservableObject
         if (error is not null)
             return error;
 
+        var previousRoot = EffectiveLibraryRoot;
         LibraryRoot = target;
+        var missing = RetargetSegments(previousRoot, target);
+        InvalidateRender();
+        RefreshSegments();
         RefreshLibrary();
         AddLog("info", $"Voicebank installed: {target}");
-        StatusText = $"已安装声库：{name}";
+        StatusText = missing > 0
+            ? $"已安装声库：{name}（{missing} 个音符无同名采样）"
+            : $"已安装声库：{name}";
         return null;
     }
 
@@ -1989,6 +1930,52 @@ public sealed class MainViewModel : ObservableObject
             StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Repoint the existing notes of the active track to the same-named samples in the new voicebank.
+    /// Notes whose sample name is missing in the new voicebank keep their current audio; that count is returned.
+    /// </summary>
+    private int RetargetSegments(string? previousRoot, string newRoot)
+    {
+        if (string.IsNullOrWhiteSpace(previousRoot)
+            || string.IsNullOrWhiteSpace(newRoot)
+            || SamePath(previousRoot, newRoot))
+        {
+            return 0;
+        }
+
+        var previousPrefix = Path.GetFullPath(previousRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+
+        var changed = 0;
+        var missing = 0;
+        foreach (var segment in _activeTrack.Segments)
+        {
+            if (string.IsNullOrWhiteSpace(segment.Audio) || !Path.IsPathRooted(segment.Audio))
+                continue;
+
+            var audio = Path.GetFullPath(segment.Audio);
+            if (!audio.StartsWith(previousPrefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var candidate = Path.GetFullPath(Path.Combine(newRoot, audio[previousPrefix.Length..]));
+            if (!File.Exists(candidate))
+            {
+                missing++;
+                continue;
+            }
+
+            segment.Audio = candidate;
+            changed++;
+        }
+
+        if (changed > 0)
+            AddLog("info", $"声库切换：{changed} 个音符改用 \"{Path.GetFileName(newRoot)}\" 的采样。");
+        if (missing > 0)
+            AddLog("warn", $"声库切换：{missing} 个音符在新声库中没有同名采样，保留原文件。");
+        return missing;
+    }
+
     private void RefreshLibrary()
     {
         Library.Clear();
@@ -2000,26 +1987,59 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(HasVoicebank));
     }
 
-    /// <summary>声库图标与音频文件同级：重新扫描声库时同步查找 icon.jpg。</summary>
+    /// <summary>
+    /// 声库图标：在声库目录中查找任意图片文件；找不到（或都无法解码）时使用 VocalB1 自带图标。
+    /// </summary>
     private void RefreshLibraryIcon()
     {
         var root = EffectiveLibraryRoot;
-        var path = string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)
-            ? null
-            : Directory.EnumerateFiles(root, "*", new EnumerationOptions
+        string? path = null;
+        if (!string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
+        {
+            path = Directory.EnumerateFiles(root, "*", new EnumerationOptions
                 {
                     RecurseSubdirectories = true,
                     IgnoreInaccessible = true,
                 })
-                .FirstOrDefault(p => string.Equals(Path.GetFileName(p), "icon.jpg", StringComparison.OrdinalIgnoreCase));
+                .Where(IsImageFile)
+                .OrderBy(p => p.Length)
+                .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
 
-        var icon = LoadLibraryIcon(path);
+        var icon = LoadLibraryIcon(path) ?? LoadAppIcon();
         if (ReferenceEquals(icon, _libraryIcon))
             return;
 
         _libraryIcon = icon;
         OnPropertyChanged(nameof(LibraryIcon));
         OnPropertyChanged(nameof(HasLibraryIcon));
+    }
+
+    private static readonly string[] ImageExtensions =
+        [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico"];
+
+    private static bool IsImageFile(string path) =>
+        ImageExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>声库无可用图片时回退到应用自带图标（见 csproj 中的 Assets\VocalB1.ico 资源）。</summary>
+    private static ImageSource? LoadAppIcon()
+    {
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            image.UriSource = new Uri("pack://application:,,,/Assets/VocalB1.ico", UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static ImageSource? LoadLibraryIcon(string? path)
@@ -2063,6 +2083,7 @@ public sealed class MainViewModel : ObservableObject
         };
         _activeTrack.Segments.Add(segment);
         _activeTrack.AddPitchNodes(segment, 5);
+        AddLyricWordForSegment(segment);
         RefreshSegments();
         AddLog("info", $"Segment added: {entry.DisplayName} ({_activeTrack.Name}, beat {start:0.##} -> {start + 1:0.##})");
     }
@@ -2146,6 +2167,7 @@ public sealed class MainViewModel : ObservableObject
             _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
             foreach (var segment in segments)
                 _activeTrack.AddPitchNodes(segment, 5);
+            AddLyricWordForSegments(entry.Text, segments);
             RefreshSegments();
 
             StatusText = $"已插入字典条目：{entry.Text}";

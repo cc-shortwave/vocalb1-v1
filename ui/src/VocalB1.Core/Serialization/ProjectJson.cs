@@ -68,6 +68,13 @@ public static class ProjectJson
             track.Segments ??= [];
             track.PitchLine ??= [];
             track.Settings ??= new SynthesisSettings();
+            track.LyricPhrase ??= new LyricPhrase();
+            track.LyricPhrase.Words ??= [];
+
+            // Projects written before the lyric object model store no phrase: rebuild it from the segments
+            // so the lyric bar can manage every existing segment.
+            if (track.LyricPhrase.Words.Count == 0 && track.Segments.Count > 0)
+                track.LyricPhrase = LyricPhrase.FromSegments(track.Segments);
         }
 
         return project;

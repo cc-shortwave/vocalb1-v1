@@ -81,8 +81,9 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Backspace/Delete on committed lyrics: the first deletion turns the unit into a space (a rest of the
-    /// same length); deleting that space then removes the rest and pulls the following units together.
+    /// Backspace/Delete on committed lyrics: the first deletion turns the word's pronunciation units into
+    /// rests of the same length (spaces in the box); deleting a space then removes that rest and pulls the
+    /// following units together. The view model mutates the lyric objects directly, so no re-commit is needed.
     /// </summary>
     private void OnLyricInputPreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -101,7 +102,6 @@ public partial class MainWindow : Window
         box.Text = edit.Text;
         box.CaretIndex = Math.Clamp(edit.Caret, 0, edit.Text.Length);
         box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
-        _viewModel.CommitLyricInput();
     }
 
     /// <summary>Dragging the vertical line at a unit's right edge changes its beat length.</summary>
