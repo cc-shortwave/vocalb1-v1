@@ -107,7 +107,7 @@
     "字典缺少名称。": "The dictionary has no name.",
     "字典没有任何条目。": "The dictionary contains no entries.",
     "字典 JSON 为空或无法解析。": "Dictionary JSON is empty or could not be parsed.",
-    "至少需要 2 个发音段才能合成。": "At least 2 voiced segments are required to synthesize.",
+    "至少需要 1 个发音段才能合成。": "At least 1 voiced segment is required to synthesize.",
     "音高线至少需要 2 个端点，当前将忽略。": "A pitch line needs at least 2 points; this one will be ignored.",
     "音高线端点拍位必须递增。": "Pitch-line point beats must increase.",
     "BPM 必须大于 0。": "BPM must be greater than 0.",

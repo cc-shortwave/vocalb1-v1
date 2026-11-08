@@ -297,8 +297,10 @@ def cmd_render(req, req_id):
         os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
 
         from VocalB1Synthesizer import synthesize
+        from vocal_lib.perf import span as _perf_span, report as _perf_report
 
-        segments, kwargs = _build_kwargs(project)
+        with _perf_span("bridge.build_kwargs"):
+            segments, kwargs = _build_kwargs(project)
         _log("info", f"Rendering {len(segments)} segments -> {output}")
         _progress(0.0, "Starting")
 
@@ -307,7 +309,8 @@ def cmd_render(req, req_id):
         old_out, old_err = sys.stdout, sys.stderr
         sys.stdout, sys.stderr = out_emitter, err_emitter
         try:
-            synthesize(segments, output, **kwargs)
+            with _perf_span("bridge.render"):
+                synthesize(segments, output, **kwargs)
         finally:
             out_emitter.flush()
             err_emitter.flush()
@@ -316,6 +319,7 @@ def cmd_render(req, req_id):
         if not os.path.exists(output):
             raise RuntimeError(f"Synthesis finished but output file was not found: {output}")
 
+        _perf_report(title=f"Render perf report ({len(segments)} segments)")
         _progress(1.0, "Done")
         _emit({"id": req_id, "type": "result", "output": output,
                "elapsedSec": round(time.time() - started, 3),

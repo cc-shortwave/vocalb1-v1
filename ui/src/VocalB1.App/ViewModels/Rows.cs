@@ -58,6 +58,62 @@ public sealed class RenderTrackOption(TrackDocument model) : ObservableObject
     }
 }
 
+/// <summary>
+/// A chorus singer in the stage toolbar: the name is editable and the bound score is shown as the track name.
+/// Track lookup is delegated because rows are rebuilt whenever tracks change.
+/// </summary>
+public sealed class ChorusSingerRow(
+    ChorusSinger model,
+    Func<string?, string?> resolveTrackName,
+    Action? onNameChanged = null,
+    Action? onEnabledChanged = null) : ObservableObject
+{
+    public ChorusSinger Model { get; } = model;
+
+    public string Name
+    {
+        get => Model.Name;
+        set
+        {
+            if (Model.Name == value)
+                return;
+            Model.Name = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(Detail));
+            onNameChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Whether this singer takes part in the chorus render; disabling keeps the position data.</summary>
+    public bool Enabled
+    {
+        get => Model.Enabled;
+        set
+        {
+            if (Model.Enabled == value)
+                return;
+            Model.Enabled = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(Detail));
+            onEnabledChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Name of the track whose score this singer sings, or a hint when the track was deleted.</summary>
+    public string TrackName => resolveTrackName(Model.TrackId) ?? "未绑定音轨";
+
+    public string Detail => Enabled
+        ? $"{TrackName} · {Model.Path.Count} 个路径点"
+        : $"{TrackName} · 已停用";
+
+    /// <summary>Refreshes the track name after a rebind or after a track was removed.</summary>
+    public void Refresh()
+    {
+        OnPropertyChanged(nameof(TrackName));
+        OnPropertyChanged(nameof(Detail));
+    }
+}
+
 /// <summary>A row of the segment list: the lyric is directly editable, all other fields are read-only.</summary>
 public sealed class SegmentRow(VoiceSegment model, int index) : ObservableObject
 {

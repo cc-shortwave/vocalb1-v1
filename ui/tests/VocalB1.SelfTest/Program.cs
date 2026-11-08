@@ -1,4 +1,5 @@
 using VocalB1.Core.Abstractions;
+using VocalB1.Core.Chorus;
 using VocalB1.Core.Configuration;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Models;
@@ -32,6 +33,7 @@ internal static class Program
         TestDictionary();
         TestLyricPhrase();
         TestWaveform();
+        TestChorus();
         TestSegmentLayout();
         await TestEngineHandshakeAsync(runRender);
         await TestRenderAsync(runRender);
@@ -442,18 +444,174 @@ internal static class Program
         Check("音轨合并：输出为立体声", mixedInfo.Channels == 2);
         Check("音轨合并：振幅按帧相加", Math.Abs(WavReader.ReadPeaks(mixed, 256).PeakAmplitude - 0.7) < 0.02,
             WavReader.ReadPeaks(mixed, 256).PeakAmplitude.ToString("F3"));
+    }
 
-        // Stereo balance: the engine outputs mono; after rendering, convert to stereo and split left/right energy.
-        var mono = Path.Combine(dir, "mono.wav");
-        WriteMonoSineWav(mono, 44100, 0.2, 440, 0.5);
-        Check("声音占比 50 保持原文件", !StereoBalanceProcessor.Apply(mono, 50) && WavReader.ReadInfo(mono).Channels == 1);
+    // ------------------------------------------------------------------
+    // 5b. Chorus mode (stage math, persistence repair, processor output depth)
+    // ------------------------------------------------------------------
+    private static void TestChorus()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest");
+        Directory.CreateDirectory(dir);
 
-        Check("声音占比 100 转为立体声", StereoBalanceProcessor.Apply(mono, 100) && WavReader.ReadInfo(mono).Channels == 2);
-        var bytes = File.ReadAllBytes(mono);
-        var frameOffset = 44 + 10 * 4;
-        var left = BitConverter.ToInt16(bytes, frameOffset);
-        var right = BitConverter.ToInt16(bytes, frameOffset + 2);
-        Check("声音占比 100 仅保留右声道", Math.Abs(left) <= 1 && right > 1000, $"L={left} R={right}");
+        Check("合唱：拍位吸附到 0.25 拍", Math.Abs(ChorusMath.SnapBeat(2.37) - 2.25) < 1e-9,
+            ChorusMath.SnapBeat(2.37).ToString("F3"));
+        var (leftGain, rightGain) = ChorusMath.PanGains(-5, 10);
+        Check("合唱：舞台最左侧不消失", leftGain > rightGain && leftGain > 0.1,
+            $"L={leftGain:F3} R={rightGain:F3}");
+
+        var path = new List<ChorusKeyframe>
+        {
+            new() { Beat = 1, X = -3, Y = 1 },
+            new() { Beat = 5, X = 3, Y = 2 },
+        };
+        var middle = ChorusMath.Evaluate(path, 3);
+        Check("合唱：两点路径中点线性", Math.Abs(middle.X) < 1e-6 && Math.Abs(middle.Y - 1.5) < 1e-6,
+            $"{middle.X:F3},{middle.Y:F3}");
+
+        var unsorted = new List<ChorusKeyframe>
+        {
+            new() { Beat = 5, X = 3, Y = 2 },
+            new() { Beat = 1, X = -3, Y = 1 },
+        };
+        var unsortedMiddle = ChorusMath.Evaluate(unsorted, 3);
+        Check("合唱：乱序关键帧仍按拍位插值", Math.Abs(unsortedMiddle.X) < 1e-6,
+            unsortedMiddle.X.ToString("F3"));
+
+        var project = new ProjectDocument
+        {
+            Chorus = new ChorusDocument
+            {
+                StageWidth = 12,
+                MicY = -1.5,
+                Singers =
+                [
+                    new ChorusSinger
+                    {
+                        Name = "S1",
+                        Path = [new ChorusKeyframe { Beat = 2, X = 1, Y = 2 }],
+                    },
+                ],
+                Formations =
+                [
+                    new ChorusFormationPreset
+                    {
+                        Name = "队形",
+                        Positions = [new ChorusFormationPoint { X = 1, Y = 2 }],
+                    },
+                ],
+            },
+        };
+        var loaded = ProjectJson.Deserialize(ProjectJson.Serialize(project));
+        Check("合唱：工程往返保留舞台与歌手",
+            Math.Abs(loaded.Chorus.StageWidth - 12) < 1e-9
+            && loaded.Chorus.Singers.Count == 1
+            && Math.Abs(loaded.Chorus.Singers[0].Path[0].Y - 2) < 1e-9);
+        Check("合唱：工程往返保留导入队形",
+            loaded.Chorus.Formations.Count == 1 && loaded.Chorus.Formations[0].Positions.Count == 1);
+
+        // Non-finite values are repaired on load instead of reaching the STFT and silencing the audio.
+        var repaired = ProjectJson.Deserialize(
+            """
+            {
+              "chorus": {
+                "stageWidth": "NaN",
+                "micY": "NaN",
+                "singers": [ { "trackId": "t1", "enabled": true,
+                  "path": [ { "beat": 1, "x": "NaN", "y": 1 } ] } ]
+              }
+            }
+            """);
+        Check("合唱：加载时修复无效舞台参数",
+            double.IsFinite(repaired.Chorus.StageWidth) && double.IsFinite(repaired.Chorus.MicY),
+            $"{repaired.Chorus.StageWidth}/{repaired.Chorus.MicY}");
+        Check("合唱：加载时剔除无效关键帧并回退中心",
+            repaired.Chorus.Singers[0].Path.Count == 1 && repaired.Chorus.Singers[0].Path[0].X == 0);
+
+        var invalid = new ProjectDocument
+        {
+            Chorus = new ChorusDocument
+            {
+                StageWidth = -1,
+                Singers = [new ChorusSinger { Name = "坏歌手", Enabled = true }],
+            },
+        };
+        var track = new TrackDocument();
+        invalid.Tracks.Add(track);
+        var issues = ProjectValidator.Validate(track, invalid, checkAudioFiles: false);
+        Check("合唱：校验报告舞台尺寸非法",
+            issues.Any(i => i.Severity == ProjectIssueSeverity.Error && i.Message.Contains("舞台")),
+            string.Join(" | ", issues.Select(i => i.Message)));
+        Check("合唱：校验报告歌手未绑定音轨",
+            issues.Any(i => i.Message.Contains("未绑定音轨")));
+
+        var mono = Path.Combine(dir, "chorus_src.wav");
+        WriteMonoSineWav(mono, 44100, 0.5, 440, 0.5);
+        var chorus = new ChorusDocument
+        {
+            StageWidth = 10,
+            MicY = -2,
+            Singers = [new ChorusSinger { TrackId = "t", Path = [new ChorusKeyframe { Beat = 1, X = -4, Y = 1 }] }],
+        };
+        var output16 = Path.Combine(dir, "chorus16.wav");
+        ChorusProcessor.Process(mono, output16, chorus, chorus.Singers, 120);
+        var info16 = WavReader.ReadInfo(output16);
+        Check("合唱：默认输出 16-bit 立体声", info16.Channels == 2 && ReadBitDepth(output16) == 16,
+            $"channels={info16.Channels} bits={ReadBitDepth(output16)}");
+        Check("合唱：输出时长与输入一致", Math.Abs(info16.DurationSeconds - 0.5) < 0.02,
+            info16.DurationSeconds.ToString("F3"));
+        var (levelLeft, levelRight) = ReadChannelLevels(output16);
+        Check("合唱：左侧歌手左声道更响", levelLeft > levelRight * 1.5,
+            $"L={levelLeft:F3} R={levelRight:F3}");
+
+        var output24 = Path.Combine(dir, "chorus24.wav");
+        ChorusProcessor.Process(mono, output24, chorus, chorus.Singers, 120, 24);
+        Check("合唱：按工程位深输出 24-bit", ReadBitDepth(output24) == 24, ReadBitDepth(output24).ToString());
+        var (level24Left, _) = ReadChannelLevels(output24);
+        Check("合唱：24-bit 输出不是静音", level24Left > 0, level24Left.ToString("F4"));
+        Check("合唱：24-bit 输出可读取波形", WavReader.ReadPeaks(output24, 256).PeakAmplitude > 0,
+            WavReader.ReadPeaks(output24, 256).PeakAmplitude.ToString("F4"));
+
+        // Undo snapshots must not share the synthesis parameter arrays with the live settings.
+        var settings = new SynthesisSettings();
+        var snapshot = settings.Clone();
+        settings.FollowRatio[0] = 0.99;
+        settings.BandRatios[0] = 0.99;
+        Check("撤销快照：合成参数数组深拷贝",
+            snapshot.FollowRatio[0] != 0.99 && snapshot.BandRatios[0] != 0.99,
+            $"{snapshot.FollowRatio[0]}/{snapshot.BandRatios[0]}");
+    }
+
+    private static int ReadBitDepth(string path) => BitConverter.ToInt16(File.ReadAllBytes(path), 34);
+
+    /// <summary>Mean absolute sample value per channel, used to compare the stereo image.</summary>
+    private static (double Left, double Right) ReadChannelLevels(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var channels = BitConverter.ToInt16(bytes, 22);
+        var bytesPerSample = BitConverter.ToInt16(bytes, 34) / 8;
+        var frames = (bytes.Length - 44) / (channels * bytesPerSample);
+        double left = 0;
+        double right = 0;
+        for (var i = 0; i < frames; i++)
+        {
+            var offset = 44 + i * channels * bytesPerSample;
+            left += Math.Abs(ReadSample(bytes, offset, bytesPerSample));
+            right += Math.Abs(ReadSample(bytes, offset + bytesPerSample, bytesPerSample));
+        }
+
+        return (left / Math.Max(1, frames), right / Math.Max(1, frames));
+    }
+
+    private static double ReadSample(byte[] bytes, int offset, int bytesPerSample)
+    {
+        if (bytesPerSample == 3)
+        {
+            var value = BitConverter.ToUInt16(bytes, offset) | ((sbyte)bytes[offset + 2] << 16);
+            return value / 8388608.0;
+        }
+
+        return BitConverter.ToInt16(bytes, offset) / 32768.0;
     }
 
     private static void WriteSineWav(string path, int sampleRate, double seconds, double frequency, double amplitude)
@@ -672,11 +830,6 @@ internal static class Program
                 new RenderRequest(project, project.Tracks[0], output), progress);
             Check("端到端渲染产出文件", File.Exists(result.OutputPath) && new FileInfo(result.OutputPath).Length > 44);
             Check("端到端渲染时长 > 0", result.DurationSeconds > 0.05, result.DurationSeconds.ToString("F2"));
-
-            // Same as MainViewModel: the engine outputs mono; after rendering, convert to stereo by stereo balance.
-            var applied = StereoBalanceProcessor.Apply(result.OutputPath, 100);
-            Check("端到端声音占比 100 输出立体声",
-                applied && WavReader.ReadInfo(result.OutputPath).Channels == 2);
         }
         catch (Exception ex)
         {

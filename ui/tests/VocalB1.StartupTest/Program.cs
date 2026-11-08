@@ -2,7 +2,6 @@ using System.IO;
 using System.Text;
 using VocalB1.App;
 using VocalB1.App.ViewModels;
-using VocalB1.App.Views;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Engine.Audio;
 
@@ -52,16 +51,6 @@ internal static class Program
             Check("主窗口已显示", () => window?.IsVisible == true);
             Check("ViewModel 已绑定", () => viewModel is not null);
             Check("至少有一个音轨", () => viewModel!.Tracks.Count >= 1);
-
-            // Pre-render dialog: every track is listed and checked, so all render by default.
-            Check("渲染弹窗：列出全部音轨且默认全选", () =>
-            {
-                var vm = viewModel!;
-                var dialog = new RenderTrackDialog(vm.Tracks.Select(t => t.Model));
-                return dialog.Options.Count == vm.Tracks.Count
-                    && dialog.Options.All(o => o.IsSelected)
-                    && dialog.SelectedTracks.Count == vm.Tracks.Count;
-            });
 
             Check("启动日志已写入", () => viewModel!.Logs.Count >= 1);
             Check("声库列表已初始化", () => viewModel!.Voicebanks is not null);

@@ -1,16 +1,17 @@
-using System.Buffers.Binary;
-
 namespace VocalB1.Engine.Audio;
 
 /// <summary>
-/// Sums the rendered WAVs of several tracks into one 16-bit PCM stereo WAV.
+/// Sums the rendered WAVs of several tracks into one PCM stereo WAV (16 or 24 bit).
 /// All tracks share the project timeline, so the files are aligned at frame 0; shorter tracks are
 /// padded with silence, and a track rendered at another sample rate is resampled linearly.
 /// </summary>
 public static class TrackMixer
 {
-    /// <summary>Merges <paramref name="trackPaths"/> into <paramref name="outputPath"/> and returns that path.</summary>
-    public static string Mix(IReadOnlyList<string> trackPaths, string outputPath)
+    /// <summary>
+    /// Merges <paramref name="trackPaths"/> into <paramref name="outputPath"/> and returns that path.
+    /// <paramref name="bitDepth"/> follows the project output setting (16 or 24).
+    /// </summary>
+    public static string Mix(IReadOnlyList<string> trackPaths, string outputPath, int bitDepth = 16)
     {
         if (trackPaths.Count == 0)
             throw new ArgumentException("At least one track WAV is required.", nameof(trackPaths));
@@ -31,11 +32,12 @@ public static class TrackMixer
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
+        var bytesPerFrame = BgmMixer.BytesPerFrame(bitDepth);
         using var output = File.Create(outputPath);
-        BgmMixer.WriteHeader(output, sampleRate, totalFrames * 4);
+        BgmMixer.WriteHeader(output, sampleRate, totalFrames * bytesPerFrame, bitDepth);
 
         const int chunkFrames = 4096;
-        var buffer = new byte[chunkFrames * 4];
+        var buffer = new byte[chunkFrames * bytesPerFrame];
         long cursor = 0;
         while (cursor < totalFrames)
         {
@@ -58,11 +60,13 @@ public static class TrackMixer
                     right += source.Pcm.Right[index0] + (source.Pcm.Right[index1] - source.Pcm.Right[index0]) * frac;
                 }
 
-                BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(f * 4), BgmMixer.EncodeSample(left));
-                BinaryPrimitives.WriteInt16LittleEndian(buffer.AsSpan(f * 4 + 2), BgmMixer.EncodeSample(right));
+                var frameOffset = f * bytesPerFrame;
+                BgmMixer.WriteSample(buffer.AsSpan(frameOffset, bytesPerFrame / 2), left, bitDepth);
+                BgmMixer.WriteSample(
+                    buffer.AsSpan(frameOffset + bytesPerFrame / 2, bytesPerFrame / 2), right, bitDepth);
             }
 
-            output.Write(buffer, 0, count * 4);
+            output.Write(buffer, 0, count * bytesPerFrame);
             cursor += count;
         }
 

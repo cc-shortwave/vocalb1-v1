@@ -61,6 +61,13 @@ public partial class MainWindow : Window
 
     private void OnRollEditCommitted(object? sender, EventArgs e) => _viewModel?.RefreshActiveTrack();
 
+    private void OnChorusEditStarted(object? sender, EventArgs e) => _viewModel?.BeginChorusEdit();
+
+    private void OnChorusEditCommitted(object? sender, EventArgs e) => _viewModel?.CommitChorusEdit();
+
+    private void OnChorusSingerSelected(object? sender, ChorusSingerEventArgs e) =>
+        _viewModel?.SelectChorusSinger(e.Singer);
+
     /// <summary>Enter or focus loss decomposes the top lyric bar into minimal units and generates D4 blocks.</summary>
     private void OnLyricInputKeyDown(object sender, KeyEventArgs e)
     {

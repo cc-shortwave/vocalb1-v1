@@ -59,14 +59,12 @@ def detect_f0_pyworld(audio_data, sample_rate):
     result = extract_pyworld_features(audio_data, sample_rate)
     return result['f0'], result['time_axis']
 
-def detect_f0_sequence(audio_data, sample_rate):
-    """
-    Detect the F0 trajectory using pyworld (DIO + Stonemask) exclusively.
+def smooth_f0_sequence(f0_pyworld):
+    """Smooth an already extracted pyworld F0 curve (the exact pipeline used by detect_f0_sequence).
 
-    There is no autocorrelation/cepstrum/YIN fusion fallback:
-    if pyworld is unavailable or detection fails, an exception is raised directly.
+    Kept separate so callers that already ran extract_pyworld_features can reuse the
+    same F0 result instead of running DIO/StoneMask/CheapTrick/D4C a second time.
     """
-    f0_pyworld, time_axis = detect_f0_pyworld(audio_data, sample_rate)
     if f0_pyworld is None:
         raise RuntimeError("pyworld F0 detection failed")
 
@@ -74,3 +72,13 @@ def detect_f0_sequence(audio_data, sample_rate):
     f0_sequence = viterbi_smooth(f0_sequence)
 
     return f0_sequence
+
+def detect_f0_sequence(audio_data, sample_rate):
+    """
+    Detect the F0 trajectory using pyworld (DIO + Stonemask) exclusively.
+
+    There is no autocorrelation/cepstrum/YIN fusion fallback:
+    if pyworld is unavailable or detection fails, an exception is raised directly.
+    """
+    f0_pyworld, _time_axis = detect_f0_pyworld(audio_data, sample_rate)
+    return smooth_f0_sequence(f0_pyworld)

@@ -30,7 +30,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" MinHeight="320" />
             <RowDefinition Height="5" />
-            <RowDefinition Height="176" MinHeight="64" />
+            <RowDefinition Height="180" MinHeight="110" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -80,7 +80,7 @@
                               ToolTip="界面语言" />
                     <Button Content="导入语言包" Margin="6,0,0,0" Command="{Binding ImportLanguageCommand}"
                             ToolTip="导入 JSON 语言包（中文原文到目标语言的映射表）" />
-                    <Button Content="示例" Command="{Binding LoadDemoCommand}" Margin="10,0,6,0" />
+                    <Button Content="示例" Command="{Binding LoadDemoCommand}" Margin="10,0,16,0" />
                     <Button Content="渲染 (F5)" Style="{StaticResource PrimaryButton}" Command="{Binding RenderCommand}" />
                     <Button Content="取消" Command="{Binding CancelRenderCommand}" />
                     <Button Content="播放" Command="{Binding PlayCommand}" />
@@ -120,43 +120,51 @@
             </Grid>
         </Border>
 
-        <!-- Log splitter + log -->
+        <!-- Bottom dock: path curve editor for the selected chorus singer -->
         <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
                       Background="{DynamicResource BorderBrush}"
                       ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
-                      ToolTip="上下拖动可调整日志区高度" />
+                      ToolTip="上下拖动可调整走位曲线区高度" />
         <Border Grid.Row="3"
                 Background="{DynamicResource PanelBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,1,0,0">
             <DockPanel Margin="12,8">
-                <TextBlock DockPanel.Dock="Top" Text="日志" Style="{StaticResource SectionTitle}" />
-                <ListBox x:Name="LogList" ItemsSource="{Binding Logs}">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding TimeText}" FontFamily="Consolas"
-                                           Foreground="{DynamicResource DimBrush}" Margin="0,0,10,0" />
-                                <TextBlock Text="{Binding Message}" TextWrapping="Wrap">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsWarning}" Value="True">
-                                                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </StackPanel>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="走位曲线" Style="{StaticResource SectionTitle}" Margin="0"
+                               VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding SelectedSingerText}" Margin="12,0,0,0"
+                               VerticalAlignment="Center" Foreground="{DynamicResource AccentBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="2"
+                               Text="拖动关键帧：改拍位与该通道的值 · 双击空白：新增 · 右键：删除"
+                               FontSize="10" Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource DimBrush}" />
+                </Grid>
+                <controls:ChorusCurveView x:Name="ChorusCurve"
+                                          Chorus="{Binding Chorus}"
+                                          Singer="{Binding SelectedChorusSingerModel}"
+                                          PlayheadBeat="{Binding PlayheadBeat}"
+                                          Revision="{Binding ChorusRevision}"
+                                          EditStarted="OnChorusEditStarted"
+                                          EditCommitted="OnChorusEditCommitted"
+                                          MinHeight="80" />
             </DockPanel>
         </Border>
 
+        <!-- Main body: top-level tabs. "音轨编辑" keeps the original three-column layout;
+             "合唱" has its own independent layout (singers, stage, imported formations). -->
+        <TabControl Grid.Row="1" Style="{StaticResource MainTabControl}"
+                    SelectedIndex="{Binding MainTabIndex, Mode=TwoWay}">
+            <TabItem Header="音轨编辑" Style="{StaticResource MainTabItem}">
         <!-- Main three-column body -->
-        <Grid Grid.Row="1">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="264" MinWidth="180" />
                 <ColumnDefinition Width="5" />
@@ -183,7 +191,7 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="190" MinHeight="90" />
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0">
@@ -213,60 +221,30 @@
                         </ListBox>
                     </DockPanel>
 
-                    <!-- User dictionary: unicode text → voice library audio combinations -->
+                    <!-- Log: moved here from the bottom dock, which now hosts the path curve editor -->
                     <Border Grid.Row="1" Margin="0,10,0,0" Padding="0,10,0,0"
                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
                         <DockPanel>
-                            <Grid DockPanel.Dock="Top">
-                                <TextBlock Text="用户字典" Style="{StaticResource SectionTitle}"
-                                           HorizontalAlignment="Left" />
-                                <Button Content="导入" HorizontalAlignment="Right" Margin="0"
-                                        Padding="10,2" Command="{Binding ImportDictionaryCommand}" />
-                            </Grid>
-
-                            <TextBlock DockPanel.Dock="Top" Text="{Binding DictionaryName}"
-                                       FontWeight="SemiBold" Margin="0,4,0,0" />
-                            <TextBlock DockPanel.Dock="Top" Text="{Binding DictionaryPathText}"
-                                       Foreground="{DynamicResource DimBrush}" FontSize="11"
-                                       TextTrimming="CharacterEllipsis"
-                                       ToolTip="{Binding DictionaryPathText}" />
-
-                            <Button DockPanel.Dock="Bottom" Content="插入所选条目" Margin="0,8,0,0"
-                                    Command="{Binding InsertDictionaryEntryCommand}" />
-
-                            <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="0" Margin="0,0,6,0">
-                                    <TextBlock Text="起拍" Foreground="{DynamicResource DimBrush}"
-                                               FontSize="11" Margin="0,0,0,2" />
-                                    <TextBox Text="{Binding DictionaryStartBeat, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Margin="0,0,6,0">
-                                    <TextBlock Text="拍长" Foreground="{DynamicResource DimBrush}"
-                                               FontSize="11" Margin="0,0,0,2" />
-                                    <TextBox Text="{Binding DictionaryBeats, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="2">
-                                    <TextBlock Text="目标音高" Foreground="{DynamicResource DimBrush}"
-                                               FontSize="11" Margin="0,0,0,2" />
-                                    <TextBox Text="{Binding DictionaryDstPitch, UpdateSourceTrigger=PropertyChanged}" />
-                                </StackPanel>
-                            </Grid>
-
-                            <ListBox x:Name="DictionaryList" ItemsSource="{Binding DictionaryEntries}"
-                                     SelectedItem="{Binding SelectedDictionaryEntry}"
-                                     MinHeight="92" MaxHeight="150" Margin="0,8,0,0">
+                            <TextBlock DockPanel.Dock="Top" Text="日志" Style="{StaticResource SectionTitle}"
+                                       Margin="0,0,0,4" />
+                            <ListBox x:Name="LogList" ItemsSource="{Binding Logs}">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding Text}" FontWeight="SemiBold" />
-                                            <TextBlock Text="{Binding Detail}" FontSize="11"
-                                                       Foreground="{DynamicResource DimBrush}"
-                                                       TextTrimming="CharacterEllipsis" />
+                                        <StackPanel Margin="0,0,0,2">
+                                            <TextBlock Text="{Binding TimeText}" FontFamily="Consolas"
+                                                       FontSize="10"
+                                                       Foreground="{DynamicResource DimBrush}" />
+                                            <TextBlock Text="{Binding Message}" TextWrapping="Wrap">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource WarnBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
                                         </StackPanel>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
@@ -449,6 +427,8 @@
                                     ToolTip="切换后只影响卷帘里的左键/右键操作对象" />
                         </StackPanel>
                     </Grid>
+
+                    <!-- Chorus toolbar removed: the chorus tab now owns formations and singer management -->
 
                     <Border Grid.Row="2"
                             Background="{DynamicResource InputBrush}"
@@ -644,14 +624,6 @@
                         <Slider Minimum="16" Maximum="32" SmallChange="8" LargeChange="8"
                                 TickFrequency="8" IsSnapToTickEnabled="True" Value="{Binding BitDepth}" />
 
-                        <Grid Margin="0,8,0,0">
-                            <TextBlock Text="声音占比" Foreground="{DynamicResource DimBrush}" HorizontalAlignment="Left" />
-                            <TextBlock Text="{Binding StereoBalance, StringFormat={}{0:0}}" HorizontalAlignment="Right" />
-                        </Grid>
-                        <Slider Minimum="0" Maximum="100" SmallChange="1" LargeChange="10"
-                                TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding StereoBalance}"
-                                ToolTip="越大右声道能量占比越大：0 = 全部左声道，50 = 平衡，100 = 全部右声道" />
-
                         <Border Style="{StaticResource Divider}" />
 
                         <TextBlock Text="说明" Style="{StaticResource SectionTitle}" />
@@ -661,6 +633,220 @@
                 </ScrollViewer>
             </Border>
         </Grid>
+            </TabItem>
+
+            <!-- Chorus tab: singers on the left, stage in the center, chorus settings on the right -->
+            <TabItem Header="合唱" Style="{StaticResource MainTabItem}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="260" MinWidth="180" />
+                        <ColumnDefinition Width="5" />
+                        <ColumnDefinition Width="*" MinWidth="360" />
+                        <ColumnDefinition Width="5" />
+                        <ColumnDefinition Width="300" MinWidth="220" />
+                    </Grid.ColumnDefinitions>
+
+                    <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="{DynamicResource BorderBrush}"
+                                  ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                                  ToolTip="左右拖动可调整歌手面板宽度" />
+                    <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="{DynamicResource BorderBrush}"
+                                  ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                                  ToolTip="左右拖动可调整右侧面板宽度" />
+
+                    <!-- Left: singers -->
+                    <Border Grid.Column="0" Background="{DynamicResource PanelBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0"
+                            Padding="12">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="歌手" Style="{StaticResource SectionTitle}"
+                                       Margin="0,0,0,6" />
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="+ 歌手" Margin="0" Command="{Binding AddChorusSingerCommand}"
+                                        ToolTip="添加一个歌手；新歌手默认绑定当前音轨" />
+                                <Button Content="移除" Command="{Binding RemoveChorusSingerCommand}"
+                                        ToolTip="移除选中的歌手" />
+                            </StackPanel>
+                            <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" TextWrapping="Wrap"
+                                       FontSize="11" Foreground="{DynamicResource DimBrush}"
+                                       Text="勾选表示该歌手参与渲染；单击列表或舞台上的人可选中该歌手。" />
+                            <ListBox ItemsSource="{Binding ChorusSingers}"
+                                     SelectedItem="{Binding SelectedChorusSinger}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <CheckBox Grid.Column="0" Margin="0,0,8,0"
+                                                      VerticalAlignment="Center"
+                                                      IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                                      ToolTip="取消勾选后该歌手不参与渲染" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Detail}" FontSize="11"
+                                                           Foreground="{DynamicResource DimBrush}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Center: formations + stage + selected singer -->
+                    <Grid Grid.Column="2" Margin="16,12,16,12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Border Grid.Row="0" Padding="10,8" CornerRadius="6"
+                                Background="{DynamicResource InputBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="队形" Style="{StaticResource SectionTitle}"
+                                               Margin="0,0,8,0" VerticalAlignment="Center" />
+                                    <ComboBox Width="180" VerticalAlignment="Center"
+                                              ItemsSource="{Binding ChorusFormations}"
+                                              SelectedItem="{Binding SelectedChorusFormation}"
+                                              DisplayMemberPath="Name"
+                                              ToolTip="从 JSON 文件导入的自定义队形" />
+                                    <Button Content="应用" Command="{Binding ApplyChorusFormationPresetCommand}"
+                                            ToolTip="按所选队形重排所有歌手，并在当前播放拍写入关键帧" />
+                                    <Button Content="导入 JSON" Command="{Binding ImportChorusFormationCommand}"
+                                            ToolTip="导入队形配置 JSON：名称 + 每个歌手的站位（米）" />
+                                    <TextBlock Text="{Binding ChorusStageInfo}" Margin="14,0,0,0"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource DimBrush}" />
+                                </StackPanel>
+
+                                <TextBlock Text="尚未导入队形；点击“导入 JSON”加载。"
+                                           Margin="0,6,0,0" FontSize="11"
+                                           Foreground="{DynamicResource DimBrush}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock"
+                                               BasedOn="{StaticResource {x:Type TextBlock}}">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasChorusFormations}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="1" Margin="0,8,0,0" Padding="4" CornerRadius="6"
+                                Background="{DynamicResource InputBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                            <controls:ChorusStageView x:Name="ChorusStage"
+                                                      Chorus="{Binding Chorus}"
+                                                      SelectedSinger="{Binding SelectedChorusSingerModel}"
+                                                      PlayheadBeat="{Binding PlayheadBeat}"
+                                                      Revision="{Binding ChorusRevision}"
+                                                      EditStarted="OnChorusEditStarted"
+                                                      EditCommitted="OnChorusEditCommitted"
+                                                      SingerSelected="OnChorusSingerSelected"
+                                                      MinHeight="140" />
+                        </Border>
+
+                        <Border Grid.Row="2" Margin="0,8,0,0" Padding="10,8" CornerRadius="6"
+                                Background="{DynamicResource InputBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding SelectedSingerText}" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource AccentBrush}" MinWidth="180" />
+                                <TextBlock Text="姓名" Foreground="{DynamicResource DimBrush}" Margin="10,0,4,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox Width="92" VerticalAlignment="Center"
+                                         Text="{Binding SelectedChorusSinger.Name, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="歌手名称（只影响舞台显示）" />
+                                <TextBlock Text="使用音轨" Foreground="{DynamicResource DimBrush}" Margin="12,0,4,0"
+                                           VerticalAlignment="Center" />
+                                <ComboBox Width="140" VerticalAlignment="Center"
+                                          ItemsSource="{Binding Tracks}"
+                                          SelectedItem="{Binding SelectedSingerTrack}"
+                                          DisplayMemberPath="Name"
+                                          ToolTip="该歌手演唱的乐谱所在的音轨；多个歌手可以绑定同一音轨" />
+                                <Button Content="跳转到音轨" Command="{Binding JumpToChorusTrackCommand}"
+                                        ToolTip="切换到该歌手绑定的音轨进行编辑" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- Right: chorus settings and import format -->
+                    <Border Grid.Column="4" Background="{DynamicResource PanelBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0"
+                            Padding="12">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Text="合唱" Style="{StaticResource SectionTitle}" />
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
+                                           Text="合唱始终启用：同一音轨上绑定的歌手会各自按舞台位置处理（距离衰减、高频滚降、左右声像），再叠加为该音轨。" />
+
+                                <Border Style="{StaticResource Divider}" />
+
+                                <TextBlock Text="舞台" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="{Binding ChorusStageInfo}" TextWrapping="Wrap" />
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                        <TextBlock Text="宽度 (m)" Foreground="{DynamicResource DimBrush}"
+                                                   FontSize="11" Margin="0,0,0,2" />
+                                        <TextBox Text="{Binding StageWidth, UpdateSourceTrigger=LostFocus, StringFormat=0.##}"
+                                                 ToolTip="舞台宽度，米；最小 1 m，不设上限" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="深度 (m)" Foreground="{DynamicResource DimBrush}"
+                                                   FontSize="11" Margin="0,0,0,2" />
+                                        <TextBox Text="{Binding StageDepth, UpdateSourceTrigger=LostFocus, StringFormat=0.##}"
+                                                 ToolTip="舞台深度，米；最小 1 m，不设上限" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="11"
+                                           Foreground="{DynamicResource DimBrush}"
+                                           Text="X 以舞台中心为 0、向右为正；Y 从舞台前缘 0 起向后为正；麦克风位于前缘之外（Y 为负）。拖动麦克风或歌手时按 0.25 拍吸附。" />
+
+                                <Border Style="{StaticResource Divider}" />
+
+                                <TextBlock Text="导入队形 JSON" Style="{StaticResource SectionTitle}" />
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
+                                           Text="文件可包含多个队形；每个队形由名称和歌手站位组成。位置单位为米。" />
+                                <Border Margin="0,8,0,0" Padding="8,6" CornerRadius="4"
+                                        Background="{DynamicResource InputBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <TextBlock FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                                               Text="{}{ &quot;formations&quot;: [ { &quot;name&quot;: &quot;弧形&quot;, &quot;positions&quot;: [ { &quot;x&quot;: -2, &quot;y&quot;: 1.2 } ] } ] }" />
+                                </Border>
+                                <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" FontSize="11"
+                                           Foreground="{DynamicResource DimBrush}"
+                                           Text="也接受根数组或单个队形对象；positions 的每一项可写 { x, y } 或 [ x, y ]。" />
+
+                                <Border Style="{StaticResource Divider}" />
+
+                                <TextBlock Text="应用队形" Style="{StaticResource SectionTitle}" />
+                                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
+                                           Text="应用队形会在当前播放拍为所有歌手写入关键帧（同一拍上的旧关键帧会被替换），可撤销。歌手多于站位时循环复用站位。" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
 
         <!-- 无可用声库时：整个主界面覆盖半透明遮罩变灰并锁定操作，仅保留拖入声库与刷新入口 -->
         <Border Grid.RowSpan="5" AllowDrop="True" Background="{DynamicResource OverlayBrush}">

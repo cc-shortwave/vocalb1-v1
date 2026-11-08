@@ -23,8 +23,8 @@ public static class ProjectValidator
     {
         var issues = new List<ProjectIssue>();
 
-        if (track.Segments.Count < 2)
-            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, "至少需要 2 个发音段才能合成。"));
+        if (track.Segments.Count == 0)
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, "至少需要 1 个发音段才能合成。"));
 
         for (var i = 0; i < track.Segments.Count; i++)
         {
@@ -76,6 +76,81 @@ public static class ProjectValidator
 
         if (track.Settings.BitDepth is not (16 or 24))
             issues.Add(new ProjectIssue(ProjectIssueSeverity.Warning, "输出位深仅支持 16 / 24。"));
+
+        // Chorus state is project-wide, so it is reported once instead of once per track.
+        if (project.Tracks.Count == 0 || project.Tracks[0] == track)
+            issues.AddRange(ValidateChorus(project));
+
+        return issues;
+    }
+
+    /// <summary>
+    /// Stage geometry and singer paths are consumed directly by the chorus renderer, so invalid values
+    /// (non-finite coordinates, out-of-stage singers, dangling track bindings) must surface before a render.
+    /// </summary>
+    private static IEnumerable<ProjectIssue> ValidateChorus(ProjectDocument project)
+    {
+        var chorus = project.Chorus;
+        if (chorus is null)
+            return [];
+
+        var issues = new List<ProjectIssue>();
+
+        if (!double.IsFinite(chorus.StageWidth) || chorus.StageWidth <= 0)
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, "合唱舞台宽度必须为正数。"));
+        if (!double.IsFinite(chorus.StageDepth) || chorus.StageDepth <= 0)
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, "合唱舞台纵深必须为正数。"));
+        if (!double.IsFinite(chorus.MicX) || !double.IsFinite(chorus.MicY))
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, "合唱麦克风坐标必须为有效数值。"));
+
+        var halfWidth = double.IsFinite(chorus.StageWidth) ? chorus.StageWidth * 0.5 : 0;
+
+        foreach (var singer in chorus.Singers)
+        {
+            var name = string.IsNullOrWhiteSpace(singer.Name) ? "未命名歌手" : singer.Name;
+
+            if (singer.Enabled && string.IsNullOrWhiteSpace(singer.TrackId))
+            {
+                issues.Add(new ProjectIssue(
+                    ProjectIssueSeverity.Warning, $"歌手「{name}」已启用但未绑定音轨，不会参与渲染。"));
+            }
+            else if (!string.IsNullOrWhiteSpace(singer.TrackId)
+                     && !project.Tracks.Any(t => t.Id == singer.TrackId))
+            {
+                issues.Add(new ProjectIssue(
+                    ProjectIssueSeverity.Warning, $"歌手「{name}」绑定的音轨已不存在，不会参与渲染。"));
+            }
+
+            if (singer.Path.Count == 0)
+            {
+                issues.Add(new ProjectIssue(
+                    ProjectIssueSeverity.Warning, $"歌手「{name}」没有走位关键帧，将固定在舞台中心。"));
+            }
+
+            for (var i = 0; i < singer.Path.Count; i++)
+            {
+                var point = singer.Path[i];
+                if (!double.IsFinite(point.Beat) || !double.IsFinite(point.X) || !double.IsFinite(point.Y))
+                {
+                    issues.Add(new ProjectIssue(
+                        ProjectIssueSeverity.Error, $"歌手「{name}」第 {i + 1} 个走位关键帧包含无效数值。"));
+                    continue;
+                }
+
+                if (point.Beat < 1)
+                    issues.Add(new ProjectIssue(
+                        ProjectIssueSeverity.Warning, $"歌手「{name}」第 {i + 1} 个走位关键帧拍位小于 1。"));
+                if (Math.Abs(point.X) > halfWidth + 1e-6)
+                    issues.Add(new ProjectIssue(
+                        ProjectIssueSeverity.Warning, $"歌手「{name}」第 {i + 1} 个走位关键帧超出舞台横向范围。"));
+                if (point.Y < -1e-6 || point.Y > chorus.StageDepth + 1e-6)
+                    issues.Add(new ProjectIssue(
+                        ProjectIssueSeverity.Warning, $"歌手「{name}」第 {i + 1} 个走位关键帧超出舞台纵深范围。"));
+                if (i > 0 && point.Beat <= singer.Path[i - 1].Beat && double.IsFinite(singer.Path[i - 1].Beat))
+                    issues.Add(new ProjectIssue(
+                        ProjectIssueSeverity.Warning, $"歌手「{name}」走位关键帧拍位未严格递增。"));
+            }
+        }
 
         return issues;
     }
