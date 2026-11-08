@@ -277,7 +277,7 @@ public sealed class ChorusCurveView : FrameworkElement
 
         // Axis units, tucked into the gutters so they never collide with the curves.
         DrawText(dc, "m", 4, plot.Top + 1, _dimBrush, 9.5);
-        var unit = Format("拍", 9.5, _dimBrush);
+        var unit = Format(LanguageService.Translate("拍"), 9.5, _dimBrush);
         dc.DrawText(unit, new Point(plot.Right - unit.Width, plot.Bottom + 4));
     }
 
@@ -392,8 +392,8 @@ public sealed class ChorusCurveView : FrameworkElement
         if (plot.Width < 240)
             return;
 
-        var xLabel = Format("X 位置", 9.5, _dimBrush);
-        var yLabel = Format("Y 位置", 9.5, _dimBrush);
+        var xLabel = Format(LanguageService.Translate("X 位置"), 9.5, _dimBrush);
+        var yLabel = Format(LanguageService.Translate("Y 位置"), 9.5, _dimBrush);
         var total = 18 + xLabel.Width + 10 + 18 + yLabel.Width;
         var x = plot.Right - total - 6;
         var y = plot.Top + 4;
@@ -419,7 +419,7 @@ public sealed class ChorusCurveView : FrameworkElement
         var channel = drag.IsY ? "Y" : "X";
         var value = drag.IsY ? drag.Keyframe.Y : drag.Keyframe.X;
         var text = Format(
-            string.Format(CultureInfo.InvariantCulture, "拍 {0:0.##} · {1} {2:0.00} m",
+            LanguageService.TranslateFormat("拍 {0:0.##} · {1} {2:0.00} m",
                 drag.Keyframe.Beat, channel, value),
             10, _textBrush);
 
@@ -430,7 +430,7 @@ public sealed class ChorusCurveView : FrameworkElement
 
     private void DrawEmpty(DrawingContext dc, Rect plot)
     {
-        var text = Format("选择一个歌手以编辑走位曲线", 11, _dimBrush);
+        var text = Format(LanguageService.Translate("选择一个歌手以编辑走位曲线"), 11, _dimBrush);
         dc.DrawText(text, new Point(
             plot.Left + Math.Max(0, (plot.Width - text.Width) / 2),
             plot.Top + Math.Max(0, (plot.Height - text.Height) / 2)));

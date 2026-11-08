@@ -246,18 +246,18 @@ public sealed class MainViewModel : ObservableObject
         get
         {
             if (_selectedChorusSinger is null)
-                return "未选择歌手（单击舞台上的歌手）";
+                return LanguageService.Translate("未选择歌手（单击舞台上的歌手）");
 
             var track = SelectedSingerTrack;
             return track is null
-                ? $"{_selectedChorusSinger.Name} · 未绑定音轨"
-                : $"{_selectedChorusSinger.Name} · 音轨：{track.Name}";
+                ? LanguageService.TranslateFormat("{0} · 未绑定音轨", _selectedChorusSinger.Name)
+                : LanguageService.TranslateFormat("{0} · 音轨：{1}", _selectedChorusSinger.Name, track.Name);
         }
     }
 
-    public string ChorusStageInfo =>
-        $"舞台 {Chorus.StageWidth:0.#} m × {Chorus.StageDepth:0.#} m · "
-        + $"麦克风 ({Chorus.MicX:0.0}, {Chorus.MicY:0.0})";
+    public string ChorusStageInfo => LanguageService.TranslateFormat(
+        "舞台 {0:0.#} m × {1:0.#} m · 麦克风 ({2:0.0}, {3:0.0})",
+        Chorus.StageWidth, Chorus.StageDepth, Chorus.MicX, Chorus.MicY);
 
     /// <summary>Stage width in meters, editable from the chorus panel; only a 1 m minimum is enforced.</summary>
     public double StageWidth
@@ -299,7 +299,7 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>Top-level tab: 0 = track editor, 1 = chorus.</summary>
+    /// <summary>Top-level tab: 0 = track editor, 1 = stage mode.</summary>
     private int _mainTabIndex;
 
     public int MainTabIndex
@@ -1364,6 +1364,10 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(DictionaryName));
         OnPropertyChanged(nameof(DictionaryPathText));
         OnPropertyChanged(nameof(LyricStatus));
+        OnPropertyChanged(nameof(SelectedSingerText));
+        OnPropertyChanged(nameof(ChorusStageInfo));
+        foreach (var row in ChorusSingers)
+            row.Refresh();
         RefreshParameterRows();
     }
 
@@ -1511,8 +1515,8 @@ public sealed class MainViewModel : ObservableObject
             return true;
 
         return MessageBox.Show(
-            "当前工程有未保存的更改，是否保存？",
-            action,
+            LanguageService.Translate("当前工程有未保存的更改，是否保存？"),
+            LanguageService.Translate(action),
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question) switch
         {
@@ -1993,7 +1997,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // ------------------------------------------------------------------
-    // Chorus mode: stage, microphone and singers
+    // Stage mode: stage, microphone and singers
     // ------------------------------------------------------------------
 
     private void AddChorusSinger()
@@ -2018,7 +2022,7 @@ public sealed class MainViewModel : ObservableObject
 
         var singer = new ChorusSinger
         {
-            Name = $"歌手 {index + 1}",
+            Name = LanguageService.TranslateFormat("歌手 {0}", index + 1),
             TrackId = _activeTrack.Id,
             Path = [new ChorusKeyframe { Beat = 1, X = position.X, Y = position.Y }],
         };
@@ -2057,8 +2061,8 @@ public sealed class MainViewModel : ObservableObject
     {
         var dialog = new OpenFileDialog
         {
-            Title = "导入合唱队形",
-            Filter = "队形 JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            Title = LanguageService.Translate("导入队形"),
+            Filter = LanguageService.Translate("队形 JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
             CheckFileExists = true,
             Multiselect = true,
         };
@@ -2213,13 +2217,13 @@ public sealed class MainViewModel : ObservableObject
         (ApplyChorusFormationPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
-    /// <summary>Chorus edits change the rendered audio; keep stale renders from playing.</summary>
+    /// <summary>Stage edits change the rendered audio; keep stale renders from playing.</summary>
     private void InvalidateChorusRender()
     {
         _trackOutputs.Clear();
         ClearMergedRender();
         LastRenderPath = null;
-        PreviewInfo = "合唱设置已修改，需要重新渲染";
+        PreviewInfo = "舞台设置已修改，需要重新渲染";
     }
 
     // ------------------------------------------------------------------

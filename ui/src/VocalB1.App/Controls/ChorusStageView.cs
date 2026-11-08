@@ -213,9 +213,9 @@ public sealed class ChorusStageView : FrameworkElement
         DrawDragOverlay(dc, chorus);
     }
 
-    private string HintText() =>
-        $"拖动歌手：在当前拍写关键帧（拍 {ChorusMath.SnapBeat(PlayheadBeat ?? 1):0.##}） · "
-        + "拖动节点：移动 · 双击节点：对齐当前拍 · 右键节点：删除";
+    private string HintText() => LanguageService.TranslateFormat(
+        "拖动歌手：在当前拍写关键帧（拍 {0:0.##}） · 拖动节点：移动 · 双击节点：对齐当前拍 · 右键节点：删除",
+        ChorusMath.SnapBeat(PlayheadBeat ?? 1));
 
     private void ComputeLayout(ChorusDocument chorus)
     {
@@ -300,7 +300,7 @@ public sealed class ChorusStageView : FrameworkElement
         dc.DrawRectangle(bandBrush, null, band);
         dc.DrawLine(_ringPen, new Point(_left, _bottom + 1), new Point(right, _bottom + 1));
 
-        DrawText(dc, "观众席 / 麦克风区", _left, _bottom + 12, _dimBrush, 10);
+        DrawText(dc, LanguageService.Translate("观众席 / 麦克风区"), _left, _bottom + 12, _dimBrush, 10);
     }
 
     private void DrawAxisLabels(DrawingContext dc, ChorusDocument chorus)
@@ -334,7 +334,7 @@ public sealed class ChorusStageView : FrameworkElement
         }
 
         // Back-of-stage marker, kept out of the working area.
-        var back = Format("舞台后方", 9.5, _dimBrush);
+        var back = Format(LanguageService.Translate("舞台后方"), 9.5, _dimBrush);
         dc.DrawText(back, new Point(_left + _stageWidth * _scaleX - back.Width - 8, _top + 6));
     }
 
@@ -360,7 +360,7 @@ public sealed class ChorusStageView : FrameworkElement
         dc.DrawLine(_micStemPen, new Point(point.X, point.Y + 10), new Point(point.X, point.Y + 18));
         dc.DrawEllipse(_micFill, null, new Point(point.X, point.Y + 19), 1.6, 1.6);
 
-        var label = Format("麦克风", 10.5, _textBrush);
+        var label = Format(LanguageService.Translate("麦克风"), 10.5, _textBrush);
         var x = Math.Clamp(point.X + 14, 4, ActualWidth - label.Width - 4);
         dc.DrawText(label, new Point(x, point.Y - label.Height / 2));
     }
