@@ -78,13 +78,13 @@ public static class BgmMixer
         using var stream = File.OpenRead(path);
         var layout = ParseLayout(path, stream);
         if (layout.Channels is < 1 or > 2)
-            throw new InvalidDataException("BGM 只支持单声道或双声道 WAV：" + path);
+            throw new InvalidDataException("只支持单声道或双声道 WAV：" + path);
 
         var bytesPerSample = layout.BitsPerSample / 8;
         var isFloat = layout.FormatTag == FormatFloat;
         var frameCount = layout.DataLength / layout.BlockAlign;
         if (frameCount > int.MaxValue)
-            throw new InvalidDataException("BGM 过长，无法混音：" + path);
+            throw new InvalidDataException("音频过长，无法混音：" + path);
 
         var frameCount32 = (int)frameCount;
         var left = new double[frameCount32];
@@ -119,11 +119,16 @@ public static class BgmMixer
         return new PcmBuffer(left, right, layout.SampleRate, frameCount);
     }
 
-    internal static void WriteHeader(Stream output, int sampleRate, long dataBytes)
+    /// <summary>Normalizes an unsupported bit depth to the closest supported one (16 or 24).</summary>
+    internal static int NormalizeBitDepth(int bitDepth) => bitDepth >= 24 ? 24 : 16;
+
+    internal static int BytesPerFrame(int bitDepth) => 2 * NormalizeBitDepth(bitDepth) / 8;
+
+    internal static void WriteHeader(Stream output, int sampleRate, long dataBytes, int bitDepth = 16)
     {
         const ushort channels = 2;
-        const ushort bits = 16;
-        const int blockAlign = channels * bits / 8;
+        var bits = (ushort)NormalizeBitDepth(bitDepth);
+        var blockAlign = 2 * bits / 8;
 
         var header = new byte[44];
         WriteAscii(header, 0, "RIFF");
@@ -134,11 +139,31 @@ public static class BgmMixer
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(22), channels);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(24), (uint)sampleRate);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(28), (uint)(sampleRate * blockAlign));
-        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(32), blockAlign);
+        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(32), (ushort)blockAlign);
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(34), bits);
         WriteAscii(header, 36, "data");
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(40), (uint)dataBytes);
         output.Write(header);
+    }
+
+    /// <summary>Writes one PCM sample at the requested bit depth (16 or 24, little endian).</summary>
+    internal static void WriteSample(Span<byte> destination, double value, int bitDepth)
+    {
+        // Non-finite values (for example a NaN stage coordinate in an imported project) must never
+        // reach the file: they would turn the whole block into silence without any warning.
+        if (!double.IsFinite(value))
+            value = 0.0;
+
+        if (NormalizeBitDepth(bitDepth) == 24)
+        {
+            var scaled = Math.Clamp((long)Math.Round(value * 8388608.0), -8388608, 8388607);
+            destination[0] = (byte)(scaled & 0xFF);
+            destination[1] = (byte)((scaled >> 8) & 0xFF);
+            destination[2] = (byte)((scaled >> 16) & 0xFF);
+            return;
+        }
+
+        BinaryPrimitives.WriteInt16LittleEndian(destination, EncodeSample(value));
     }
 
     private static void WriteAscii(byte[] target, int offset, string text)

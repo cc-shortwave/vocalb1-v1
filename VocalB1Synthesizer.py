@@ -1,5 +1,5 @@
 """
-VocalB1Synthesizer - multi-audio voiced-frame concatenation synthesis (Bézier interpolation join, N>=2 segments)
+VocalB1Synthesizer - multi-audio voiced-frame concatenation synthesis (Bézier interpolation join, N>=1 segments)
 
 Principle:
     Given N input audios (each with its own pitch shift), for every audio:
@@ -44,6 +44,7 @@ import prosses_breath   # used to mix the concatenated breath directly into the 
 from VocalDecomposer import VocalDecomposer
 from VocalSynthesizer import VocalSynthesizer
 from vocal_lib.pitch import _parse_semitones
+from vocal_lib.perf import span as _perf_span, mark as _perf_mark
 
 # Output directory is anchored to the script directory (same as prosses_breath),
 # so that a different working directory does not write artifacts into CWD or
@@ -83,11 +84,11 @@ _OUTPUT_DIR = os.path.join(_BASE_DIR, "_output")
 #         note tail
 # ----------------------------------------------------------------------
 def _default_library_root():
-    """Voicebank directory: $VOCALB1_LIB, else the first subdirectory of ./voicebank."""
+    """Voicebank directory: $VOCALB1_LIB, else the first subdirectory of ./voicebank (relative path)."""
     env = os.environ.get("VOCALB1_LIB")
     if env and os.path.isdir(env):
         return env
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voicebank")
+    base = "voicebank"
     if os.path.isdir(base):
         subs = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
         if subs:
@@ -697,8 +698,8 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> tupl
     output length is exactly the duration corresponding to the final beat position.
     """
     n_seg = len(segs)
-    if n_seg < 2:
-        raise ValueError("Beat layout requires at least 2 segments")
+    if n_seg < 1:
+        raise ValueError("Beat layout requires at least 1 segment")
     if not BPM:
         raise ValueError("beat_start/beat_end given but BPM is not set")
     bpb = float(TIME_SIGNATURE[0])
@@ -736,7 +737,9 @@ def _apply_beat_timeline(segs: list, seg_cfgs: list, sr: int, fp: float) -> tupl
         overs[i + 1] = ov
         M[i] = D[i] + ov
     M[0] += P[0]                                               # blank before the first segment -> head silence
-    M[n_seg - 1] = L[n_seg - 1]
+    # The last segment is fed exactly its sounding length. With a single segment there is no
+    # previous note to absorb the head silence, so keep it here as well.
+    M[n_seg - 1] = L[n_seg - 1] + (P[0] if n_seg == 1 else 0)
 
     print(f"[Beat] BPM={BPM}  time signature={TIME_SIGNATURE[0]}/{TIME_SIGNATURE[1]}  "
           f"{spb:.4g}frames/beat({60000.0 / float(BPM):.0f}ms/beat)")
@@ -1686,7 +1689,8 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
 
     vd = VocalDecomposer(sample_rate=SAMPLE_RATE, frame_period=FRAME_PERIOD)
     print(f"[Decompose] {os.path.basename(audio_path)}  {src_pitch}→{dst_pitch}")
-    p = vd.decompose(audio_path)
+    with _perf_span("seg.decompose"):
+        p = vd.decompose(audio_path)
     sr = int(p['sample_rate'])
     fp = float(p['f0_frame_period'])
 
@@ -1708,13 +1712,14 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     )
 
     # Pitch shift (returns an original copy when src==dst); per-segment overrides take priority, None falls back to the global default
-    f0_s, gl_s = vl.pitch_shift(
-        f0_obj, gl_obj, src_pitch, dst_pitch,
-        follow_ratio=FOLLOW_RATIO if follow_ratio is None else follow_ratio,
-        breathy_threshold=BREATHY_THR if breathy_thr is None else breathy_thr,
-        band_ratios=BAND_RATIOS if band_ratios is None else band_ratios,
-        band_width_hz=BAND_WIDTH_HZ,
-    )
+    with _perf_span("seg.pitch_shift"):
+        f0_s, gl_s = vl.pitch_shift(
+            f0_obj, gl_obj, src_pitch, dst_pitch,
+            follow_ratio=FOLLOW_RATIO if follow_ratio is None else follow_ratio,
+            breathy_threshold=BREATHY_THR if breathy_thr is None else breathy_thr,
+            band_ratios=BAND_RATIOS if band_ratios is None else band_ratios,
+            band_width_hz=BAND_WIDTH_HZ,
+        )
     semitones = _parse_semitones(dst_pitch) - _parse_semitones(src_pitch)
 
     f0 = np.asarray(f0_s.values, dtype=np.float64)
@@ -1731,16 +1736,17 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     # Source audio per-frame RMS: used both for the plosive transient envelope
     # transplant (the source's attack shape) and to identify unvoiced frames with
     # notable energy among f0=0 frames (real consonants such as fricatives/affricates/plosives)
-    src_audio = vl.WAVAudio.from_file(audio_path, mono=True)
-    xs = np.asarray(src_audio.data, dtype=np.float64)
-    if src_audio.sample_rate != sr:
-        xs = _resample_1d(xs, int(round(len(xs) * sr / src_audio.sample_rate)))
-    src_rms = np.zeros(len(f0), dtype=np.float64)
-    for i in range(len(f0)):
-        s = _frame_bound(i, sr, fp)
-        e = min(_frame_bound(i + 1, sr, fp), len(xs))
-        if e > s:
-            src_rms[i] = float(np.sqrt(np.mean(xs[s:e] ** 2)))
+    with _perf_span("seg.src_rms"):
+        src_audio = vl.WAVAudio.from_file(audio_path, mono=True)
+        xs = np.asarray(src_audio.data, dtype=np.float64)
+        if src_audio.sample_rate != sr:
+            xs = _resample_1d(xs, int(round(len(xs) * sr / src_audio.sample_rate)))
+        src_rms = np.zeros(len(f0), dtype=np.float64)
+        for i in range(len(f0)):
+            s = _frame_bound(i, sr, fp)
+            e = min(_frame_bound(i + 1, sr, fp), len(xs))
+            if e > s:
+                src_rms[i] = float(np.sqrt(np.mean(xs[s:e] ** 2)))
 
     # Frame selection = voiced frames + unvoiced frames with energy:
     #   · first trim "f0 voiced but no breath/no spectral energy" near-silent fake
@@ -1788,12 +1794,13 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
               f"(scale={AP_SCALE}, max={AP_MAX})")
 
     # Breath: sliced precisely at the voiced-frame sample boundaries and concatenated (length = voiced frame count × frame period)
-    pieces = []
-    for i in idx:
-        s = _frame_bound(i, sr, fp)
-        e = _frame_bound(i + 1, sr, fp)
-        pieces.append(breath_all[s:e])
-    breath_v = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float64)
+    with _perf_span("seg.breath_slice"):
+        pieces = []
+        for i in idx:
+            s = _frame_bound(i, sr, fp)
+            e = _frame_bound(i + 1, sr, fp)
+            pieces.append(breath_all[s:e])
+        breath_v = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float64)
 
     print(f"    {len(f0)} frames → {len(f0_v)} voiced frames "
           f"({len(f0_v) * fp:.0f}ms), breath {len(breath_v)} samples")
@@ -1801,9 +1808,10 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     # Breath follows this segment's pitch
     if BREATH_FOLLOW_PITCH and len(breath_v) > 4 and abs(semitones) > 1e-6:
         ratio = 2.0 ** (semitones / 12.0)
-        breath_v = _phase_vocoder_pitch_shift(
-            breath_v, sr, ratio,
-            frame_ms=BREATH_PV_FRAME_MS, hop_ms=BREATH_PV_HOP_MS)
+        with _perf_span("seg.breath_pvocoder"):
+            breath_v = _phase_vocoder_pitch_shift(
+                breath_v, sr, ratio,
+                frame_ms=BREATH_PV_FRAME_MS, hop_ms=BREATH_PV_HOP_MS)
         print(f"    [Breath pitch follow] semitones={semitones:.2f}, ratio={ratio:.4f}")
 
     # Jitter characteristics measured on this segment's source audio (when extending duration, continue the period/amplitude fluctuation using the real jitter)
@@ -1892,7 +1900,7 @@ def synthesize(segments,
     Parameters
     ----
     segments : list[dict]
-        Segment list (>=2 segments, spliced in order). Each segment requires
+        Segment list (>=1 segment, spliced in order). Each segment requires
         audio / src_pitch / dst_pitch / beat_start / beat_end and optionally
         transition / keep_unvoiced_head / follow_ratio / band_ratios / breathy_thr.
     output_path : str
@@ -1920,8 +1928,8 @@ def synthesize(segments,
     prosses_breath's intermediate file paths so breath splicing still reads the
     right files under a custom output directory.
     """
-    if not segments or len(segments) < 2:
-        raise ValueError("segments requires at least 2 entries")
+    if not segments:
+        raise ValueError("segments requires at least 1 entry")
     output_path = os.path.abspath(output_path)
     out_dir = os.path.dirname(output_path)
     os.makedirs(out_dir, exist_ok=True)
@@ -2044,30 +2052,33 @@ def run() -> vl.WAVAudio:
               f"t={idx[0] / sr:.3f}~{idx[-1] / sr:.3f}s)")
         return np.where(bad, 0.0, arr)
 
-    if len(SEGMENTS) < 2:
-        raise ValueError(f"SEGMENTS requires at least 2 entries, currently {len(SEGMENTS)}")
+    if not SEGMENTS:
+        raise ValueError("SEGMENTS requires at least 1 entry")
 
     # 1) Per-segment processing: decomposition -> pitch shift -> voiced-frame extraction
     segs = []
-    for i, seg in enumerate(SEGMENTS):
-        for req in ('audio', 'src_pitch', 'dst_pitch', 'beat_start', 'beat_end'):
-            if req not in seg:
-                raise ValueError(f"SEGMENTS[{i}] is missing required key '{req}'"
-                                 f" (strict beat mode: every segment must give its start/end beats beat_start/beat_end)")
-        print(f"\n===== segment {i + 1}/{len(SEGMENTS)} =====")
-        segs.append(_decompose_and_shift(
-            seg['audio'], seg['src_pitch'], seg['dst_pitch'],
-            keep_first_half_unvoiced=bool(seg.get('keep_unvoiced_head', False)),
-            follow_ratio=seg.get('follow_ratio'),
-            band_ratios=seg.get('band_ratios'),
-            breathy_thr=seg.get('breathy_thr'),
-        ))
+    with _perf_span("stage.segment_decompose"):
+        for i, seg in enumerate(SEGMENTS):
+            for req in ('audio', 'src_pitch', 'dst_pitch', 'beat_start', 'beat_end'):
+                if req not in seg:
+                    raise ValueError(f"SEGMENTS[{i}] is missing required key '{req}'"
+                                     f" (strict beat mode: every segment must give its start/end beats beat_start/beat_end)")
+            _perf_mark(f"segment {i + 1}/{len(SEGMENTS)}")
+            print(f"\n===== segment {i + 1}/{len(SEGMENTS)} =====")
+            segs.append(_decompose_and_shift(
+                seg['audio'], seg['src_pitch'], seg['dst_pitch'],
+                keep_first_half_unvoiced=bool(seg.get('keep_unvoiced_head', False)),
+                follow_ratio=seg.get('follow_ratio'),
+                band_ratios=seg.get('band_ratios'),
+                breathy_thr=seg.get('breathy_thr'),
+            ))
     n_seg = len(segs)
 
     # 1.5) Beat layout: anchor each segment's onset to the beat grid; overlaps/rests are
     #      derived automatically from the beat ranges (see _apply_beat_timeline)
-    _sr0, _fp0 = segs[0]['sr'], segs[0]['fp']
-    beat_overs, beat_protects = _apply_beat_timeline(segs, SEGMENTS, _sr0, _fp0)
+    with _perf_span("stage.beat_timeline"):
+        _sr0, _fp0 = segs[0]['sr'], segs[0]['fp']
+        beat_overs, beat_protects = _apply_beat_timeline(segs, SEGMENTS, _sr0, _fp0)
 
     # 2) Cross-segment consistency checks
     sr, fp = segs[0]['sr'], segs[0]['fp']
@@ -2107,20 +2118,21 @@ def run() -> vl.WAVAudio:
 
     # 5) Frame-domain Bézier fold splicing: the pairwise join function is folded repeatedly along the segment order; N=2 matches the old behavior
     out = {}
-    for key in ('f0', 'gi', 'sp', 'ap'):
-        if any(s[key] is None for s in segs):
-            if key == 'gi':
-                print("[Warn] some segments lack glottal_intensity → gi is omitted this run")
-            out[key] = None
-            continue
-        acc = segs[0][key]
-        for i in range(1, n_seg):
-            # f0 needs a dedicated splice: a linear 0↔voiced blend invents a false fundamental
-            # inside the overlap and the vocoder turns it into a burst.
-            acc = (_blend_overlap_f0 if key == 'f0' else _blend_overlap)(
-                acc, segs[i][key], overs[i],
-                **({} if key == 'f0' else {'protect_head': protects[i]}))
-        out[key] = acc
+    with _perf_span("stage.frame_splice"):
+        for key in ('f0', 'gi', 'sp', 'ap'):
+            if any(s[key] is None for s in segs):
+                if key == 'gi':
+                    print("[Warn] some segments lack glottal_intensity → gi is omitted this run")
+                out[key] = None
+                continue
+            acc = segs[0][key]
+            for i in range(1, n_seg):
+                # f0 needs a dedicated splice: a linear 0↔voiced blend invents a false fundamental
+                # inside the overlap and the vocoder turns it into a burst.
+                acc = (_blend_overlap_f0 if key == 'f0' else _blend_overlap)(
+                    acc, segs[i][key], overs[i],
+                    **({} if key == 'f0' else {'protect_head': protects[i]}))
+            out[key] = acc
     f0_out, gi_out, sp_out, ap_out = out['f0'], out['gi'], out['sp'], out['ap']
     # Probe: value sanity right after the multi-segment Bézier fold (before any sanitizing)
     _probe("spliced·f0", f0_out, fp)
@@ -2170,8 +2182,8 @@ def run() -> vl.WAVAudio:
     # 5.5) Per-frame pitch line: the spliced result stays as-is, but every frame's pitch
     #      is strictly overridden by the curve; frames marked None = silent frames
     #      (forced mute later, including breath)
-    f0_out, pl_silent = _apply_pitch_line(f0_out, n_out, sr, fp, PITCH_LINE)
-
+    with _perf_span("stage.pitch_line"):
+        f0_out, pl_silent = _apply_pitch_line(f0_out, n_out, sr, fp, PITCH_LINE)
     # 5.6) f0 sanity audit before synthesis: an isolated 0 inside a voiced run makes the
     #      vocoder switch to unvoiced for a single frame and back -> audible pop.  Repair it.
     n_nan = int(np.count_nonzero(~np.isfinite(f0_out)))
@@ -2199,7 +2211,8 @@ def run() -> vl.WAVAudio:
     #      the pitch line strictly overrides every covered f0 frame, so any jitter applied
     #      earlier (duration fitting, decomposition) is discarded and the slider would have
     #      no audible effect.
-    f0_out, sp_out, gi_out = _apply_extra_jitter_shimmer(f0_out, sp_out, gi_out, fp)
+    with _perf_span("stage.jitter_shimmer"):
+        f0_out, sp_out, gi_out = _apply_extra_jitter_shimmer(f0_out, sp_out, gi_out, fp)
     if JITTER_EXTRA_PCT > 0.0 or SHIMMER_EXTRA_PCT > 0.0:
         print(f"[Jitter/Shimmer] extra depth jitter={JITTER_EXTRA_PCT:.3f}%  "
               f"shimmer={SHIMMER_EXTRA_PCT:.3f}% (applied after the pitch line)")
@@ -2211,44 +2224,47 @@ def run() -> vl.WAVAudio:
     # Only TRUE SILENT frames with very low source energy are faded out (criterion:
     # 1% of the voiced median RMS, consistent with the voiced criterion in
     # _refine_voiced_mask); unvoiced frames take part in synthesis as usual.
-    src_rms_out = segs[0]['src_rms']
-    for i in range(1, n_seg):
-        src_rms_out = np.concatenate([src_rms_out, segs[i]['src_rms'][overs[i]:]])
-    src_rms_out = _align_samples(src_rms_out, n_out)
-    _vmed = float(np.median(src_rms_out[f0_out > 0])) if np.any(f0_out > 0) else 0.0
-    keep = ((f0_out > 0.0) | (src_rms_out >= _vmed * 0.01)) & ~pl_silent
-    unvoiced_gain = keep.astype(np.float64)
-    ramp = max(3, int(round(30.0 / fp)))            # ~30ms smoothing window
-    if ramp % 2 == 0:
-        ramp += 1
-    unvoiced_gain = np.convolve(np.pad(unvoiced_gain, ramp // 2, mode="edge"),
-                                np.ones(ramp) / ramp, mode="valid")
-    # The smoothing window leaks gain toward the silent side -> hard-zero on true silent frames so rest regions have strictly no residue.
-    unvoiced_gain = np.where(keep, unvoiced_gain, 0.0)
-    n_unv = int((~keep).sum())
+    with _perf_span("stage.unvoiced_gain"):
+        src_rms_out = segs[0]['src_rms']
+        for i in range(1, n_seg):
+            src_rms_out = np.concatenate([src_rms_out, segs[i]['src_rms'][overs[i]:]])
+        src_rms_out = _align_samples(src_rms_out, n_out)
+        _vmed = float(np.median(src_rms_out[f0_out > 0])) if np.any(f0_out > 0) else 0.0
+        keep = ((f0_out > 0.0) | (src_rms_out >= _vmed * 0.01)) & ~pl_silent
+        unvoiced_gain = keep.astype(np.float64)
+        ramp = max(3, int(round(30.0 / fp)))            # ~30ms smoothing window
+        if ramp % 2 == 0:
+            ramp += 1
+        unvoiced_gain = np.convolve(np.pad(unvoiced_gain, ramp // 2, mode="edge"),
+                                    np.ones(ramp) / ramp, mode="valid")
+        # The smoothing window leaks gain toward the silent side -> hard-zero on true silent frames so rest regions have strictly no residue.
+        unvoiced_gain = np.where(keep, unvoiced_gain, 0.0)
+        n_unv = int((~keep).sum())
     _probe("gain·unvoiced", unvoiced_gain, fp)
 
     # 6) Breath sample-level fold splicing (same time base as the frame-domain fold)
-    breath_out = segs[0]['breath']
-    frames_acc = m[0]
-    seam_info = []                     # (seam index, accumulator length in samples before folding)
-    for i in range(1, n_seg):
-        seam_info.append((i, len(breath_out)))
-        breath_out = _splice_breath(breath_out, segs[i]['breath'],
-                                    frames_acc, m[i], overs[i], sr, fp,
-                                    protect_head=protects[i])
-        frames_acc += m[i] - overs[i]
-    target_samples = int(n_out * fp / 1000.0 * sr)
-    breath_out = _align_samples(breath_out, target_samples)
+    with _perf_span("stage.breath_splice"):
+        breath_out = segs[0]['breath']
+        frames_acc = m[0]
+        seam_info = []                     # (seam index, accumulator length in samples before folding)
+        for i in range(1, n_seg):
+            seam_info.append((i, len(breath_out)))
+            breath_out = _splice_breath(breath_out, segs[i]['breath'],
+                                        frames_acc, m[i], overs[i], sr, fp,
+                                        protect_head=protects[i])
+            frames_acc += m[i] - overs[i]
+        target_samples = int(n_out * fp / 1000.0 * sr)
+        breath_out = _align_samples(breath_out, target_samples)
 
     # 6.1) Automatic plosive detection: duck only when the three features indicate a plosive; no plosive means no ducking
-    plosive_gain, plosive_seed = _plosive_gain(
-        breath_out, f0_out, sr, fp,
-        PLOSIVE_RATIO, PLOSIVE_GAIN, PLOSIVE_SMOOTH,
-        PLOSIVE_MARGIN_HEAD, PLOSIVE_MARGIN_TAIL,
-        PLOSIVE_KEEP_BURST, PLOSIVE_MIN_GRAD_DB,
-        PLOSIVE_MIN_CREST, PLOSIVE_MAX_VALLEY)
-    unvoiced_gain = unvoiced_gain * plosive_gain
+    with _perf_span("stage.plosive_detect"):
+        plosive_gain, plosive_seed = _plosive_gain(
+            breath_out, f0_out, sr, fp,
+            PLOSIVE_RATIO, PLOSIVE_GAIN, PLOSIVE_SMOOTH,
+            PLOSIVE_MARGIN_HEAD, PLOSIVE_MARGIN_TAIL,
+            PLOSIVE_KEEP_BURST, PLOSIVE_MIN_GRAD_DB,
+            PLOSIVE_MIN_CREST, PLOSIVE_MAX_VALLEY)
+        unvoiced_gain = unvoiced_gain * plosive_gain
     _probe("gain·plosive", plosive_gain, fp)
     _probe("breath·spliced", breath_out, fp)
 
@@ -2274,32 +2290,34 @@ def run() -> vl.WAVAudio:
 
     # 6.5) Save each segment's source breath + the spliced frame text
     saved = []
-    for i, s in enumerate(segs):
-        path = OUTPUT_BREATH_FMT.format(i)
-        vl.WAVAudio(data=s['breath'], sample_rate=sr).save(path, bit_depth=BIT_DEPTH)
-        saved.append(f"#{i + 1}:{path} ({len(s['breath'])}smp)")
+    with _perf_span("stage.save_segment_breath"):
+        for i, s in enumerate(segs):
+            path = OUTPUT_BREATH_FMT.format(i)
+            vl.WAVAudio(data=s['breath'], sample_rate=sr).save(path, bit_depth=BIT_DEPTH)
+            saved.append(f"#{i + 1}:{path} ({len(s['breath'])}smp)")
     print("[Save] source breath " + ", ".join(saved))
 
-    cols = [np.arange(n_out, dtype=np.float64), f0_out]
-    legend = ["frame", "f0"]
-    if gi_out is not None:
-        cols.append(np.asarray(gi_out, dtype=np.float64))
-        legend.append("gi")
-    if sp_out is not None:
-        cols.extend(np.asarray(sp_out, dtype=np.float64).T)
-        legend.extend(f"sp{i}" for i in range(sp_out.shape[1]))
-    if ap_out is not None:
-        cols.extend(np.asarray(ap_out, dtype=np.float64).T)
-        legend.extend(f"ap{i}" for i in range(ap_out.shape[1]))
-    X = np.column_stack(cols)
-    with open(OUTPUT_FRAMES_TXT, "w", encoding="utf-8") as fh:
-        fh.write("# VocalB1 spliced frames (after multi-segment Bézier overlap join)\n")
-        fh.write(f"# frames={n_out}  n_seg={n_seg}  "
-                 f"seg_frames={','.join(str(v) for v in m)}  "
-                 f"over_frames={','.join(str(v) for v in overs)}  "
-                 f"sr={sr}  fp_ms={fp}\n")
-        fh.write("# " + "\t".join(legend) + "\n")
-        np.savetxt(fh, X, fmt="%.6g", delimiter="\t")
+    with _perf_span("stage.save_frames_txt"):
+        cols = [np.arange(n_out, dtype=np.float64), f0_out]
+        legend = ["frame", "f0"]
+        if gi_out is not None:
+            cols.append(np.asarray(gi_out, dtype=np.float64))
+            legend.append("gi")
+        if sp_out is not None:
+            cols.extend(np.asarray(sp_out, dtype=np.float64).T)
+            legend.extend(f"sp{i}" for i in range(sp_out.shape[1]))
+        if ap_out is not None:
+            cols.extend(np.asarray(ap_out, dtype=np.float64).T)
+            legend.extend(f"ap{i}" for i in range(ap_out.shape[1]))
+        X = np.column_stack(cols)
+        with open(OUTPUT_FRAMES_TXT, "w", encoding="utf-8") as fh:
+            fh.write("# VocalB1 spliced frames (after multi-segment Bézier overlap join)\n")
+            fh.write(f"# frames={n_out}  n_seg={n_seg}  "
+                     f"seg_frames={','.join(str(v) for v in m)}  "
+                     f"over_frames={','.join(str(v) for v in overs)}  "
+                     f"sr={sr}  fp_ms={fp}\n")
+            fh.write("# " + "\t".join(legend) + "\n")
+            np.savetxt(fh, X, fmt="%.6g", delimiter="\t")
     print(f"[Save] spliced frames: {OUTPUT_FRAMES_TXT}  ({X.shape[0]} rows × {X.shape[1]} cols)")
 
     # 6) Build the synthesis objects
@@ -2320,23 +2338,25 @@ def run() -> vl.WAVAudio:
     breath_zero = vl.WAVAudio(data=np.zeros(target_samples, dtype=np.float64),
                               sample_rate=sr)
     vs = VocalSynthesizer(model_type=MODEL_TYPE)
-    output = vs.synthesize(
-        f0=f0_obj,
-        glottal=gl_obj,
-        breath=breath_zero,
-        match_rms_to=MATCH_RMS_TO,
-        add_breath=False,
-    )
+    with _perf_span("stage.main_synthesis"):
+        output = vs.synthesize(
+            f0=f0_obj,
+            glottal=gl_obj,
+            breath=breath_zero,
+            match_rms_to=MATCH_RMS_TO,
+            add_breath=False,
+        )
 
     # Time-domain fade-out for true silent frames: interpolate the per-frame gain to
     # the sample domain and multiply it onto the synthesized main signal, removing
     # residue in rest regions and the hard jump from 0 to voiced (unvoiced/fricative
     # frame gains are always 1 and are unaffected).
-    out_data = np.asarray(output.data, dtype=np.float64)
-    out_data = _guard_samples(out_data, "synthesized")
-    _probe_samples("synthesized", out_data, sr, fp)
-    ug_smp = _resample_1d(unvoiced_gain, len(out_data))
-    out_data = out_data * ug_smp
+    with _perf_span("stage.mute_gain"):
+        out_data = np.asarray(output.data, dtype=np.float64)
+        out_data = _guard_samples(out_data, "synthesized")
+        _probe_samples("synthesized", out_data, sr, fp)
+        ug_smp = _resample_1d(unvoiced_gain, len(out_data))
+        out_data = out_data * ug_smp
     _probe_samples("after-mute", out_data, sr, fp)
     print(f"[Mute] {n_unv} true silent frames zeroed in the time domain with a smooth fade-in"
           f" (unvoiced/fricative frames kept) (ramp≈{ramp} frames/{ramp*fp:.0f}ms)")
@@ -2346,16 +2366,17 @@ def run() -> vl.WAVAudio:
     #      per-frame energy envelope to move the real attack shape onto the synthesized main signal
     if PLOSIVE_ENV_TRANSPLANT and np.any(plosive_seed):
         # The source envelope fold was already computed above on the same time base (src_rms_out); reuse it directly here
-        main_rms = np.zeros(n_out, dtype=np.float64)
-        for i in range(n_out):
-            s = _frame_bound(i, sr, fp)
-            e = min(_frame_bound(i + 1, sr, fp), len(out_data))
-            if e > s:
-                main_rms[i] = float(np.sqrt(np.mean(out_data[s:e] ** 2)))
-        env_gain = _transient_env_gain(main_rms, src_rms_out, plosive_seed,
-                                       PLOSIVE_ENV_HEAD, PLOSIVE_ENV_TAIL,
-                                       PLOSIVE_ENV_GAIN_MIN, PLOSIVE_ENV_GAIN_MAX)
-        out_data = out_data * _frame_gain_to_samples(env_gain, sr, fp, len(out_data))
+        with _perf_span("stage.transient_transplant"):
+            main_rms = np.zeros(n_out, dtype=np.float64)
+            for i in range(n_out):
+                s = _frame_bound(i, sr, fp)
+                e = min(_frame_bound(i + 1, sr, fp), len(out_data))
+                if e > s:
+                    main_rms[i] = float(np.sqrt(np.mean(out_data[s:e] ** 2)))
+            env_gain = _transient_env_gain(main_rms, src_rms_out, plosive_seed,
+                                           PLOSIVE_ENV_HEAD, PLOSIVE_ENV_TAIL,
+                                           PLOSIVE_ENV_GAIN_MIN, PLOSIVE_ENV_GAIN_MAX)
+            out_data = out_data * _frame_gain_to_samples(env_gain, sr, fp, len(out_data))
         pk = float(np.max(np.abs(out_data)))
         print(f"[Plosive transient transplant] main-signal peak after transplant {pk:.3f}"
               f"{' (close to clipping; reduce PLOSIVE_ENV_GAIN_MAX)' if pk > 0.95 else ''}")
@@ -2364,18 +2385,20 @@ def run() -> vl.WAVAudio:
     if not ADD_BREATH:
         print("[Breath] ADD_BREATH=False → skipping breath generation and mixing (output is purely glottal)")
     else:
-        breath_concat, br_sr = prosses_breath.build_concat_breath()
-        assert br_sr == sr, f"breath sample rate {br_sr} does not match the main signal {sr}"
-        breath_concat = _guard_samples(breath_concat, "breath")
+        with _perf_span("stage.breath_build"):
+            breath_concat, br_sr = prosses_breath.build_concat_breath()
+            assert br_sr == sr, f"breath sample rate {br_sr} does not match the main signal {sr}"
+            breath_concat = _guard_samples(breath_concat, "breath")
         _probe_samples("breath·concat", breath_concat, sr, fp)
 
         # 7.1) Breath spectral coupling: shape the breath spectral envelope to the main signal sp (SP frames are 1025 bins,
         #      i.e. the output grid of pyworld cheaptrick's default fft_size=2048), removing formant misalignment and the disjointed feel
         if BREATH_SHAPE_TO_MAIN and sp_out is not None:
             r_before = float(np.sqrt(np.mean(breath_concat ** 2)))
-            breath_concat = _match_breath_envelope(
-                breath_concat, sp_out, sr, fp, 2048, BREATH_SHAPE_BANDS,
-                BREATH_SHAPE_GAIN_MIN, BREATH_SHAPE_GAIN_MAX)
+            with _perf_span("stage.breath_envelope"):
+                breath_concat = _match_breath_envelope(
+                    breath_concat, sp_out, sr, fp, 2048, BREATH_SHAPE_BANDS,
+                    BREATH_SHAPE_GAIN_MIN, BREATH_SHAPE_GAIN_MAX)
             r_after = float(np.sqrt(np.mean(breath_concat ** 2)))
             print(f"[Breath spectral coupling] spectral envelope shaped to the main-signal sp "
                   f"({BREATH_SHAPE_BANDS} log bands, gain limited to "
@@ -2409,11 +2432,12 @@ def run() -> vl.WAVAudio:
               f" (including breath/plosive layers, {fade}-frame/{fade * fp:.0f}ms fade at both edges)")
 
     # 8) Start/end fade in/out + save
-    out_data = _guard_samples(out_data, "final")
-    _probe_samples("final", out_data, sr, fp)
-    out_data = _edge_fade(out_data, sr, EDGE_FADE_MS)
-    final = vl.WAVAudio(data=out_data, sample_rate=sr)
-    final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)
+    with _perf_span("stage.final_save"):
+        out_data = _guard_samples(out_data, "final")
+        _probe_samples("final", out_data, sr, fp)
+        out_data = _edge_fade(out_data, sr, EDGE_FADE_MS)
+        final = vl.WAVAudio(data=out_data, sample_rate=sr)
+        final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)
     print(f"[Done] saved: {OUTPUT_WAV}  (duration {final.duration:.2f}s, RMS={final.rms:.4f})")
 
     # 9) Clean up intermediate artifacts (per-segment breath wav + spliced frame txt)

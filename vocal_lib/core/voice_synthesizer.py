@@ -10,6 +10,7 @@ from .vocal_tract_filter import (
 )
 
 from .pyworld_processor import synthesize_pyworld
+from ..perf import span
 
 
 class VoiceSynthesizer:
@@ -177,33 +178,35 @@ class VoiceSynthesizer:
         Returns:
             synthesized speech signal
         """
-        synthesized = synthesize_pyworld(f0_sequence, sp, ap, self.sample_rate)
+        with span("synth.pyworld"):
+            synthesized = synthesize_pyworld(f0_sequence, sp, ap, self.sample_rate)
 
         if synthesized is None or len(synthesized) == 0:
             return np.array([])
 
-        # 1. RMS matching or peak normalization (first bring it up to the target volume)
-        if target_rms is not None and target_rms > 0:
-            current_rms = np.sqrt(np.mean(synthesized ** 2))
-            if current_rms > 0:
-                synthesized = synthesized * (target_rms / current_rms)
-        else:
-            peak = np.max(np.abs(synthesized))
-            if peak > 0:
-                synthesized = synthesized / peak * 0.9
+        with span("synth.level_control"):
+            # 1. RMS matching or peak normalization (first bring it up to the target volume)
+            if target_rms is not None and target_rms > 0:
+                current_rms = np.sqrt(np.mean(synthesized ** 2))
+                if current_rms > 0:
+                    synthesized = synthesized * (target_rms / current_rms)
+            else:
+                peak = np.max(np.abs(synthesized))
+                if peak > 0:
+                    synthesized = synthesized / peak * 0.9
 
-        # 2. tanh soft clip for peaks above the threshold
-        # Compared with hard limiting (/ max * 0.9), soft clip only compresses the part
-        # above the threshold, without pulling down the whole signal and raising the
-        # relative noise floor
-        threshold = 0.85
-        over_mask = np.abs(synthesized) > threshold
-        if np.any(over_mask):
-            sign = np.sign(synthesized[over_mask])
-            compressed = threshold + (1.0 - threshold) * np.tanh(
-                (np.abs(synthesized[over_mask]) - threshold) / (1.0 - threshold)
-            )
-            synthesized[over_mask] = sign * compressed
+            # 2. tanh soft clip for peaks above the threshold
+            # Compared with hard limiting (/ max * 0.9), soft clip only compresses the part
+            # above the threshold, without pulling down the whole signal and raising the
+            # relative noise floor
+            threshold = 0.85
+            over_mask = np.abs(synthesized) > threshold
+            if np.any(over_mask):
+                sign = np.sign(synthesized[over_mask])
+                compressed = threshold + (1.0 - threshold) * np.tanh(
+                    (np.abs(synthesized[over_mask]) - threshold) / (1.0 - threshold)
+                )
+                synthesized[over_mask] = sign * compressed
 
         return synthesized
 

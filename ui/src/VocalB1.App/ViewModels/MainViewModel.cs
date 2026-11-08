@@ -9,8 +9,8 @@ using Microsoft.Win32;
 using VocalB1.App.Controls;
 using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
-using VocalB1.App.Views;
 using VocalB1.Core.Abstractions;
+using VocalB1.Core.Chorus;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Library;
 using VocalB1.Core.Models;
@@ -79,6 +79,9 @@ public sealed class MainViewModel : ObservableObject
     private bool _isLightTheme;
     private LanguageRow? _selectedLanguage;
     private bool _languageReady;
+    private int _chorusRevision = 1;
+    private ChorusSingerRow? _selectedChorusSinger;
+    private ChorusFormationPreset? _selectedChorusFormation;
 
     private UserDictionary? _dictionary;
     private string? _dictionaryPath;
@@ -134,6 +137,15 @@ public sealed class MainViewModel : ObservableObject
         ImportTimbreCommand = new RelayCommand(_ => ImportTimbre());
         OpenHelpCommand = new RelayCommand(_ => OpenHelp());
 
+        AddChorusSingerCommand = new RelayCommand(_ => AddChorusSinger());
+        RemoveChorusSingerCommand = new RelayCommand(
+            _ => RemoveChorusSinger(), _ => _selectedChorusSinger is not null);
+        ImportChorusFormationCommand = new RelayCommand(_ => ImportChorusFormation());
+        ApplyChorusFormationPresetCommand = new RelayCommand(
+            _ => ApplyChorusFormationPreset(), _ => _selectedChorusFormation is not null);
+        JumpToChorusTrackCommand = new RelayCommand(
+            _ => JumpToSingerTrack(), _ => SelectedSingerTrack is not null);
+
         // The playhead position is converted from the player position to beats at 30fps; the piano roll scrolls the track accordingly.
         _playheadTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
@@ -162,6 +174,139 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<DictionaryEntryRow> DictionaryEntries { get; } = [];
     public ObservableCollection<LogEntry> Logs { get; } = [];
     public ObservableCollection<VoicebankOption> Voicebanks { get; } = [];
+    public ObservableCollection<ChorusSingerRow> ChorusSingers { get; } = [];
+    public ObservableCollection<ChorusFormationPreset> ChorusFormations { get; } = [];
+
+    /// <summary>Chorus stage, microphone, singers and imported formations; persisted with the project.</summary>
+    public ChorusDocument Chorus => _project.Chorus;
+
+    public bool HasChorusSingers => ChorusSingers.Count > 0;
+
+    public bool HasChorusFormations => ChorusFormations.Count > 0;
+
+    /// <summary>Imported formation selected in the chorus tab; applied with the matching command.</summary>
+    public ChorusFormationPreset? SelectedChorusFormation
+    {
+        get => _selectedChorusFormation;
+        set
+        {
+            if (!SetProperty(ref _selectedChorusFormation, value))
+                return;
+            (ApplyChorusFormationPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Redraw token for the stage editor; incremented whenever the stage model changes.</summary>
+    public int ChorusRevision => _chorusRevision;
+
+    public ChorusSingerRow? SelectedChorusSinger
+    {
+        get => _selectedChorusSinger;
+        set
+        {
+            if (!SetProperty(ref _selectedChorusSinger, value))
+                return;
+            OnPropertyChanged(nameof(SelectedChorusSingerModel));
+            OnPropertyChanged(nameof(SelectedSingerTrack));
+            OnPropertyChanged(nameof(SelectedSingerText));
+            (RemoveChorusSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (JumpToChorusTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Selected singer model handed to the stage editor for drawing and dragging.</summary>
+    public ChorusSinger? SelectedChorusSingerModel => _selectedChorusSinger?.Model;
+
+    /// <summary>Track bound to the selected singer; setting it rebinds that singer's score.</summary>
+    public TrackRow? SelectedSingerTrack
+    {
+        get
+        {
+            var trackId = _selectedChorusSinger?.Model.TrackId;
+            return trackId is null ? null : Tracks.FirstOrDefault(t => t.Model.Id == trackId);
+        }
+        set
+        {
+            var singer = _selectedChorusSinger?.Model;
+            if (singer is null || value is null || singer.TrackId == value.Model.Id)
+                return;
+
+            PushUndo();
+            singer.TrackId = value.Model.Id;
+            _selectedChorusSinger?.Refresh();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SelectedSingerText));
+            TouchChorus();
+            AddLog("info", $"Singer \"{singer.Name}\" now uses track \"{value.Name}\".");
+        }
+    }
+
+    public string SelectedSingerText
+    {
+        get
+        {
+            if (_selectedChorusSinger is null)
+                return "未选择歌手（单击舞台上的歌手）";
+
+            var track = SelectedSingerTrack;
+            return track is null
+                ? $"{_selectedChorusSinger.Name} · 未绑定音轨"
+                : $"{_selectedChorusSinger.Name} · 音轨：{track.Name}";
+        }
+    }
+
+    public string ChorusStageInfo =>
+        $"舞台 {Chorus.StageWidth:0.#} m × {Chorus.StageDepth:0.#} m · "
+        + $"麦克风 ({Chorus.MicX:0.0}, {Chorus.MicY:0.0})";
+
+    /// <summary>Stage width in meters, editable from the chorus panel; only a 1 m minimum is enforced.</summary>
+    public double StageWidth
+    {
+        get => Chorus.StageWidth;
+        set
+        {
+            var width = Math.Max(1, Math.Round(value, 2));
+            if (Math.Abs(Chorus.StageWidth - width) < 1e-6)
+                return;
+
+            BeginChorusEdit();
+            Chorus.StageWidth = width;
+            Chorus.MicX = Math.Round(Math.Clamp(Chorus.MicX, -width / 2, width / 2), 2);
+            foreach (var keyframe in Chorus.Singers.SelectMany(s => s.Path))
+                keyframe.X = Math.Round(ChorusMath.ClampX(keyframe.X, width), 2);
+            CommitChorusEdit();
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Stage depth in meters, editable from the chorus panel; only a 1 m minimum is enforced.</summary>
+    public double StageDepth
+    {
+        get => Chorus.StageDepth;
+        set
+        {
+            var depth = Math.Max(1, Math.Round(value, 2));
+            if (Math.Abs(Chorus.StageDepth - depth) < 1e-6)
+                return;
+
+            BeginChorusEdit();
+            Chorus.StageDepth = depth;
+            Chorus.MicY = Math.Round(Math.Clamp(Chorus.MicY, -depth / 2, 0), 2);
+            foreach (var keyframe in Chorus.Singers.SelectMany(s => s.Path))
+                keyframe.Y = Math.Round(ChorusMath.ClampY(keyframe.Y, depth), 2);
+            CommitChorusEdit();
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Top-level tab: 0 = track editor, 1 = chorus.</summary>
+    private int _mainTabIndex;
+
+    public int MainTabIndex
+    {
+        get => _mainTabIndex;
+        set => SetProperty(ref _mainTabIndex, value);
+    }
 
     /// <summary>声库目录下与音频同级的 icon.jpg，显示在顶栏「新建」旁。</summary>
     public ImageSource? LibraryIcon => _libraryIcon;
@@ -262,7 +407,7 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>True when the project differs from the last loaded/saved snapshot (prompted on load and on close).</summary>
     public bool HasUnsavedChanges =>
-        !string.Equals(_savedSnapshot, ProjectJson.Serialize(_project), StringComparison.Ordinal);
+        !string.Equals(_savedSnapshot, ProjectJson.Serialize(_project, _services.Options.RepositoryRoot), StringComparison.Ordinal);
 
     private string VoicebankRoot => Path.Combine(_services.Options.RepositoryRoot, "voicebank");
 
@@ -360,19 +505,6 @@ public sealed class MainViewModel : ObservableObject
             if (_activeTrack.Settings.BitDepth == value)
                 return;
             _activeTrack.Settings.BitDepth = value;
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Vocal balance (0-100): larger values put more energy into the right channel; 50 is centered.</summary>
-    public double StereoBalance
-    {
-        get => _activeTrack.Settings.StereoBalance;
-        set
-        {
-            if (_activeTrack.Settings.StereoBalance == value)
-                return;
-            _activeTrack.Settings.StereoBalance = value;
             OnPropertyChanged();
         }
     }
@@ -1130,6 +1262,11 @@ public sealed class MainViewModel : ObservableObject
     public ICommand StopCommand { get; }
     public ICommand ToggleThemeCommand { get; }
     public ICommand ImportLanguageCommand { get; }
+    public ICommand AddChorusSingerCommand { get; }
+    public ICommand RemoveChorusSingerCommand { get; }
+    public ICommand ImportChorusFormationCommand { get; }
+    public ICommand ApplyChorusFormationPresetCommand { get; }
+    public ICommand JumpToChorusTrackCommand { get; }
 
     /// <summary>Theme button text: shows the mode that will be applied when clicked.</summary>
     public string ThemeToggleText => LanguageService.Translate(_isLightTheme ? "深色模式" : "浅色模式");
@@ -1352,7 +1489,7 @@ public sealed class MainViewModel : ObservableObject
         ProjectDocument project;
         try
         {
-            project = ProjectJson.Load(path);
+            project = ProjectJson.Load(path, _services.Options.RepositoryRoot);
         }
         catch (Exception ex)
         {
@@ -1411,9 +1548,9 @@ public sealed class MainViewModel : ObservableObject
     {
         try
         {
-            ProjectJson.Save(_project, path);
+            ProjectJson.Save(_project, path, _services.Options.RepositoryRoot);
             _projectPath = path;
-            _savedSnapshot = ProjectJson.Serialize(_project);
+            _savedSnapshot = ProjectJson.Serialize(_project, _services.Options.RepositoryRoot);
             OnPropertyChanged(nameof(ProjectPathText));
             StatusText = "已保存：" + Path.GetFileName(path);
             AddLog("info", "Project saved: " + path);
@@ -1458,10 +1595,20 @@ public sealed class MainViewModel : ObservableObject
         _selectedTrack = Tracks[0];
         OnPropertyChanged(nameof(SelectedTrack));
 
+        _selectedChorusSinger = null;
+        RebuildChorusRows();
+        RebuildChorusFormations();
+        _chorusRevision++;
+        OnPropertyChanged(nameof(ChorusRevision));
+        OnPropertyChanged(nameof(Chorus));
+        OnPropertyChanged(nameof(ChorusStageInfo));
+        OnPropertyChanged(nameof(StageWidth));
+        OnPropertyChanged(nameof(StageDepth));
+
         _bgmMixKey = null;
         RaiseBgmChanged();
         ActivateTrack(_project.Tracks[0]);
-        _savedSnapshot = ProjectJson.Serialize(_project);
+        _savedSnapshot = ProjectJson.Serialize(_project, _services.Options.RepositoryRoot);
         (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
         StatusText = "就绪";
     }
@@ -1587,6 +1734,15 @@ public sealed class MainViewModel : ObservableObject
         trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Tracks.Count - 1));
         _selectedTrack = Tracks.Count > 0 ? Tracks[trackIndex] : null;
         OnPropertyChanged(nameof(SelectedTrack));
+
+        RebuildChorusRows();
+        RebuildChorusFormations();
+        _chorusRevision++;
+        OnPropertyChanged(nameof(ChorusRevision));
+        OnPropertyChanged(nameof(Chorus));
+        OnPropertyChanged(nameof(ChorusStageInfo));
+        OnPropertyChanged(nameof(StageWidth));
+        OnPropertyChanged(nameof(StageDepth));
 
         if (_project.Tracks.Count > 0)
             ActivateTrack(_project.Tracks[Math.Clamp(trackIndex, 0, _project.Tracks.Count - 1)]);
@@ -1764,9 +1920,22 @@ public sealed class MainViewModel : ObservableObject
             ClearMergedRender();
         Tracks.Remove(row);
 
+        // Singers lose their score when the bound track disappears; they stay on stage as unbound.
+        var unbound = 0;
+        foreach (var singer in _project.Chorus.Singers.Where(s => s.TrackId == row.Model.Id))
+        {
+            singer.TrackId = null;
+            unbound++;
+        }
+
+        if (unbound > 0)
+            RebuildChorusRows();
+
         (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
         SelectedTrack = Tracks[Math.Min(index, Tracks.Count - 1)];
         AddLog("info", $"Track removed: {row.Name}");
+        if (unbound > 0)
+            AddLog("warn", $"{unbound} chorus singer(s) unbound because track \"{row.Name}\" was removed.");
     }
 
     /// <summary>Switch the active track: sync the library, segments, parameters and the last render result.</summary>
@@ -1782,7 +1951,6 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ApScale));
         OnPropertyChanged(nameof(ApMax));
         OnPropertyChanged(nameof(BitDepth));
-        OnPropertyChanged(nameof(StereoBalance));
         OnPropertyChanged(nameof(Jitter));
         OnPropertyChanged(nameof(Shimmer));
         RefreshParameterRows();
@@ -1822,6 +1990,236 @@ public sealed class MainViewModel : ObservableObject
         while (_project.Tracks.Any(t => string.Equals(t.Name, candidate, StringComparison.Ordinal)))
             candidate = $"{name} ({suffix++})";
         return candidate;
+    }
+
+    // ------------------------------------------------------------------
+    // Chorus mode: stage, microphone and singers
+    // ------------------------------------------------------------------
+
+    private void AddChorusSinger()
+    {
+        PushUndo();
+
+        var index = _project.Chorus.Singers.Count;
+        var positions = ChorusMath.DefaultPositions(index + 1, Chorus.StageWidth, Chorus.StageDepth);
+
+        // Pick the candidate slot that is farthest from the singers already on stage, so added singers
+        // never start stacked on top of each other.
+        var existing = _project.Chorus.Singers
+            .Select(s => ChorusMath.Evaluate(s.Path, 1))
+            .ToList();
+        var position = positions.Count == 0
+            ? (X: 0.0, Y: Chorus.StageDepth * 0.22)
+            : positions
+                .OrderByDescending(candidate => existing.Count == 0
+                    ? 0
+                    : existing.Min(p => ChorusMath.Distance(candidate.X, candidate.Y, p.X, p.Y)))
+                .First();
+
+        var singer = new ChorusSinger
+        {
+            Name = $"歌手 {index + 1}",
+            TrackId = _activeTrack.Id,
+            Path = [new ChorusKeyframe { Beat = 1, X = position.X, Y = position.Y }],
+        };
+        _project.Chorus.Singers.Add(singer);
+        RebuildChorusRows();
+        SelectedChorusSinger = ChorusSingers.FirstOrDefault(r => r.Model.Id == singer.Id);
+        TouchChorus();
+        AddLog("info", $"Chorus singer added: {singer.Name} -> {_activeTrack.Name}.");
+    }
+
+    private void RemoveChorusSinger()
+    {
+        if (_selectedChorusSinger is null)
+            return;
+
+        PushUndo();
+        var singer = _selectedChorusSinger.Model;
+        _project.Chorus.Singers.Remove(singer);
+        RebuildChorusRows();
+        TouchChorus();
+        AddLog("info", $"Chorus singer removed: {singer.Name}.");
+    }
+
+    private void JumpToSingerTrack()
+    {
+        if (SelectedSingerTrack is not { } track)
+            return;
+
+        SelectedTrack = track;
+        // The score being edited lives in the track editor tab, so bring the user there.
+        MainTabIndex = 0;
+    }
+
+    /// <summary>Loads formation presets (name + positions in meters) from one or more JSON files.</summary>
+    private void ImportChorusFormation()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入合唱队形",
+            Filter = "队形 JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        try
+        {
+            var imported = new List<ChorusFormationPreset>();
+            foreach (var path in dialog.FileNames)
+                imported.AddRange(ChorusFormationJson.Parse(File.ReadAllText(path)));
+            if (imported.Count == 0)
+                return;
+
+            PushUndo();
+            foreach (var preset in imported)
+            {
+                preset.Name = MakeUniqueFormationName(preset.Name);
+                _project.Chorus.Formations.Add(preset);
+            }
+
+            RebuildChorusFormations();
+            SelectedChorusFormation = ChorusFormations.FirstOrDefault(f => f.Id == imported[0].Id);
+            AddLog("info", $"Imported {imported.Count} chorus formation(s).");
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", "Chorus formation import failed: " + ex.Message);
+            StatusText = "队形导入失败";
+        }
+    }
+
+    private string MakeUniqueFormationName(string name)
+    {
+        var candidate = string.IsNullOrWhiteSpace(name) ? "导入队形" : name.Trim();
+        var baseName = candidate;
+        var suffix = 2;
+        while (_project.Chorus.Formations.Any(f => string.Equals(f.Name, candidate, StringComparison.Ordinal)))
+            candidate = $"{baseName} ({suffix++})";
+        return candidate;
+    }
+
+    /// <summary>Applies the selected imported formation at the current playhead beat (undoable).</summary>
+    private void ApplyChorusFormationPreset()
+    {
+        var preset = _selectedChorusFormation;
+        if (preset is null || preset.Positions.Count == 0)
+            return;
+
+        var singers = _project.Chorus.Singers;
+        if (singers.Count == 0)
+        {
+            AddLog("warn", "No chorus singer to arrange; add a singer first.");
+            StatusText = "请先添加歌手";
+            return;
+        }
+
+        PushUndo();
+        var beat = ChorusMath.SnapBeat(PlayheadBeat ?? 1);
+        for (var i = 0; i < singers.Count; i++)
+        {
+            var singer = singers[i];
+            var point = preset.Positions[i % preset.Positions.Count];
+            singer.Path.RemoveAll(p => Math.Abs(p.Beat - beat) < 1e-6);
+            singer.Path.Add(new ChorusKeyframe
+            {
+                Beat = beat,
+                X = ChorusMath.ClampX(point.X, Chorus.StageWidth),
+                Y = ChorusMath.ClampY(point.Y, Chorus.StageDepth),
+            });
+            singer.Path.Sort((a, b) => a.Beat.CompareTo(b.Beat));
+        }
+
+        TouchChorus();
+        AddLog("info", $"Imported formation \"{preset.Name}\" applied to {singers.Count} singer(s) at beat {beat:0.##}.");
+    }
+
+    /// <summary>Called by the stage editor when a singer is clicked.</summary>
+    public void SelectChorusSinger(ChorusSinger? singer)
+    {
+        SelectedChorusSinger = singer is null
+            ? null
+            : ChorusSingers.FirstOrDefault(r => ReferenceEquals(r.Model, singer));
+    }
+
+    /// <summary>Called by the stage editor before a drag starts; snapshots the project for undo.</summary>
+    public void BeginChorusEdit() => PushUndo();
+
+    /// <summary>Called by the stage editor after a drag; makes the change visible and drops stale renders.</summary>
+    public void CommitChorusEdit() => TouchChorus();
+
+    /// <summary>Bumps the redraw token and, in chorus mode, discards renders that used the old layout.</summary>
+    private void TouchChorus()
+    {
+        _chorusRevision++;
+        OnPropertyChanged(nameof(ChorusRevision));
+        OnPropertyChanged(nameof(ChorusStageInfo));
+        OnPropertyChanged(nameof(StageWidth));
+        OnPropertyChanged(nameof(StageDepth));
+        foreach (var row in ChorusSingers)
+            row.Refresh();
+        InvalidateChorusRender();
+    }
+
+    private void RebuildChorusRows()
+    {
+        var selectedId = _selectedChorusSinger?.Model.Id;
+
+        ChorusSingers.Clear();
+        foreach (var singer in _project.Chorus.Singers)
+        {
+            ChorusSingers.Add(new ChorusSingerRow(singer, ResolveTrackName, () =>
+            {
+                _chorusRevision++;
+                OnPropertyChanged(nameof(ChorusRevision));
+            }, TouchChorus));
+        }
+
+        _selectedChorusSinger = selectedId is null
+            ? null
+            : ChorusSingers.FirstOrDefault(r => r.Model.Id == selectedId);
+        _selectedChorusSinger ??= ChorusSingers.FirstOrDefault();
+
+        OnPropertyChanged(nameof(SelectedChorusSinger));
+        OnPropertyChanged(nameof(SelectedChorusSingerModel));
+        OnPropertyChanged(nameof(SelectedSingerTrack));
+        OnPropertyChanged(nameof(SelectedSingerText));
+        OnPropertyChanged(nameof(HasChorusSingers));
+        (RemoveChorusSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (JumpToChorusTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    private string? ResolveTrackName(string? trackId) => trackId is null
+        ? null
+        : _project.Tracks.FirstOrDefault(t => t.Id == trackId)?.Name;
+
+    private void RebuildChorusFormations()
+    {
+        var selectedId = _selectedChorusFormation?.Id;
+
+        ChorusFormations.Clear();
+        foreach (var formation in _project.Chorus.Formations)
+            ChorusFormations.Add(formation);
+
+        _selectedChorusFormation = selectedId is null
+            ? null
+            : ChorusFormations.FirstOrDefault(f => f.Id == selectedId);
+        _selectedChorusFormation ??= ChorusFormations.FirstOrDefault();
+
+        OnPropertyChanged(nameof(SelectedChorusFormation));
+        OnPropertyChanged(nameof(HasChorusFormations));
+        (ApplyChorusFormationPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>Chorus edits change the rendered audio; keep stale renders from playing.</summary>
+    private void InvalidateChorusRender()
+    {
+        _trackOutputs.Clear();
+        ClearMergedRender();
+        LastRenderPath = null;
+        PreviewInfo = "合唱设置已修改，需要重新渲染";
     }
 
     // ------------------------------------------------------------------
@@ -2360,21 +2758,21 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task RenderAsync()
     {
-        // Ask which tracks to render before starting the engine; cancel leaves everything untouched.
-        var dialog = new RenderTrackDialog(_project.Tracks);
-        if (dialog.ShowDialog() != true)
+        // Rendering is driven by chorus singers: every enabled singer contributes its bound track at its
+        // stage position. A track is never mixed in directly, so no singer means nothing to render.
+        var singers = _project.Chorus.Singers
+            .Where(s => s.Enabled && _project.Tracks.Any(t => t.Id == s.TrackId))
+            .ToList();
+        if (singers.Count == 0)
         {
-            StatusText = "已取消渲染";
+            StatusText = "没有歌手，无法渲染";
+            AddLog("warn", "No enabled chorus singer; rendering is driven by singers, so nothing was rendered.");
             return;
         }
 
-        var tracks = dialog.SelectedTracks;
-        if (tracks.Count == 0)
-        {
-            StatusText = "未选择音轨";
-            AddLog("warn", "No track selected; nothing to render.");
-            return;
-        }
+        var tracks = _project.Tracks
+            .Where(t => singers.Any(s => s.TrackId == t.Id))
+            .ToList();
 
         IsBusy = true;
         StatusText = "渲染中…";
@@ -2418,25 +2816,34 @@ public sealed class MainViewModel : ObservableObject
                 var result = await _services.Engine.RenderAsync(
                     new RenderRequest(_project, track, output), progress, _renderCts.Token);
 
-                // The engine output is mono; expand it to stereo here according to the track's vocal balance and distribute left/right energy.
-                try
+                // The engine output is mono. Every singer bound to this track gets its own
+                // position-dependent version (distance attenuation, HF air absorption, pan) and the
+                // versions are summed; the track itself is never mixed in directly.
+                var chorusSingers = singers.Where(s => s.TrackId == track.Id).ToList();
+                var singerOutputs = new List<string>(chorusSingers.Count);
+                for (var s = 0; s < chorusSingers.Count; s++)
                 {
-                    if (StereoBalanceProcessor.Apply(result.OutputPath, track.Settings.StereoBalance))
-                        AddLog("info", $"Stereo balance {track.Settings.StereoBalance:0}: left/right channel energy adjusted.");
-                }
-                catch (Exception ex)
-                {
-                    AddLog("warn", "Stereo balance post-processing failed: " + ex.Message);
+                    var singerPath = Path.Combine(
+                        directory, $"render_{i + 1}_{stem}_chorus{s + 1}_{timestamp}.wav");
+                    ChorusProcessor.Process(
+                        result.OutputPath, singerPath, _project.Chorus, [chorusSingers[s]], _bpm,
+                        track.Settings.BitDepth);
+                    singerOutputs.Add(singerPath);
                 }
 
-                _trackOutputs[track] = new RenderedTrack(result.OutputPath, result.DurationSeconds);
-                outputs.Add(result.OutputPath);
+                var chorusPath = Path.Combine(directory, $"render_{i + 1}_{stem}_chorus_{timestamp}.wav");
+                TrackMixer.Mix(singerOutputs, chorusPath, track.Settings.BitDepth);
+                _trackOutputs[track] = new RenderedTrack(chorusPath, result.DurationSeconds);
+                outputs.Add(chorusPath);
+                AddLog("info",
+                    $"Chorus processing: {chorusSingers.Count} singer(s) on track \"{track.Name}\".");
             }
 
             // All selected tracks were rendered to one shared timeline; sum them into a single WAV.
             StatusText = "合并音轨…";
             var mixPath = Path.Combine(directory, $"render_mix_{timestamp}.wav");
-            TrackMixer.Mix(outputs, mixPath);
+            var mixBitDepth = tracks.Count == 0 ? 16 : tracks.Max(t => t.Settings.BitDepth);
+            TrackMixer.Mix(outputs, mixPath, mixBitDepth);
             var mixInfo = WavReader.ReadInfo(mixPath);
 
             _lastMixPath = mixPath;

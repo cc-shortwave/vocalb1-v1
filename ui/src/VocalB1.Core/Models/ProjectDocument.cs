@@ -40,6 +40,9 @@ public sealed class ProjectDocument
     /// <summary>Total project length in beats, taken as the maximum across all tracks.</summary>
     public double TotalBeats => Tracks.Count == 0 ? 0 : Tracks.Max(t => t.TotalBeats);
 
+    /// <summary>Chorus mode stage layout and singers; kept with the project so it survives reloads.</summary>
+    public ChorusDocument Chorus { get; set; } = new();
+
     public ProjectDocument Clone() => new()
     {
         FormatVersion = FormatVersion,
@@ -51,5 +54,6 @@ public sealed class ProjectDocument
         BgmPath = BgmPath,
         BgmStartBeat = BgmStartBeat,
         Tracks = Tracks.Select(t => t.Clone()).ToList(),
+        Chorus = Chorus.Clone(),
     };
 }

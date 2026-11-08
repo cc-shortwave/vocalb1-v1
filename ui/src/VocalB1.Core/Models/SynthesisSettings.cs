@@ -66,10 +66,18 @@ public sealed class SynthesisSettings
     public double EdgeFadeMs { get; set; } = 12.0;
     public int BitDepth { get; set; } = 24;
 
-    /// <summary>Stereo balance (0~100): the higher the value, the more energy in the right channel; 50 is centered.</summary>
-    public double StereoBalance { get; set; } = 50.0;
     public bool CleanIntermediate { get; set; } = true;
     public bool Verbose { get; set; } = true;
 
-    public SynthesisSettings Clone() => (SynthesisSettings)MemberwiseClone();
+    /// <summary>
+    /// Deep copy. The band arrays must not be shared with the live instance: undo snapshots keep
+    /// historical values, while the settings sliders mutate array elements in place.
+    /// </summary>
+    public SynthesisSettings Clone()
+    {
+        var copy = (SynthesisSettings)MemberwiseClone();
+        copy.FollowRatio = (double[])FollowRatio.Clone();
+        copy.BandRatios = (double[])BandRatios.Clone();
+        return copy;
+    }
 }

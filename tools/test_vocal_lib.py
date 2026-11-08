@@ -39,6 +39,9 @@ _CANDIDATES = [
     os.path.join(os.environ.get("VOCALB1_LIB") or os.path.join(_ROOT, "voicebank"), "_で.wav"),
 ]
 
+# Voicebanks are installed per singer (voicebank/<singer>/_で.wav), so fall back to a recursive lookup.
+_SAMPLE_NAMES = ("_で.wav", "で.wav")
+
 _CACHE = {}          # intermediate results shared between cases (avoids repeated decomposition)
 TESTS = []
 
@@ -60,6 +63,18 @@ def find_sample():
     for p in _CANDIDATES:
         if os.path.isfile(p):
             return p
+
+    for root in (os.environ.get("VOCALB1_LIB"), os.path.join(_ROOT, "voicebank")):
+        if not root or not os.path.isdir(root):
+            continue
+        matches = []
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                if name in _SAMPLE_NAMES:
+                    matches.append(os.path.join(dirpath, name))
+        if matches:
+            # Prefer the longest file name, matching the voicebank lookup rule of the app.
+            return max(matches, key=lambda path: len(os.path.basename(path)))
     return None
 
 

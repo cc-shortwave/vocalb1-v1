@@ -6,6 +6,9 @@ namespace VocalB1.Core.Models;
 /// </summary>
 public sealed class TrackDocument
 {
+    /// <summary>Stable identifier used by chorus singers to bind their score to this track.</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
     public string Name { get; set; } = "音轨 1";
 
     /// <summary>Voicebank root directory used by this track (may be empty = use the engine's default voicebank).</summary>
@@ -131,6 +134,7 @@ public sealed class TrackDocument
 
     public TrackDocument Clone() => new()
     {
+        Id = Id,
         Name = Name,
         LibraryRoot = LibraryRoot,
         Segments = Segments.Select(s => s.Clone()).ToList(),

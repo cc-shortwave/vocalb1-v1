@@ -33,7 +33,10 @@ def read_seam_info(txt_path: str) -> dict:
     info = {}
     for key, val in re.findall(r"(\w+)=([0-9.,]+)", "".join(header)):
         parts = [p for p in val.split(",") if p != ""]
-        if len(parts) > 1:
+        if key in ("seg_frames", "over_frames"):
+            # Per-segment lists stay lists even with a single segment (no comma in the header).
+            info[key] = [int(p) if p.isdigit() else float(p) for p in parts]
+        elif len(parts) > 1:
             info[key] = [int(p) if p.isdigit() else float(p) for p in parts]
         else:
             info[key] = int(val) if re.fullmatch(r"\d+", val) else float(val)
