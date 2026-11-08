@@ -159,7 +159,7 @@
         </Border>
 
         <!-- Main body: top-level tabs. "音轨编辑" keeps the original three-column layout;
-             "合唱" has its own independent layout (singers, stage, imported formations). -->
+             "舞台模式" has its own independent layout (singers, stage, imported formations). -->
         <TabControl Grid.Row="1" Style="{StaticResource MainTabControl}"
                     SelectedIndex="{Binding MainTabIndex, Mode=TwoWay}">
             <TabItem Header="音轨编辑" Style="{StaticResource MainTabItem}">
@@ -636,7 +636,7 @@
             </TabItem>
 
             <!-- Chorus tab: singers on the left, stage in the center, chorus settings on the right -->
-            <TabItem Header="合唱" Style="{StaticResource MainTabItem}">
+            <TabItem Header="舞台模式" Style="{StaticResource MainTabItem}">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="260" MinWidth="180" />
@@ -791,9 +791,9 @@
                             Padding="12">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
-                                <TextBlock Text="合唱" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="舞台模式" Style="{StaticResource SectionTitle}" />
                                 <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource DimBrush}"
-                                           Text="合唱始终启用：同一音轨上绑定的歌手会各自按舞台位置处理（距离衰减、高频滚降、左右声像），再叠加为该音轨。" />
+                                           Text="舞台模式始终启用：同一音轨上绑定的歌手会各自按舞台位置处理（距离衰减、高频滚降、左右声像），再叠加为该音轨。" />
 
                                 <Border Style="{StaticResource Divider}" />
 

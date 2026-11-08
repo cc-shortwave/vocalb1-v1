@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -132,6 +133,21 @@ public static class LanguageService
 
         var key = Normalize(chinese);
         return Current.Entries.TryGetValue(key, out var translated) ? translated : chinese;
+    }
+
+    /// <summary>Translates a Chinese template containing numeric placeholders, then formats it with <paramref name="args"/>.</summary>
+    public static string TranslateFormat(string chinese, params object?[] args)
+    {
+        var template = Translate(chinese);
+        try
+        {
+            return string.Format(CultureInfo.CurrentUICulture, template, args);
+        }
+        catch (FormatException)
+        {
+            // A translated pack may contain braces that are not placeholders; keep the raw text.
+            return template;
+        }
     }
 
     public static void ApplyToWindows()

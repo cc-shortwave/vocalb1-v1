@@ -100,13 +100,13 @@ public sealed class ChorusSingerRow(
     }
 
     /// <summary>Name of the track whose score this singer sings, or a hint when the track was deleted.</summary>
-    public string TrackName => resolveTrackName(Model.TrackId) ?? "未绑定音轨";
+    public string TrackName => resolveTrackName(Model.TrackId) ?? LanguageService.Translate("未绑定音轨");
 
     public string Detail => Enabled
-        ? $"{TrackName} · {Model.Path.Count} 个路径点"
-        : $"{TrackName} · 已停用";
+        ? LanguageService.TranslateFormat("{0} · {1} 个路径点", TrackName, Model.Path.Count)
+        : LanguageService.TranslateFormat("{0} · 已停用", TrackName);
 
-    /// <summary>Refreshes the track name after a rebind or after a track was removed.</summary>
+    /// <summary>Refreshes the track name after a rebind, a track removal or a language switch.</summary>
     public void Refresh()
     {
         OnPropertyChanged(nameof(TrackName));
