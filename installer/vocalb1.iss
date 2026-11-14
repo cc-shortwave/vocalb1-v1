@@ -43,7 +43,11 @@ VersionInfoCompany={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppShortName}
 DefaultGroupName={#MyAppShortName}
 DisableProgramGroupPage=yes
-DisableDirPage=auto
+; Always show "Select Destination Location" so the user can pick the folder.
+; (auto hid the page on upgrades, which made 2.0.0 look like it had no choice)
+DisableDirPage=no
+UsePreviousAppDir=yes
+DirExistsWarning=auto
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
