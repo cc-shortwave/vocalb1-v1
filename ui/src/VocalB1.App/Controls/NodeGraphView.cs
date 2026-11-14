@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using VocalB1.App.Services;
 using VocalB1.Core.Models;
 
 namespace VocalB1.App.Controls;
@@ -79,7 +80,11 @@ public sealed class NodeGraphView : Canvas
         SnapsToDevicePixels = true;
         ContextMenu = new ContextMenu();
         ContextMenuOpening += (_, _) => BuildContextMenu();
+        Loaded += (_, _) => LanguageService.Changed += OnLanguageChanged;
+        Unloaded += (_, _) => LanguageService.Changed -= OnLanguageChanged;
     }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) => InvalidateVisual();
 
     // ------------------------------------------------------------------
     // Dependency properties
@@ -219,13 +224,13 @@ public sealed class NodeGraphView : Canvas
         var graph = Graph;
         if (graph is null)
         {
-            DrawCentered(dc, "未选择参数数据块 · 在左侧大纲中选择一个参数", 12, SubtitleColor);
+            DrawCentered(dc, LanguageService.Translate("未选择参数数据块 · 在左侧大纲中选择一个参数"), 12, SubtitleColor);
             return;
         }
 
         if (graph.Nodes.Count == 0)
         {
-            DrawCentered(dc, "右键添加节点 · 四个汇总节点接入参数输出后生效", 12, SubtitleColor);
+            DrawCentered(dc, LanguageService.Translate("右键添加节点 · 四个汇总节点接入参数输出后生效"), 12, SubtitleColor);
             return;
         }
 
@@ -319,15 +324,15 @@ public sealed class NodeGraphView : Canvas
             dc.DrawRoundedRectangle(null, outline, rect, NodeRadius, NodeRadius);
         }
 
-        var title = node.DisplayTitle;
+        var title = NodeText.Title(node);
         DrawText(dc, title, new Point(node.X + 10, node.Y + 5), Frozen(TextColor), 11.5,
             maxWidth: NodeWidth - 20, bold: true, strike: node.Muted);
 
-        DrawText(dc, node.Subtitle, new Point(node.X + 10, node.Y + HeaderHeight + 1),
+        DrawText(dc, NodeText.Subtitle(node), new Point(node.X + 10, node.Y + HeaderHeight + 1),
             Frozen(SubtitleColor), 9.5, maxWidth: NodeWidth - 20);
 
         if (node.Muted)
-            DrawText(dc, "已静音", new Point(node.X + NodeWidth - 48, node.Y + 5),
+            DrawText(dc, LanguageService.Translate("已静音"), new Point(node.X + NodeWidth - 48, node.Y + 5),
                 Frozen(Color.FromRgb(0xD9, 0xA0, 0x60)), 9);
 
         for (var i = 0; i < definition.Inputs.Length; i++)
@@ -335,7 +340,7 @@ public sealed class NodeGraphView : Canvas
             var point = InputSocket(node, i);
             dc.DrawEllipse(Frozen(SocketColor), new Pen(Frozen(BodyBorderColor), 1), point,
                 SocketRadius, SocketRadius);
-            DrawText(dc, definition.Inputs[i].Name, new Point(point.X + 9, point.Y - 7),
+            DrawText(dc, NodeText.Socket(definition.Inputs[i].Name), new Point(point.X + 9, point.Y - 7),
                 Frozen(Color.FromRgb(0xC6, 0xC6, 0xCC)), 9.5,
                 maxWidth: NodeWidth / 2 + 12);
         }
@@ -345,7 +350,7 @@ public sealed class NodeGraphView : Canvas
             var point = OutputSocket(node, i);
             dc.DrawEllipse(Frozen(Lighten(header, 0.45)), new Pen(Frozen(BodyBorderColor), 1), point,
                 SocketRadius, SocketRadius);
-            DrawText(dc, definition.Outputs[i].Name, new Point(0, point.Y - 7),
+            DrawText(dc, NodeText.Socket(definition.Outputs[i].Name), new Point(0, point.Y - 7),
                 Frozen(Color.FromRgb(0xC6, 0xC6, 0xCC)), 9.5,
                 maxWidth: NodeWidth / 2 + 12, alignRight: true,
                 rightEdge: point.X - 9);
@@ -374,7 +379,7 @@ public sealed class NodeGraphView : Canvas
 
     private void DrawHint(DrawingContext dc)
     {
-        var text = "左键拖动节点 · 从插口拖出连线 · 框选 · Delete 删除 · 滚轮缩放 · 中键平移 · 右键添加节点";
+        var text = LanguageService.Translate("左键拖动节点 · 从插口拖出连线 · 框选 · Delete 删除 · 滚轮缩放 · 中键平移 · 右键添加节点");
         var formatted = Format(text, 10, Frozen(Color.FromRgb(0x7C, 0x7C, 0x84)),
             Math.Max(100, ActualWidth - 160));
         dc.DrawText(formatted, new Point(14, Math.Max(6, ActualHeight - formatted.Height - 8)));
@@ -723,25 +728,28 @@ public sealed class NodeGraphView : Canvas
 
         if (node is not null)
         {
-            menu.Items.Add(MenuItem("重命名 (F2)", () => BeginRename(node)));
-            menu.Items.Add(MenuItem(node.Muted ? "取消静音" : "静音", () =>
+            menu.Items.Add(MenuItem(LanguageService.Translate("重命名 (F2)"), () => BeginRename(node)));
+            menu.Items.Add(MenuItem(LanguageService.Translate(node.Muted ? "取消静音" : "静音"), () =>
             {
                 Host?.PushGraphUndo();
                 node.Muted = !node.Muted;
                 Host?.NotifyGraphChanged();
                 InvalidateVisual();
             }));
-            menu.Items.Add(MenuItem("复制节点", () => DuplicateNode(node)));
-            menu.Items.Add(MenuItem("删除节点 (Delete)", DeleteSelection));
+            menu.Items.Add(MenuItem(LanguageService.Translate("复制节点"), () => DuplicateNode(node)));
+            menu.Items.Add(MenuItem(LanguageService.Translate("删除节点 (Delete)"), DeleteSelection));
             menu.Items.Add(new Separator());
         }
 
         foreach (var group in NodeCatalog.All.GroupBy(d => d.Category))
         {
-            var parent = new MenuItem { Header = "添加 " + group.Key };
+            var parent = new MenuItem
+            {
+                Header = LanguageService.TranslateFormat("添加 {0}", LanguageService.Translate(group.Key)),
+            };
             foreach (var definition in group)
             {
-                var item = new MenuItem { Header = definition.Title };
+                var item = new MenuItem { Header = LanguageService.Translate(definition.Title) };
                 item.Click += (_, _) => AddNode(definition.Kind, _lastContextPoint);
                 parent.Items.Add(item);
             }
@@ -749,7 +757,7 @@ public sealed class NodeGraphView : Canvas
         }
 
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem("整理到初始视图", ResetView));
+        menu.Items.Add(MenuItem(LanguageService.Translate("整理到初始视图"), ResetView));
     }
 
     private static MenuItem MenuItem(string header, Action action)

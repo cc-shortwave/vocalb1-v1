@@ -272,6 +272,9 @@
                             <TextBox Width="42" Margin="4,0,10,0" Text="{Binding BeatUnit, UpdateSourceTrigger=LostFocus}" />
                             <Button Content="{Binding RollModeText}" Command="{Binding ToggleRollModeCommand}" />
                             <ToggleButton Content="画笔" Margin="6,0,0,0" IsChecked="{Binding IsPencil}" />
+                            <CheckBox Content="音高防抖" Margin="6,0,0,0" VerticalAlignment="Center"
+                                      IsChecked="{Binding ElementName=PianoRoll, Path=SmoothPitch, Mode=TwoWay}"
+                                      ToolTip="音高模式下右键绘制时对笔画做滑动平均，减少手抖" />
                             <ComboBox Width="118" Margin="6,0,0,0" SelectedIndex="{Binding GridDivisionIndex}">
                                 <ComboBoxItem Content="小格：关闭" />
                                 <ComboBoxItem Content="小格：8" />
@@ -687,6 +690,16 @@
                                 <Button Content="复制歌手" Command="{Binding DuplicateSingerCommand}" />
                                 <Button Content="删除歌手" Command="{Binding RemoveSingerCommand}" />
                             </StackPanel>
+
+                            <TextBlock Text="空间解算" Margin="0,16,0,0" FontWeight="Bold" />
+                            <CheckBox Margin="0,6,0,0"
+                                      Content="启用空间解算（输出立体声）"
+                                      IsChecked="{Binding SelectedSinger.Spatial.Enabled}" />
+                            <controls:SpatialCurveEditor Height="240" Margin="0,6,0,0"
+                                                         Trajectory="{Binding SelectedSinger.Spatial}"
+                                                         TotalBeats="{Binding ActiveLyric.TotalBeats}" />
+                            <TextBlock Margin="0,6,0,0" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap"
+                                       Text="左键添加/拖动关键帧，右键删除。X = 左右声像（等功率）；Y = 远近（越大越远，音量下降并伴随高频滚降）；Z = 高度（微调亮度）。未画点的轴保持居中。" />
 
                             <TextBlock Text="歌手绑定栈：在「参数」页勾选“编辑歌手的绑定栈”即可在共享参数之上追加时间渐变等节点。"
                                        Margin="0,12,0,0" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap" />

@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Windows.Data;
+using VocalB1.App.Services;
 using VocalB1.Core.Models;
 
 namespace VocalB1.App.Converters;
@@ -8,7 +9,8 @@ namespace VocalB1.App.Converters;
 /// <summary>Chinese labels for the node enums, so the editor does not show raw C# names.</summary>
 public sealed class EnumDisplayConverter : IValueConverter
 {
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) => value switch
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
+        LanguageService.Translate(value switch
     {
         NodeKind.Number => "数值",
         NodeKind.TimeInput => "时间输入",
@@ -39,7 +41,7 @@ public sealed class EnumDisplayConverter : IValueConverter
         NodeKind.FormantBandwidth => "共振峰带宽",
         NodeKind.BreathParameters => "气声参数",
         _ => value?.ToString() ?? string.Empty,
-    };
+    });
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
         throw new NotSupportedException();

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using VocalB1.App.Controls;
 using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
 using VocalB1.Core.Dictionaries;
@@ -150,6 +151,9 @@ public sealed class SingerRow(
 
     public string MixGainText => Model.MixGain.ToString("0.##", CultureInfo.InvariantCulture);
 
+    /// <summary>X/Y/Z spatial trajectory edited by the singer page's curve editor.</summary>
+    public SpatialTrajectory Spatial => Model.Spatial;
+
     public string LyricName => resolveLyricName(Model.LyricId) ?? LanguageService.Translate("未绑定歌词");
 
     public string ParameterName => resolveParameterName(Model.ParameterSetId) ?? LanguageService.Translate("未绑定参数");
@@ -168,6 +172,7 @@ public sealed class SingerRow(
         OnPropertyChanged(nameof(Enabled));
         OnPropertyChanged(nameof(MixGain));
         OnPropertyChanged(nameof(MixGainText));
+        OnPropertyChanged(nameof(Spatial));
         OnPropertyChanged(nameof(LyricName));
         OnPropertyChanged(nameof(ParameterName));
         OnPropertyChanged(nameof(VoicebankName));
@@ -285,7 +290,7 @@ public sealed class ParameterKeyRow(ParameterKeys.Definition definition) : Obser
 
     public string Key => Definition.Key;
 
-    public string Label => Definition.Label;
+    public string Label => NodeText.ParameterLabel(Definition.Key);
 
     public string Group => Definition.IsFormant
         ? (Definition.Key.Contains(".BW", StringComparison.Ordinal)
@@ -314,6 +319,7 @@ public sealed class ParameterKeyRow(ParameterKeys.Definition definition) : Obser
     /// <summary>Re-reads the translated group labels after a language switch.</summary>
     public void RefreshText()
     {
+        OnPropertyChanged(nameof(Label));
         OnPropertyChanged(nameof(Group));
         OnPropertyChanged(nameof(CountText));
     }
@@ -359,9 +365,9 @@ public sealed class NodeRow : ObservableObject
         }
     }
 
-    public string KindTitle => NodeCatalog.Get(Model.Kind).Title;
+    public string KindTitle => NodeText.Title(Model);
 
-    public string Subtitle => Model.Subtitle;
+    public string Subtitle => NodeText.Subtitle(Model);
 
     public string Title
     {
@@ -762,6 +768,18 @@ public sealed class VoicebankOption(string name, string path)
     public string Path { get; } = path;
 
     public override string ToString() => Name;
+}
+
+/// <summary>A row of the voicebank-field picker, with the label translated for the UI.</summary>
+public sealed class VoicebankFieldRow(VoicebankField field) : ObservableObject
+{
+    public VoicebankField Field { get; } = field;
+    public string Key => Field.Key;
+    public string Label => NodeText.Field(Field);
+
+    public void Refresh() => OnPropertyChanged(nameof(Label));
+
+    public override string ToString() => Label;
 }
 
 /// <summary>A row of a parameter slider: dragging writes back to the model.</summary>

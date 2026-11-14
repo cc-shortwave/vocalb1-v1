@@ -190,6 +190,16 @@ public sealed class PythonEngineClient : IRenderEngine
                     formantTargets = plan.FormantProfile.IsMeasured
                         ? ToJagged(plan.FormantTargetsHz)
                         : null,
+                    // Optional spatial solver output: equal-power pan + distance gain + rolloff cutoff,
+                    // one value per frame. Null keeps the mono render path.
+                    spatial = plan.HasSpatial
+                        ? new
+                        {
+                            pan = plan.SpatialPan,
+                            gain = plan.SpatialGain,
+                            cutoffHz = plan.SpatialCutoffHz,
+                        }
+                        : null,
                 },
             };
             var json = JsonSerializer.Serialize(payload, BridgeJson.RequestOptions);

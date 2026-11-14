@@ -23,6 +23,7 @@ def _parse_semitones(pitch: Union[str, int, float]) -> float:
         str:  "C4", "A4", "F#5", "Bb3"   (scientific pitch)
               "1D", "-1C", "0C#", "-2Eb" (project style)
               "440Hz", "329.63HZ"       (Hz)
+              "7", "-3.25"              (numeric semitones relative to C4)
         int/float: >50 treated as Hz, otherwise treated as semitones
     """
     if isinstance(pitch, (int, float)):
@@ -58,6 +59,10 @@ def _parse_semitones(pitch: Union[str, int, float]) -> float:
         note_key = name + acc
         if note_key in _NOTE_SEMITONES:
             return float(oct_offset * 12 + _NOTE_SEMITONES[note_key])
+
+    # Plain numeric string: semitones relative to C4 (raster pitch curves send these)
+    if re.match(r'^[+-]?\d+(?:\.\d+)?$', s):
+        return float(s)
 
     raise ValueError(
         f"Unable to parse pitch: '{pitch}'; supported examples: C4, 440Hz, 1D, -1C, 0C#, +3, -5"

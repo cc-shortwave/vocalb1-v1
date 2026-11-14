@@ -268,6 +268,10 @@ public static class LyricPhraseComposer
         if (unit.SegmentId is not string id)
             return;
 
+        var segment = track.Segments.FirstOrDefault(s => s.Id == id);
+        if (segment is not null)
+            track.PitchRaster?.ClearRange(segment.BeatStart, segment.BeatEnd);
+
         track.Segments.RemoveAll(s => s.Id == id);
         track.PitchLine.RemoveAll(p => p.SegmentId == id);
         unit.SegmentId = null;
@@ -300,6 +304,7 @@ public static class LyricPhraseComposer
 
             segment.BeatStart += delta;
             segment.BeatEnd += delta;
+            track.PitchRaster?.ShiftRange(segment.BeatStart - delta, segment.BeatEnd - delta, delta);
             foreach (var point in track.PitchLine)
             {
                 if (point.SegmentId == id)

@@ -29,6 +29,12 @@ public sealed class SingerDocument : IDatablock
     public double MixGain { get; set; } = 1.0;
 
     /// <summary>
+    /// Optional X/Y/Z motion curves. When enabled the singer is rendered as stereo with a per-frame pan and
+    /// distance rolloff computed by <see cref="SpatialSolver"/>; disabled keeps the mono output untouched.
+    /// </summary>
+    public SpatialTrajectory Spatial { get; set; } = new();
+
+    /// <summary>
     /// Singer-level overlay graph. It is evaluated after the shared parameter set's graph; an output node
     /// whose input is unwired receives the shared value for that key, so a singer can adjust a shared
     /// parameter without forking the data-block.
@@ -45,6 +51,7 @@ public sealed class SingerDocument : IDatablock
         ParameterSetId = ParameterSetId,
         Enabled = Enabled,
         MixGain = MixGain,
+        Spatial = Spatial.Clone(),
         Graph = Graph.Clone(),
     };
 }
