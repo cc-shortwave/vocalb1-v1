@@ -2,18 +2,40 @@
 
 **English** | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-Offline lightweight singing synthesizer — per-note parameters, no pretraining, UTAU voicebank support.
+Offline lightweight singing synthesizer — lyrics / parameters / singers as managed data-blocks,
+lyric-driven formant targets, no pretraining, UTAU voicebank support.
 
 VocalB1 decomposes a voice recording into F0 / spectral envelope / breath / excitation, then
 re-synthesizes a song from per-note parameters. **No model training, no GPU, no network** —
 pure signal processing that runs on a 2-core / 2 GB machine.
 
+> Since v3 a project contains exactly three data-block libraries: **lyrics (complete scores),
+> parameters (one node graph per parameter set) and singers (voicebank + lyric reference +
+> parameter reference)**. Lyrics are one-to-one with singers; parameter sets may be shared. Tracks
+> and the chorus stage have been removed. v2 projects open read-only and can still be rendered.
+
 ---
 
 ## Features
 
-- **Per-note control** — pitch, beat position, breath level, formant follow ratio, decay curve
+- **Three data-block libraries** — reference counts, fake users, orphan purge, external asset I/O
+- **Lyrics own the score** — words/units, segments, pitch line, vowel and F1~F7 formant targets
+- **Node-graph parameters** — a Blender-style canvas per parameter set: number / global / parameter
+  inputs, time curves and gradients, noise, math, map range, mix, split/merge, curve remap, vowel and
+  breath managers, voicebank-data and field-decompose inputs, and the four summary nodes (formant
+  position / gain / bandwidth, breath) that plug into one output node. An unconnected summary keeps
+  the voicebank/lyric default, so a partial graph is always valid
+- **Singer overlay graphs** — a singer owns a second, smaller graph whose unwired outputs inherit the
+  shared parameter set, so a singer can offset a shared timbre without forking the data-block
+- **Per-synthesis-frame evaluation** — time, beat, pitch and vowel feed the graph; formant targets
+  are applied to the spectral envelope every frame; cycles and unknown functions raise a structured
+  `StageException` naming the node
+- **Per-note control** — pitch, beat position, breath level, formant position, decay curve
 - **UTAU 単独音 voicebanks** — 142 basic kana
+- **Dual-mode sample resolution** — phoneme names resolved from the voicebank, or one syllable
+  overrides it with an absolute audio path
+- **Voicebank formant analysis** — `tools/analyze_voicebank.py` writes `formants.json` so the vowel
+  manager drives F1~F7 from the singer's own measured resonances
 - **Zero pretraining** — no model weights, no dataset, no GPU
 - **Offline** — nothing leaves your machine
 - **Desktop UI** (C# / WPF) plus a plain command-line entry point

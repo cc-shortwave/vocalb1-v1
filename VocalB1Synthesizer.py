@@ -44,6 +44,7 @@ import prosses_breath   # used to mix the concatenated breath directly into the 
 from VocalDecomposer import VocalDecomposer
 from VocalSynthesizer import VocalSynthesizer
 from vocal_lib.pitch import _parse_semitones
+from vocal_lib.core.formant_warp import warp_to_targets, FormantWarpError
 from vocal_lib.perf import span as _perf_span, mark as _perf_mark
 
 # Output directory is anchored to the script directory (same as prosses_breath),
@@ -51,6 +52,20 @@ from vocal_lib.perf import span as _perf_span, mark as _perf_mark
 # leave prosses_breath reading stale data
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _OUTPUT_DIR = os.path.join(_BASE_DIR, "_output")
+
+# ----------------------------------------------------------------------
+# [1.2] Lyric-driven per-frame parameter curves (v3 object model)
+#   FRAME_CURVES      : {canonical key: [value per synthesis frame]} or None
+#   FORMANT_TARGETS   : np.ndarray (frames, 7) absolute F1~F7 targets in Hz or None
+#   FRAMES_PER_BEAT   : frames per beat used to slice a segment's frame range
+#   SEGMENT_FRAME_OFFSETS : absolute frame index of each segment start (filled by run())
+# All three are injected temporarily by synthesize() and restored afterwards.
+# ----------------------------------------------------------------------
+FRAME_CURVES = None
+FORMANT_TARGETS = None
+FRAMES_PER_BEAT = None
+SEGMENT_FRAME_OFFSETS = None
+MIX_GAIN = 1.0
 
 # ======================================================================
 # Default parameter section (overridden item by item by synthesize() keyword args)
@@ -1666,18 +1681,61 @@ def _probe_params() -> None:
 # ----------------------------------------------------------------------
 # 1. Decomposition + pitch shift
 # ----------------------------------------------------------------------
+def _segment_start_frame(beat_start: float) -> int:
+    """Absolute frame index of a 1-based beat under the current FRAMES_PER_BEAT."""
+    fps = FRAMES_PER_BEAT
+    if not fps or not np.isfinite(fps) or fps <= 0:
+        return 0
+    return max(0, int(round((float(beat_start) - 1.0) * float(fps))))
+
+
+def _curve_slice(key: str, start: int, n_frames: int):
+    """Slices one per-frame curve to a segment; None when the curve is absent."""
+    if not FRAME_CURVES:
+        return None
+    values = FRAME_CURVES.get(key)
+    if not values:
+        return None
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return None
+    segment = arr[start:start + n_frames]
+    return segment if segment.size else None
+
+
+def _curve_mean(key: str, start: int, n_frames: int, fallback):
+    segment = _curve_slice(key, start, n_frames)
+    if segment is None or segment.size == 0:
+        return fallback
+    return float(np.mean(segment[np.isfinite(segment)])) if np.any(np.isfinite(segment)) else fallback
+
+
+def _curve_vector(prefix: str, count: int, start: int, n_frames: int, fallback):
+    values = [_curve_mean(f"{prefix}{i}", start, n_frames,
+                          fallback[i] if isinstance(fallback, (list, tuple)) and i < len(fallback) else 1.0)
+              for i in range(count)]
+    return values
+
+
 def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
                          keep_first_half_unvoiced: bool = False,
-                         follow_ratio=None, band_ratios=None, breathy_thr=None):
-    """Decompose a single audio segment -> pitch shift -> breath position validation -> keep only voiced frames; returns the segment data.
+                         follow_ratio=None, band_ratios=None, breathy_thr=None,
+                         beat_start: float = 1.0, beat_end: float = 2.0):
+    """Decompose a single audio segment -> pitch shift -> formant targets -> breath validation.
+
+    v3 additions:
+      * When FRAME_CURVES is set, follow_ratio / band_ratios / breathy_thr fall back to the
+        segment's mean curve value instead of the global scalar.
+      * When FORMANT_TARGETS is set, the spectral envelope of every frame is warped so its
+        measured F1~F7 land on the lyric's target positions. Errors are not swallowed: a
+        structurally invalid matrix raises FormantWarpError with the class/stage prefix.
 
     With keep_first_half_unvoiced=True (recommended for the first segment) the
     unvoiced frames of the first half are kept as well instead of being dropped
     (f0=0 frames are synthesized by pyworld as aperiodic noise).
 
     follow_ratio / band_ratios / breathy_thr are per-segment overrides; None falls
-    back to the global defaults of parameter section [2]
-    (FOLLOW_RATIO / BAND_RATIOS / BREATHY_THR).
+    back to the global defaults of parameter section [2] (or the segment's mean curve).
 
     Returns:
         dict(f0, sp, ap, gi, breath, src_rms, sr, fp, semitones, name)
@@ -1699,6 +1757,16 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     ap_all = p['ge_ap']
     gi_all = p['ge_glottal_intensity']
     breath_all = np.asarray(p['breath_data'], dtype=np.float64)
+    frame_start = _segment_start_frame(beat_start)
+
+    # v3: per-frame curves override the scalar defaults for this segment (mean over its frames).
+    if FRAME_CURVES:
+        if follow_ratio is None:
+            follow_ratio = _curve_vector("followRatio.", 7, frame_start, len(f0_all), FOLLOW_RATIO)
+        if band_ratios is None:
+            band_ratios = _curve_vector("bandRatios.", 8, frame_start, len(f0_all), BAND_RATIOS)
+        if breathy_thr is None:
+            breathy_thr = _curve_mean("breathyThr", frame_start, len(f0_all), BREATHY_THR)
 
     f0_obj = vl.F0(values=f0_all, time_axis=p['f0_time_axis'],
                    frame_period=fp, sample_rate=sr,
@@ -1726,6 +1794,29 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     sp = np.asarray(gl_s.sp, dtype=np.float64) if gl_s.sp is not None else None
     ap = np.asarray(gl_s.ap, dtype=np.float64) if gl_s.ap is not None else None
     gi = gl_s.glottal_intensity
+
+    # v3: lyric-driven formant positions. The matrix is global (one row per synthesis frame);
+    # slice the same absolute range used for the curves. Errors are raised, never swallowed.
+    # The source formants are measured on this segment's own pyworld envelope, so they share the
+    # 5 ms synthesis grid; the voicebank's STFT peak list is not used here (it is an 11.6 ms grid
+    # of the lowest spectral peaks, i.e. harmonics, and pairing it by index transposed the timbre).
+    if FORMANT_TARGETS is not None and sp is not None:
+        matrix = np.asarray(FORMANT_TARGETS, dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[1] < 7:
+            raise FormantWarpError("slice",
+                                   f"FORMANT_TARGETS 必须是 (帧数, 7)，实际 {matrix.shape}。")
+        segment = matrix[frame_start:frame_start + len(f0)]
+        if segment.shape[0] < len(f0):
+            pad = np.repeat(matrix[-1:, :], len(f0) - segment.shape[0], axis=0) if matrix.size else None
+            segment = np.vstack([segment, pad]) if pad is not None and pad.size else matrix[-1:, :]
+        if segment.shape[0] != len(f0):
+            raise FormantWarpError("slice",
+                                   f"共振峰目标切片长度 {segment.shape[0]} 与帧数 {len(f0)} 不一致。")
+        with _perf_span("seg.formant_targets"):
+            sp, _fmt_diag = warp_to_targets(
+                sp, sr, segment, frame_period=fp)
+        print(f"    [Formant targets] warped {_fmt_diag['frames_warped']} frames, "
+              f"skipped {_fmt_diag['frames_skipped']} ({_fmt_diag['source']} source)")
 
     # Align glottal_intensity frame by frame to the f0 frame count
     if gi is not None and len(gi) > 0:
@@ -1840,6 +1931,12 @@ def synthesize(segments,
                *,
                # [1.1] per-frame pitch line (None = disabled)
                pitch_line=PITCH_LINE,
+               # [1.2] v3 lyric-driven curves: {key: [value per frame]} / (frames, 7) Hz / frames per beat
+               frame_curves=None,
+               formant_targets=None,
+               frames_per_beat=None,
+               # [1.3] per-singer linear mix gain applied before the final save
+               mix_gain=1.0,
                # [2] pitch shift (global defaults, overridable by same-named keys inside a segment)
                follow_ratio=FOLLOW_RATIO,
                band_ratios=BAND_RATIOS,
@@ -1952,6 +2049,11 @@ def synthesize(segments,
         OUTPUT_FRAMES_TXT=frames_txt,
         # [1.1]
         PITCH_LINE=pitch_line,
+        # [1.2] lyric-driven per-frame curves and formant targets
+        FRAME_CURVES=frame_curves,
+        FORMANT_TARGETS=formant_targets,
+        FRAMES_PER_BEAT=frames_per_beat,
+        MIX_GAIN=mix_gain,
         # [2]
         FOLLOW_RATIO=follow_ratio,
         BAND_RATIOS=band_ratios,
@@ -2071,6 +2173,8 @@ def run() -> vl.WAVAudio:
                 follow_ratio=seg.get('follow_ratio'),
                 band_ratios=seg.get('band_ratios'),
                 breathy_thr=seg.get('breathy_thr'),
+                beat_start=float(seg.get('beat_start', 1.0)),
+                beat_end=float(seg.get('beat_end', 2.0)),
             ))
     n_seg = len(segs)
 
@@ -2436,6 +2540,9 @@ def run() -> vl.WAVAudio:
         out_data = _guard_samples(out_data, "final")
         _probe_samples("final", out_data, sr, fp)
         out_data = _edge_fade(out_data, sr, EDGE_FADE_MS)
+        if MIX_GAIN is not None and abs(float(MIX_GAIN) - 1.0) > 1e-9:
+            out_data = np.clip(out_data * float(MIX_GAIN), -1.0, 1.0)
+            print(f"[Mix] singer gain applied: {float(MIX_GAIN):.3f}")
         final = vl.WAVAudio(data=out_data, sample_rate=sr)
         final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)
     print(f"[Done] saved: {OUTPUT_WAV}  (duration {final.duration:.2f}s, RMS={final.rms:.4f})")

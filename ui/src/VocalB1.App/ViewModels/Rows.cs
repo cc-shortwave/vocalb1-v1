@@ -1,17 +1,18 @@
-using System.IO;
 using System.Globalization;
+using System.IO;
 using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
-using VocalB1.Core.Abstractions;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Models;
 
 namespace VocalB1.App.ViewModels;
 
-/// <summary>A row of the track tabs; name edits are written straight back to the model.</summary>
-public sealed class TrackRow(TrackDocument model) : ObservableObject
+/// <summary>A lyric data-block row in the outliner; name edits write straight back to the model.</summary>
+public sealed class LyricRow(LyricDocument model) : ObservableObject
 {
-    public TrackDocument Model { get; } = model;
+    public LyricDocument Model { get; } = model;
+
+    public string Id => Model.Id;
 
     public string Name
     {
@@ -25,50 +26,37 @@ public sealed class TrackRow(TrackDocument model) : ObservableObject
         }
     }
 
-    /// <summary>Solo toggle: preview playback prefers a soloed track's rendered result.</summary>
-    public bool Solo
+    public bool FakeUser
     {
-        get => Model.Solo;
+        get => Model.FakeUser;
         set
         {
-            if (Model.Solo == value)
+            if (Model.FakeUser == value)
                 return;
-            Model.Solo = value;
+            Model.FakeUser = value;
             OnPropertyChanged();
         }
     }
 
-    /// <summary>Used for both the accessible name and the default text of the tab header.</summary>
+    public string Detail => LanguageService.TranslateFormat("{0} 段 · {1} 拍",
+        Model.Segments.Count, Model.TotalBeats);
+
+    public void Refresh()
+    {
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(FakeUser));
+        OnPropertyChanged(nameof(Detail));
+    }
+
     public override string ToString() => Model.Name;
 }
 
-/// <summary>A selectable track row in the pre-render dialog; the box is checked by default.</summary>
-public sealed class RenderTrackOption(TrackDocument model) : ObservableObject
+/// <summary>A parameter data-block row in the outliner.</summary>
+public sealed class ParameterSetRow(ParameterSet model) : ObservableObject
 {
-    private bool _isSelected = true;
+    public ParameterSet Model { get; } = model;
 
-    public TrackDocument Model { get; } = model;
-
-    public string Name => Model.Name;
-
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set => SetProperty(ref _isSelected, value);
-    }
-}
-
-/// <summary>
-/// A chorus singer in the stage toolbar: the name is editable and the bound score is shown as the track name.
-/// Track lookup is delegated because rows are rebuilt whenever tracks change.
-/// </summary>
-public sealed class ChorusSingerRow(
-    ChorusSinger model,
-    Func<string?, string?> resolveTrackName,
-    Action? onNameChanged = null,
-    Action? onEnabledChanged = null) : ObservableObject
-{
-    public ChorusSinger Model { get; } = model;
+    public string Id => Model.Id;
 
     public string Name
     {
@@ -79,12 +67,58 @@ public sealed class ChorusSingerRow(
                 return;
             Model.Name = value;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(Detail));
-            onNameChanged?.Invoke();
         }
     }
 
-    /// <summary>Whether this singer takes part in the chorus render; disabling keeps the position data.</summary>
+    public bool FakeUser
+    {
+        get => Model.FakeUser;
+        set
+        {
+            if (Model.FakeUser == value)
+                return;
+            Model.FakeUser = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public string Detail => LanguageService.TranslateFormat("{0} 个节点 · {1} kHz",
+        Model.Graph.Nodes.Count, Model.Base.SampleRate / 1000);
+
+    public void Refresh()
+    {
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(FakeUser));
+        OnPropertyChanged(nameof(Detail));
+    }
+
+    public override string ToString() => Model.Name;
+}
+
+/// <summary>A singer data-block row. Users are delegated because the project graph may change.</summary>
+public sealed class SingerRow(
+    SingerDocument model,
+    Func<string?, string?> resolveLyricName,
+    Func<string?, string?> resolveParameterName,
+    Action? onChanged = null) : ObservableObject
+{
+    public SingerDocument Model { get; } = model;
+
+    public string Id => Model.Id;
+
+    public string Name
+    {
+        get => Model.Name;
+        set
+        {
+            if (Model.Name == value)
+                return;
+            Model.Name = value;
+            OnPropertyChanged();
+            onChanged?.Invoke();
+        }
+    }
+
     public bool Enabled
     {
         get => Model.Enabled;
@@ -95,29 +129,60 @@ public sealed class ChorusSingerRow(
             Model.Enabled = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(Detail));
-            onEnabledChanged?.Invoke();
+            onChanged?.Invoke();
         }
     }
 
-    /// <summary>Name of the track whose score this singer sings, or a hint when the track was deleted.</summary>
-    public string TrackName => resolveTrackName(Model.TrackId) ?? LanguageService.Translate("未绑定音轨");
+    public double MixGain
+    {
+        get => Model.MixGain;
+        set
+        {
+            value = Math.Clamp(value, 0, 2);
+            if (Math.Abs(Model.MixGain - value) < 1e-9)
+                return;
+            Model.MixGain = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(MixGainText));
+            onChanged?.Invoke();
+        }
+    }
+
+    public string MixGainText => Model.MixGain.ToString("0.##", CultureInfo.InvariantCulture);
+
+    public string LyricName => resolveLyricName(Model.LyricId) ?? LanguageService.Translate("未绑定歌词");
+
+    public string ParameterName => resolveParameterName(Model.ParameterSetId) ?? LanguageService.Translate("未绑定参数");
+
+    public string VoicebankName => string.IsNullOrWhiteSpace(Model.LibraryRoot)
+        ? LanguageService.Translate("未选择声库")
+        : Path.GetFileName(Model.LibraryRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
     public string Detail => Enabled
-        ? LanguageService.TranslateFormat("{0} · {1} 个路径点", TrackName, Model.Path.Count)
-        : LanguageService.TranslateFormat("{0} · 已停用", TrackName);
+        ? LanguageService.TranslateFormat("{0} · {1} · {2}", LyricName, ParameterName, VoicebankName)
+        : LanguageService.TranslateFormat("已停用 · {0}", LyricName);
 
-    /// <summary>Refreshes the track name after a rebind, a track removal or a language switch.</summary>
     public void Refresh()
     {
-        OnPropertyChanged(nameof(TrackName));
+        OnPropertyChanged(nameof(Name));
+        OnPropertyChanged(nameof(Enabled));
+        OnPropertyChanged(nameof(MixGain));
+        OnPropertyChanged(nameof(MixGainText));
+        OnPropertyChanged(nameof(LyricName));
+        OnPropertyChanged(nameof(ParameterName));
+        OnPropertyChanged(nameof(VoicebankName));
         OnPropertyChanged(nameof(Detail));
     }
+
+    public override string ToString() => Model.Name;
 }
 
-/// <summary>A row of the segment list: the lyric is directly editable, all other fields are read-only.</summary>
+/// <summary>A row of the segment list belonging to the active lyric.</summary>
 public sealed class SegmentRow(VoiceSegment model, int index) : ObservableObject
 {
     public int Number { get; } = index + 1;
+
+    public VoiceSegment Model { get; } = model;
 
     public string Lyric
     {
@@ -132,34 +197,39 @@ public sealed class SegmentRow(VoiceSegment model, int index) : ObservableObject
     }
 
     public string RangeText { get; } = $"{model.BeatStart:0.##} → {model.BeatEnd:0.##}";
-    public string PitchText { get; } = $"{model.SrcPitch} → {model.DstPitch}";
-    public VoiceSegment Model { get; } = model;
 
-    /// <summary>The accessible name is a one-line summary, making it easy for screen readers and automation to check beats/pitches.</summary>
+    public string PitchText { get; } = $"{model.SrcPitch} → {model.DstPitch}";
+
+    public string Vowel => Model.Vowel;
+
+    public string FormantText => Model.FormantHz is { Length: 7 } hz
+        ? string.Join(" / ", hz.Select(v => v.ToString("0")))
+        : LanguageService.Translate("自动（元音管理器）");
+
+    public void Refresh()
+    {
+        OnPropertyChanged(nameof(Lyric));
+        OnPropertyChanged(nameof(RangeText));
+        OnPropertyChanged(nameof(PitchText));
+        OnPropertyChanged(nameof(Vowel));
+        OnPropertyChanged(nameof(FormantText));
+    }
+
     public override string ToString() => $"{Number} {Lyric} {RangeText} {PitchText}";
 }
 
-/// <summary>
-/// One minimal voicebank unit below the lyric bar. The row is a thin view over a <see cref="LyricUnit"/>
-/// object, which is the single source of truth (a rest keeps its beat span but has no segment).
-/// The vertical line on the right edge adjusts the beat length in both cases.
-/// </summary>
+/// <summary>One minimal voicebank unit below the piano roll, with vowel/formant summary.</summary>
 public sealed class LyricUnitRow(LyricUnit model) : ObservableObject
 {
-    /// <summary>Horizontal scale of the lyric strip (pixels per beat); the vertical line drag is converted with it.</summary>
-    public const double PixelsPerBeat = 40.0;
-
-    private const double VerticalLineWidth = 10.0;
-
     public LyricUnit Model { get; } = model;
 
-    /// <summary>Stable identity for undo coalescing while the same unit's line is dragged.</summary>
     public string Id => Model.Id;
 
-    /// <summary>Lyric characters this unit belongs to (the original text; "休止" shown for a rest).</summary>
     public string Source => Model.Text;
 
     public string Display => Model.Display;
+
+    public string Vowel => Model.Vowel;
 
     public double Length => Model.Length;
 
@@ -169,48 +239,504 @@ public sealed class LyricUnitRow(LyricUnit model) : ObservableObject
 
     public bool IsRest => Model.IsRest;
 
-    public double PixelWidth => Math.Max(36, Length * PixelsPerBeat);
+    public string Caption => IsRest
+        ? LanguageService.TranslateFormat("{0}(休止)", Display)
+        : LanguageService.TranslateFormat("{0}({1})", Display, Source);
 
-    /// <summary>Width of one strip item: the block plus the vertical line handle on its right edge.</summary>
-    public double StripWidth => PixelWidth + VerticalLineWidth;
+    public string BeatText => LanguageService.TranslateFormat("{0:0.##} → {1:0.##}（{2:0.##} 拍）",
+        BeatStart, BeatEnd, Length);
 
-    public string BeatText => $"{Length:0.##} 拍";
-
-    /// <summary>Strip label: the voicebank unit first, then the owning lyric character in parentheses.</summary>
-    public string Caption => IsRest ? $"{Display}(空格)" : $"{Display}({Source})";
+    public string FormantText => Model.FormantHz is { Length: 7 } hz
+        ? string.Join(" / ", hz.Select(v => v.ToString("0")))
+        : LanguageService.Translate("自动");
 
     public string Detail => IsRest
-        ? $"歌词：{(string.IsNullOrWhiteSpace(Model.Text) ? "空格" : $"「{Model.Text}」")}（休止） · {BeatStart:0.##} → {BeatEnd:0.##}"
-        : $"歌词「{Source}」 · 音素 {Display} · {BeatStart:0.##} → {BeatEnd:0.##}";
+        ? LanguageService.TranslateFormat("歌词：{0}（休止） · {1}",
+            string.IsNullOrWhiteSpace(Model.Text)
+                ? LanguageService.Translate("空格")
+                : LanguageService.TranslateFormat("「{0}」", Model.Text),
+            BeatText)
+        : LanguageService.TranslateFormat("歌词「{0}」 · 音素 {1} · 元音 {2} · {3}",
+            Source, Display, Vowel, BeatText);
 
-    /// <summary>Called after the underlying object changed (drag or external relayout).</summary>
-    public void RefreshMetrics()
+    public void Refresh()
     {
-        OnPropertyChanged(nameof(Model));
         OnPropertyChanged(nameof(Source));
         OnPropertyChanged(nameof(Display));
+        OnPropertyChanged(nameof(Vowel));
         OnPropertyChanged(nameof(Length));
         OnPropertyChanged(nameof(BeatStart));
         OnPropertyChanged(nameof(BeatEnd));
         OnPropertyChanged(nameof(IsRest));
         OnPropertyChanged(nameof(Caption));
-        OnPropertyChanged(nameof(PixelWidth));
-        OnPropertyChanged(nameof(StripWidth));
         OnPropertyChanged(nameof(BeatText));
+        OnPropertyChanged(nameof(FormantText));
         OnPropertyChanged(nameof(Detail));
+    }
+
+    /// <summary>Readable UI Automation name; without this the automation name falls back to the CLR type name.</summary>
+    public override string ToString() => $"{Caption} · {Vowel} · {BeatText}";
+}
+
+/// <summary>A row in the parameter-key navigator; shows whether the graph writes this key.</summary>
+public sealed class ParameterKeyRow(ParameterKeys.Definition definition) : ObservableObject
+{
+    public ParameterKeys.Definition Definition { get; } = definition;
+
+    public string Key => Definition.Key;
+
+    public string Label => Definition.Label;
+
+    public string Group => Definition.IsFormant
+        ? (Definition.Key.Contains(".BW", StringComparison.Ordinal)
+            ? LanguageService.Translate("共振峰带宽")
+            : Definition.Key.Contains(".G", StringComparison.Ordinal)
+                ? LanguageService.Translate("共振峰增益")
+                : LanguageService.Translate("共振峰位置"))
+        : Definition.Key.StartsWith("followRatio", StringComparison.Ordinal)
+            ? LanguageService.Translate("跟随")
+        : Definition.Key.StartsWith("bandRatios", StringComparison.Ordinal)
+            ? LanguageService.Translate("频带")
+        : LanguageService.Translate("合成参数");
+
+    private bool _hasOutput;
+
+    public string CountText => _hasOutput
+        ? LanguageService.Translate("输出节点")
+        : LanguageService.Translate("直通基础值");
+
+    public void Refresh(bool hasOutput)
+    {
+        _hasOutput = hasOutput;
+        OnPropertyChanged(nameof(CountText));
+    }
+
+    /// <summary>Re-reads the translated group labels after a language switch.</summary>
+    public void RefreshText()
+    {
+        OnPropertyChanged(nameof(Group));
+        OnPropertyChanged(nameof(CountText));
+    }
+
+    public override string ToString() => Label;
+}
+
+/// <summary>
+/// The inspector row for one graph node. Every edit writes straight back to the model and notifies the
+/// view model so the canvas repaints and the render preview is invalidated.
+/// </summary>
+public sealed class NodeRow : ObservableObject
+{
+    private readonly ParameterNodeGraph _graph;
+
+    public NodeRow(ParameterNode model, ParameterNodeGraph graph, Action? onChanged = null)
+    {
+        Model = model;
+        _graph = graph;
+        Changed = onChanged;
+    }
+
+    public ParameterNode Model { get; }
+
+    private Action? Changed { get; }
+
+    public string Id => Model.Id;
+
+    public NodeKind Kind
+    {
+        get => Model.Kind;
+        set
+        {
+            if (Model.Kind == value)
+                return;
+            Model.Kind = value;
+            Model.InputDefaults.Clear();
+            foreach (var socket in NodeCatalog.Get(value).Inputs)
+                Model.InputDefaults.Add(socket.Default);
+            _graph.Links.RemoveAll(l =>
+                l.ToNode == Model.Id && l.ToSocket >= NodeCatalog.Get(value).Inputs.Length);
+            Touch(nameof(Kind), nameof(KindTitle), nameof(Subtitle), nameof(Preview), nameof(InputDefaultsText));
+        }
+    }
+
+    public string KindTitle => NodeCatalog.Get(Model.Kind).Title;
+
+    public string Subtitle => Model.Subtitle;
+
+    public string Title
+    {
+        get => Model.Label;
+        set
+        {
+            if (Model.Label == value)
+                return;
+            Model.Label = value ?? string.Empty;
+            Touch(nameof(Title), nameof(Subtitle));
+        }
+    }
+
+    public bool Muted
+    {
+        get => Model.Muted;
+        set
+        {
+            if (Model.Muted == value)
+                return;
+            Model.Muted = value;
+            Touch(nameof(Muted));
+        }
+    }
+
+    public double Value
+    {
+        get => Model.Value;
+        set
+        {
+            if (Math.Abs(Model.Value - value) < 1e-12)
+                return;
+            Model.Value = value;
+            Touch(nameof(Value), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    public double ValueB
+    {
+        get => Model.ValueB;
+        set
+        {
+            if (Math.Abs(Model.ValueB - value) < 1e-12)
+                return;
+            Model.ValueB = value;
+            Touch(nameof(ValueB), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    public double StartBeat
+    {
+        get => Model.StartBeat;
+        set
+        {
+            if (Math.Abs(Model.StartBeat - value) < 1e-12)
+                return;
+            Model.StartBeat = value;
+            Touch(nameof(StartBeat), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    public double EndBeat
+    {
+        get => Model.EndBeat;
+        set
+        {
+            if (Math.Abs(Model.EndBeat - value) < 1e-12)
+                return;
+            Model.EndBeat = value;
+            Touch(nameof(EndBeat), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    public string Function
+    {
+        get => Model.Function;
+        set
+        {
+            if (Model.Function == value)
+                return;
+            Model.Function = value;
+            Touch(nameof(Function), nameof(Subtitle));
+        }
+    }
+
+    public string Global
+    {
+        get => Model.Global;
+        set
+        {
+            if (Model.Global == value)
+                return;
+            Model.Global = value;
+            Touch(nameof(Global), nameof(Subtitle));
+        }
+    }
+
+    /// <summary>Parameter key for parameter-input / parameter-output nodes.</summary>
+    public string ParameterKey
+    {
+        get => Model.Text;
+        set
+        {
+            if (Model.Text == value)
+                return;
+            Model.Text = value ?? string.Empty;
+            Touch(nameof(ParameterKey), nameof(Subtitle));
+        }
+    }
+
+    /// <summary>Literal vowel class for the vowel / breath managers; empty = follow the lyric.</summary>
+    public string Vowel
+    {
+        get => Model.Text;
+        set
+        {
+            if (Model.Text == value)
+                return;
+            Model.Text = value ?? string.Empty;
+            Touch(nameof(Vowel), nameof(Subtitle));
+        }
+    }
+
+    public int FormantIndex
+    {
+        get => Model.FormantIndex;
+        set
+        {
+            value = Math.Clamp(value, 0, 6);
+            if (Model.FormantIndex == value)
+                return;
+            Model.FormantIndex = value;
+            Touch(nameof(FormantIndex), nameof(Subtitle));
+        }
+    }
+
+    /// <summary>Field key read by a field-decompose node (see <see cref="VoicebankField"/>).</summary>
+    public string Field
+    {
+        get => Model.Field;
+        set
+        {
+            var field = VoicebankField.Get(value).Key;
+            if (string.Equals(Model.Field, field, StringComparison.Ordinal))
+                return;
+            Model.Field = field;
+            Touch(nameof(Field), nameof(Subtitle));
+        }
+    }
+
+    public bool UseVoicebank
+    {
+        get => Model.UseVoicebank;
+        set
+        {
+            if (Model.UseVoicebank == value)
+                return;
+            Model.UseVoicebank = value;
+            Touch(nameof(UseVoicebank), nameof(Subtitle));
+        }
+    }
+
+    /// <summary>Manual override; empty text clears the override back to NaN.</summary>
+    public string ManualValueText
+    {
+        get => double.IsFinite(Model.ManualValue)
+            ? Model.ManualValue.ToString("0.###", CultureInfo.InvariantCulture)
+            : string.Empty;
+        set
+        {
+            var text = (value ?? string.Empty).Trim();
+            var manual = text.Length == 0
+                ? double.NaN
+                : double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                    ? parsed
+                    : double.NaN;
+            if (double.IsNaN(manual) && double.IsNaN(Model.ManualValue))
+                return;
+            if (Math.Abs(manual - Model.ManualValue) < 1e-12)
+                return;
+            Model.ManualValue = manual;
+            Touch(nameof(ManualValueText));
+        }
+    }
+
+    public string BreathOutput
+    {
+        get => Model.BreathOutput;
+        set
+        {
+            if (Model.BreathOutput == value)
+                return;
+            Model.BreathOutput = value;
+            Touch(nameof(BreathOutput), nameof(Subtitle));
+        }
+    }
+
+    public double Amplitude
+    {
+        get => Model.Amplitude;
+        set
+        {
+            if (Math.Abs(Model.Amplitude - value) < 1e-12)
+                return;
+            Model.Amplitude = value;
+            Touch(nameof(Amplitude), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    /// <summary>Unwired input socket values, in socket order: "0, 1, 1".</summary>
+    public string InputDefaultsText
+    {
+        get => string.Join(", ", NodeCatalog.Get(Model.Kind).Inputs
+            .Select((_, i) => Model.InputDefault(i).ToString("0.###", CultureInfo.InvariantCulture)));
+        set
+        {
+            var sockets = NodeCatalog.Get(Model.Kind).Inputs;
+            if (sockets.Length == 0)
+                return;
+
+            var parts = (value ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length != sockets.Length)
+                throw new FormatException($"需要 {sockets.Length} 个输入默认值（用逗号分隔）。");
+
+            var values = parts
+                .Select(p => double.TryParse(p, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+                    ? v
+                    : throw new FormatException($"「{p}」不是数字。"))
+                .ToArray();
+
+            for (var i = 0; i < values.Length; i++)
+                Model.SetInputDefault(i, values[i]);
+            OnPropertyChanged();
+            Changed?.Invoke();
+        }
+    }
+
+    /// <summary>Editable curve: "拍:值, 拍:值, ...".</summary>
+    public string CurveText
+    {
+        get => string.Join(", ", Model.Curve.Points.Select(p => $"{p.Beat:0.##}:{p.Value:0.###}"));
+        set
+        {
+            var points = new List<ParameterCurvePoint>();
+            foreach (var part in (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var pair = part.Split(':', StringSplitOptions.TrimEntries);
+                if (pair.Length != 2
+                    || !double.TryParse(pair[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var beat)
+                    || !double.TryParse(pair[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var val))
+                {
+                    throw new FormatException($"曲线节点「{part.Trim()}」应为 拍:值。");
+                }
+                points.Add(new ParameterCurvePoint { Beat = beat, Value = val });
+            }
+            Model.Curve.Points.Clear();
+            Model.Curve.Points.AddRange(points.OrderBy(p => p.Beat));
+            Touch(nameof(CurveText), nameof(Subtitle), nameof(Preview));
+        }
+    }
+
+    /// <summary>Sampled shape of this node, for the graphical preview.</summary>
+    public IReadOnlyList<double> Preview
+    {
+        get
+        {
+            const int samples = 33;
+            switch (Model.Kind)
+            {
+                case NodeKind.TimeCurve:
+                {
+                    var points = Model.Curve.Points;
+                    if (points.Count < 2)
+                        return [];
+                    var from = points[0].Beat;
+                    var to = points[^1].Beat;
+                    if (Math.Abs(to - from) < 1e-9)
+                        return [];
+                    var result = new double[samples];
+                    for (var i = 0; i < samples; i++)
+                        result[i] = Model.Curve.Evaluate(from + (to - from) * i / (samples - 1));
+                    return result;
+                }
+                case NodeKind.TimeGradient:
+                {
+                    var from = Model.StartBeat;
+                    var to = Model.EndBeat;
+                    if (Math.Abs(to - from) < 1e-9)
+                        return [];
+                    var result = new double[samples];
+                    for (var i = 0; i < samples; i++)
+                    {
+                        var t = (double)i / (samples - 1);
+                        t = t * t * (3 - 2 * t);
+                        result[i] = Model.Value + (Model.ValueB - Model.Value) * t;
+                    }
+                    return result;
+                }
+                case NodeKind.CurveRemap:
+                {
+                    if (Model.Curve.Points.Count < 2)
+                        return [];
+                    var result = new double[samples];
+                    for (var i = 0; i < samples; i++)
+                        result[i] = Model.Curve.Evaluate((double)i / (samples - 1));
+                    return result;
+                }
+                case NodeKind.Noise:
+                case NodeKind.Random:
+                {
+                    var result = new double[samples];
+                    for (var i = 0; i < samples; i++)
+                    {
+                        var t = 1 + i * 7.0 / (samples - 1);
+                        var lattice = Math.Floor(t);
+                        var fraction = t - lattice;
+                        var smooth = fraction * fraction * (3 - 2 * fraction);
+                        result[i] = Model.Kind == NodeKind.Noise
+                            ? Math.Sin(lattice * 1.7 + Model.Amplitude) * Model.Amplitude * smooth
+                            : Math.Sin(i * 2.3 + Model.Amplitude * 10) * Model.Amplitude;
+                    }
+                    return result;
+                }
+                default:
+                    return [];
+            }
+        }
+    }
+
+    public void Refresh()
+    {
+        OnPropertyChanged(nameof(Kind));
+        OnPropertyChanged(nameof(KindTitle));
+        OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(Muted));
+        OnPropertyChanged(nameof(Value));
+        OnPropertyChanged(nameof(ValueB));
+        OnPropertyChanged(nameof(StartBeat));
+        OnPropertyChanged(nameof(EndBeat));
+        OnPropertyChanged(nameof(Function));
+        OnPropertyChanged(nameof(Global));
+        OnPropertyChanged(nameof(ParameterKey));
+        OnPropertyChanged(nameof(Vowel));
+        OnPropertyChanged(nameof(FormantIndex));
+        OnPropertyChanged(nameof(Field));
+        OnPropertyChanged(nameof(UseVoicebank));
+        OnPropertyChanged(nameof(ManualValueText));
+        OnPropertyChanged(nameof(BreathOutput));
+        OnPropertyChanged(nameof(Amplitude));
+        OnPropertyChanged(nameof(InputDefaultsText));
+        OnPropertyChanged(nameof(CurveText));
+        OnPropertyChanged(nameof(Preview));
+    }
+
+    private void Touch(params string[] properties)
+    {
+        foreach (var property in properties)
+            OnPropertyChanged(property);
+        Changed?.Invoke();
     }
 }
 
 /// <summary>A row of the user dictionary list.</summary>
-public sealed class DictionaryEntryRow(DictionaryEntry model)
+public sealed class DictionaryEntryRow(DictionaryEntry model) : ObservableObject
 {
     public string Text { get; } = model.Text;
     public DictionaryEntry Model { get; } = model;
 
-    /// <summary>For example, "2 notes · _し + _や".</summary>
-    public string Detail { get; } =
-        $"{model.Parts.Count} 音 · " +
-        string.Join(" + ", model.Parts.Select(p => Path.GetFileNameWithoutExtension(p.Audio)));
+    public string Detail => LanguageService.TranslateFormat("{0} 音 · {1}",
+        Model.Parts.Count,
+        string.Join(" + ", Model.Parts.Select(p => Path.GetFileNameWithoutExtension(p.Audio))));
+
+    public void Refresh() => OnPropertyChanged(nameof(Detail));
 }
 
 public sealed record LogEntry(DateTime Time, string Kind, string Message)
@@ -238,7 +764,7 @@ public sealed class VoicebankOption(string name, string path)
     public override string ToString() => Name;
 }
 
-/// <summary>A row of a parameter slider: dragging writes back to the model and keeps the value text on the right in sync.</summary>
+/// <summary>A row of a parameter slider: dragging writes back to the model.</summary>
 public sealed class ParameterRow(
     string label, double minimum, double maximum, double step, double value, Action<double> apply)
     : ObservableObject

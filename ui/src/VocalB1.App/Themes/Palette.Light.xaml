@@ -11,6 +11,7 @@
     <Color x:Key="DimColor">#6B6B6B</Color>
     <Color x:Key="AccentColor">#3A3A3A</Color>
     <Color x:Key="AccentSoftColor">#D9D9D9</Color>
+    <Color x:Key="DataColor">#2F6FBF</Color>
     <Color x:Key="PitchColor">#1F1F1F</Color>
     <Color x:Key="WarnColor">#4F4F4F</Color>
     <Color x:Key="ErrorColor">#000000</Color>
@@ -33,6 +34,7 @@
     <SolidColorBrush x:Key="DimBrush" Color="{StaticResource DimColor}" />
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{StaticResource AccentSoftColor}" />
+    <SolidColorBrush x:Key="DataBrush" Color="{StaticResource DataColor}" />
     <SolidColorBrush x:Key="PitchBrush" Color="{StaticResource PitchColor}" />
     <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource WarnColor}" />
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />

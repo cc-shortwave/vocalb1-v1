@@ -128,7 +128,7 @@ public sealed class PythonEngineClient : IRenderEngine
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var issues = ProjectValidator.Validate(request.Track, request.Project);
+        var issues = ProjectValidator.Validate(request.Project);
         if (ProjectValidator.HasError(issues))
         {
             var errors = string.Join("\n", issues
@@ -156,6 +156,7 @@ public sealed class PythonEngineClient : IRenderEngine
 
             progress?.Report(new EngineEvent(EngineEventKind.Log, "已提交渲染请求…"));
 
+            var plan = request.Plan;
             var payload = new Dictionary<string, object?>
             {
                 ["id"] = id,
@@ -166,9 +167,29 @@ public sealed class PythonEngineClient : IRenderEngine
                     bpm = request.Project.Bpm,
                     beatsPerBar = request.Project.BeatsPerBar,
                     beatUnit = request.Project.BeatUnit,
-                    segments = request.Track.Segments,
-                    pitchLine = request.Track.BuildRenderPitchLine(),
-                    settings = request.Track.Settings,
+                    singer = new
+                    {
+                        name = plan.Singer.Name,
+                        index = plan.SingerIndex,
+                        count = plan.SingerCount,
+                        mixGain = plan.MixGain,
+                    },
+                    segments = plan.Segments,
+                    pitchLine = plan.PitchLine,
+                    settings = plan.Settings,
+                    frames = new
+                    {
+                        framePeriod = plan.FramePeriod,
+                        framesPerBeat = plan.FramesPerBeat,
+                        count = plan.FrameCount,
+                    },
+                    curves = plan.Curves,
+                    // Opt-in: the envelope warp may only run for a voicebank with a measured formant
+                    // profile. Without formants.json the built-in vowel table would move every voice
+                    // onto one generic F1~F7 layout, which rewrites the singer's timbre.
+                    formantTargets = plan.FormantProfile.IsMeasured
+                        ? ToJagged(plan.FormantTargetsHz)
+                        : null,
                 },
             };
             var json = JsonSerializer.Serialize(payload, BridgeJson.RequestOptions);
@@ -208,6 +229,21 @@ public sealed class PythonEngineClient : IRenderEngine
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>System.Text.Json cannot serialize rectangular arrays; the bridge expects frames of 7.</summary>
+    private static double[][] ToJagged(double[,] matrix)
+    {
+        var rows = matrix.GetLength(0);
+        var columns = matrix.GetLength(1);
+        var result = new double[rows][];
+        for (var r = 0; r < rows; r++)
+        {
+            result[r] = new double[columns];
+            for (var c = 0; c < columns; c++)
+                result[r][c] = matrix[r, c];
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------
@@ -344,11 +380,17 @@ public sealed class PythonEngineClient : IRenderEngine
 
             case "error":
                 var detail = message.Message ?? "未知错误";
+                var where = string.Join(" @ ",
+                    new[] { message.ClassName, message.Stage }
+                        .Where(part => !string.IsNullOrWhiteSpace(part)));
+                var typed = string.IsNullOrWhiteSpace(message.ErrorType)
+                    ? detail
+                    : $"[{message.ErrorType}{(where.Length > 0 ? " @ " + where : string.Empty)}] {detail}";
                 if (!string.IsNullOrWhiteSpace(message.Traceback))
-                    detail += "\n\n" + message.Traceback;
-                _pending?.TryFail(new EngineException(detail));
+                    typed += "\n\n" + message.Traceback;
+                _pending?.TryFail(new EngineException(typed));
                 if (_pending is null)
-                    _handshake?.TrySetException(new EngineException(detail));
+                    _handshake?.TrySetException(new EngineException(typed));
                 break;
         }
     }

@@ -3,10 +3,11 @@ namespace VocalB1.Core.Models;
 /// <summary>
 /// Segment timeline rules: adjacency, overlap detection, push/shift, and transition-node synchronization.
 /// Conventions:
-/// 1. New overlaps between segments are not allowed by default; when a segment is dragged past the next one, all following segments shift back together while keeping their relative spacing.
+/// 1. Segments may never overlap in time (hard rule). A segment dragged past the next one pushes all
+///    following segments back together while keeping their relative spacing, and
+///    <see cref="RemoveOverlaps"/> is the final safety net after every edit.
 /// 2. Dragging left into the previous segment is forbidden (a segment's start may not precede the previous segment's end beat).
-/// 3. Existing overlaps (e.g. head/tail overlaps in stored project data) are preserved, but normal control points may not fall inside an overlap;
-///    the overlap is adjusted only by a transition node located at its center.
+/// 3. <see cref="RemoveOverlaps"/> also normalises legacy project data that contains overlaps.
 /// </summary>
 public static class SegmentLayout
 {
@@ -16,15 +17,15 @@ public static class SegmentLayout
     public readonly record struct Overlap(VoiceSegment Left, VoiceSegment Right, double Start, double End);
 
     /// <summary>Snapshot of segments ordered by start beat ascending (ties broken by end beat).</summary>
-    public static List<VoiceSegment> Ordered(TrackDocument track) => Ordered(track.Segments);
+    public static List<VoiceSegment> Ordered(LyricDocument track) => Ordered(track.Segments);
 
-    /// <inheritdoc cref="Ordered(TrackDocument)"/>
+    /// <inheritdoc cref="Ordered(LyricDocument)"/>
     public static List<VoiceSegment> Ordered(IReadOnlyList<VoiceSegment> segments) =>
         [.. segments.OrderBy(s => s.BeatStart).ThenBy(s => s.BeatEnd)];
 
     /// <summary>Previous/next neighboring segments on the timeline; equal start beats are decided by list order.</summary>
     public static (VoiceSegment? Previous, VoiceSegment? Next) Neighbors(
-        TrackDocument track, VoiceSegment segment)
+        LyricDocument track, VoiceSegment segment)
     {
         var ordered = Ordered(track);
         var index = ordered.FindIndex(s => ReferenceEquals(s, segment));
@@ -36,9 +37,9 @@ public static class SegmentLayout
     }
 
     /// <summary>Time overlaps of all adjacent segments (only counted when the overlap exceeds 1 millisecond in beat units).</summary>
-    public static List<Overlap> Overlaps(TrackDocument track) => Overlaps(track.Segments);
+    public static List<Overlap> Overlaps(LyricDocument track) => Overlaps(track.Segments);
 
-    /// <inheritdoc cref="Overlaps(TrackDocument)"/>
+    /// <inheritdoc cref="Overlaps(LyricDocument)"/>
     public static List<Overlap> Overlaps(IReadOnlyList<VoiceSegment> segments)
     {
         var overlaps = new List<Overlap>();
@@ -56,15 +57,67 @@ public static class SegmentLayout
         return overlaps;
     }
 
+    /// <summary>
+    /// Enforces the no-overlap rule: walks segments by start beat and pushes any segment that begins
+    /// before the running end of the previous ones to that end (length and pitch nodes move with it).
+    /// Returns true when something was moved.
+    /// </summary>
+    public static bool RemoveOverlaps(LyricDocument track)
+    {
+        var ordered = Ordered(track);
+        var cursorEnd = double.MinValue;
+        var moved = false;
+        foreach (var segment in ordered)
+        {
+            if (segment.BeatStart < cursorEnd - Epsilon)
+            {
+                var delta = cursorEnd - segment.BeatStart;
+                segment.BeatStart += delta;
+                segment.BeatEnd += delta;
+                ShiftPitchPoints(track, [segment], delta);
+                moved = true;
+            }
+
+            cursorEnd = Math.Max(cursorEnd, segment.BeatEnd);
+        }
+
+        return moved;
+    }
+
+    /// <summary>Whether the given beat range intersects any segment other than <paramref name="ignoreId"/>.</summary>
+    public static bool Intersects(LyricDocument track, double start, double end, string? ignoreId = null) =>
+        track.Segments.Any(s => s.Id != ignoreId
+            && s.BeatEnd > start + Epsilon && s.BeatStart < end - Epsilon);
+
+    /// <summary>
+    /// Earliest start at or after <paramref name="start"/> where a segment of <paramref name="length"/> beats fits
+    /// without overlapping an existing segment. The range slides past the whole chain of blocking segments.
+    /// </summary>
+    public static double FindFreeStart(LyricDocument track, double start, double length)
+    {
+        var candidate = Math.Max(1, start);
+        foreach (var segment in Ordered(track))
+        {
+            if (segment.BeatEnd <= candidate + Epsilon)
+                continue;
+            if (segment.BeatStart >= candidate + length - Epsilon)
+                continue;
+
+            candidate = segment.BeatEnd;
+        }
+
+        return candidate;
+    }
+
     /// <summary>Whether a beat position falls inside any overlap.</summary>
-    public static bool IsInOverlap(TrackDocument track, double beat) =>
+    public static bool IsInOverlap(LyricDocument track, double beat) =>
         Overlaps(track).Any(o => beat > o.Start + Epsilon && beat < o.End - Epsilon);
 
     /// <summary>
     /// Shifts all segments after <paramref name="segment"/> back together
     /// so that their start is not earlier than <paramref name="minStart"/>, keeping their spacing unchanged.
     /// </summary>
-    public static void PushAfter(TrackDocument track, VoiceSegment segment, double minStart)
+    public static void PushAfter(LyricDocument track, VoiceSegment segment, double minStart)
     {
         var ordered = Ordered(track);
         var index = ordered.FindIndex(s => ReferenceEquals(s, segment));
@@ -90,7 +143,7 @@ public static class SegmentLayout
     /// creates/updates one center transition node per overlap, removes stale transition nodes,
     /// and pushes normal control points out of the overlaps.
     /// </summary>
-    public static void SyncTransitionPoints(TrackDocument track)
+    public static void SyncTransitionPoints(LyricDocument track)
     {
         var overlaps = Overlaps(track);
 
@@ -131,7 +184,7 @@ public static class SegmentLayout
     }
 
     /// <summary>When a normal control point falls inside an overlap, pushes it to the non-overlapping boundary on its segment's side.</summary>
-    private static void ClampPointsOutOfOverlaps(TrackDocument track, List<Overlap> overlaps)
+    private static void ClampPointsOutOfOverlaps(LyricDocument track, List<Overlap> overlaps)
     {
         if (overlaps.Count == 0)
             return;
@@ -160,7 +213,7 @@ public static class SegmentLayout
     }
 
     /// <summary>Shifts all nodes owned by the given segments (used when dragging pushed segments).</summary>
-    private static void ShiftPitchPoints(TrackDocument track, IEnumerable<VoiceSegment> segments, double delta)
+    private static void ShiftPitchPoints(LyricDocument track, IEnumerable<VoiceSegment> segments, double delta)
     {
         var ids = segments.Select(s => s.Id).ToHashSet();
         foreach (var point in track.PitchLine)

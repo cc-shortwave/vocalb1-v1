@@ -17,7 +17,7 @@ public static class LyricPhraseComposer
     public static ApplyResult Apply(
         LyricPhrase phrase,
         IReadOnlyList<LyricWord> template,
-        TrackDocument track,
+        LyricDocument track,
         double defaultUnitBeats,
         double defaultTransitionFrames,
         string defaultPitch)
@@ -84,7 +84,7 @@ public static class LyricPhraseComposer
     /// Converts every pronunciation unit of a word into a rest of the same beat span and removes its
     /// segments. The original text stays in <see cref="LyricUnit.Text"/> for the detail tooltip.
     /// </summary>
-    public static void MuteWord(LyricPhrase phrase, LyricWord word, TrackDocument track)
+    public static void MuteWord(LyricPhrase phrase, LyricWord word, LyricDocument track)
     {
         ArgumentNullException.ThrowIfNull(phrase);
         ArgumentNullException.ThrowIfNull(word);
@@ -106,7 +106,7 @@ public static class LyricPhraseComposer
     /// Removes a rest word from the phrase. When <paramref name="pullFollowing"/> is true, the words
     /// after it are moved left by its span so the strip stays contiguous.
     /// </summary>
-    public static void RemoveWord(LyricPhrase phrase, LyricWord word, TrackDocument track, bool pullFollowing)
+    public static void RemoveWord(LyricPhrase phrase, LyricWord word, LyricDocument track, bool pullFollowing)
     {
         ArgumentNullException.ThrowIfNull(phrase);
         ArgumentNullException.ThrowIfNull(word);
@@ -130,7 +130,7 @@ public static class LyricPhraseComposer
     /// update their unit's timing, and segments not yet represented gain a word object.
     /// Returns the number of changes.
     /// </summary>
-    public static int SyncWithSegments(LyricPhrase phrase, TrackDocument track)
+    public static int SyncWithSegments(LyricPhrase phrase, LyricDocument track)
     {
         ArgumentNullException.ThrowIfNull(phrase);
         ArgumentNullException.ThrowIfNull(track);
@@ -212,14 +212,15 @@ public static class LyricPhraseComposer
 
     private static LyricWord CreateWord(
         LyricWord template,
-        TrackDocument track,
+        LyricDocument track,
         double startBeat,
         double unitBeats,
         double transitionFrames,
         string defaultPitch)
     {
         var word = new LyricWord { Surface = template.Surface };
-        var cursor = startBeat;
+        // Notes may never overlap: the word slides past any segment that already occupies its beat range.
+        var cursor = SegmentLayout.FindFreeStart(track, startBeat, template.Units.Count * unitBeats);
 
         foreach (var templateUnit in template.Units)
         {
@@ -262,7 +263,7 @@ public static class LyricPhraseComposer
         return word;
     }
 
-    private static void RemoveSegment(LyricUnit unit, TrackDocument track)
+    private static void RemoveSegment(LyricUnit unit, LyricDocument track)
     {
         if (unit.SegmentId is not string id)
             return;
@@ -272,7 +273,7 @@ public static class LyricPhraseComposer
         unit.SegmentId = null;
     }
 
-    private static void RemoveWordSegments(LyricWord word, TrackDocument track)
+    private static void RemoveWordSegments(LyricWord word, LyricDocument track)
     {
         foreach (var unit in word.Units)
         {
@@ -281,7 +282,7 @@ public static class LyricPhraseComposer
         }
     }
 
-    private static void ShiftWord(LyricWord word, double delta, TrackDocument track)
+    private static void ShiftWord(LyricWord word, double delta, LyricDocument track)
     {
         if (Math.Abs(delta) < 1e-12)
             return;

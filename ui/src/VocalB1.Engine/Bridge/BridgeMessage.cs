@@ -14,6 +14,9 @@ internal sealed class BridgeMessage
     [JsonPropertyName("elapsedSec")] public double? ElapsedSec { get; set; }
     [JsonPropertyName("durationSec")] public double? DurationSec { get; set; }
     [JsonPropertyName("traceback")] public string? Traceback { get; set; }
+    [JsonPropertyName("errorType")] public string? ErrorType { get; set; }
+    [JsonPropertyName("className")] public string? ClassName { get; set; }
+    [JsonPropertyName("stage")] public string? Stage { get; set; }
     [JsonPropertyName("python")] public string? Python { get; set; }
     [JsonPropertyName("root")] public string? Root { get; set; }
     [JsonPropertyName("engine")] public string? Engine { get; set; }
