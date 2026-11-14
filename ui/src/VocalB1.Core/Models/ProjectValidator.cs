@@ -100,19 +100,31 @@ public static class ProjectValidator
             ValidateFormants(seg.FormantHz, $"{label}共振峰", issues, i);
         }
 
-        if (lyric.PitchLine.Count is > 0 and < 2)
-            issues.Add(new ProjectIssue(ProjectIssueSeverity.Warning,
-                $"歌词「{lyric.Name}」音高线至少需要 2 个端点，当前将忽略。"));
-        else if (lyric.PitchLine.Count >= 2 && lyric.PitchLine[^1].Beat <= lyric.PitchLine[0].Beat)
-            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, $"歌词「{lyric.Name}」音高线端点拍位必须递增。"));
-
-        foreach (var point in lyric.PitchLine.Where(p => p.Pitch is not null))
+        if (lyric.PitchRaster is { } raster)
         {
-            if (!string.Equals(point.Pitch, "KEEP", StringComparison.OrdinalIgnoreCase)
-                && !PitchMath.TryParseSemitones(point.Pitch!, out _))
-            {
+            if (!double.IsFinite(raster.CellBeats) || raster.CellBeats <= 0)
                 issues.Add(new ProjectIssue(ProjectIssueSeverity.Error,
-                    $"歌词「{lyric.Name}」音高线端点音高无法解析：{point.Pitch}"));
+                    $"歌词「{lyric.Name}」音高曲线格子长度非法。"));
+            if (raster.Values.Any(v => v is { } value && !double.IsFinite(value) && !double.IsNaN(value)))
+                issues.Add(new ProjectIssue(ProjectIssueSeverity.Error,
+                    $"歌词「{lyric.Name}」音高曲线包含无效数值。"));
+        }
+        else
+        {
+            if (lyric.PitchLine.Count is > 0 and < 2)
+                issues.Add(new ProjectIssue(ProjectIssueSeverity.Warning,
+                    $"歌词「{lyric.Name}」音高线至少需要 2 个端点，当前将忽略。"));
+            else if (lyric.PitchLine.Count >= 2 && lyric.PitchLine[^1].Beat <= lyric.PitchLine[0].Beat)
+                issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, $"歌词「{lyric.Name}」音高线端点拍位必须递增。"));
+
+            foreach (var point in lyric.PitchLine.Where(p => p.Pitch is not null))
+            {
+                if (!string.Equals(point.Pitch, "KEEP", StringComparison.OrdinalIgnoreCase)
+                    && !PitchMath.TryParseSemitones(point.Pitch!, out _))
+                {
+                    issues.Add(new ProjectIssue(ProjectIssueSeverity.Error,
+                        $"歌词「{lyric.Name}」音高线端点音高无法解析：{point.Pitch}"));
+                }
             }
         }
 

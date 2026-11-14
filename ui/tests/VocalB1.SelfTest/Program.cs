@@ -29,6 +29,8 @@ internal static class Program
 
         TestPitchMath();
         TestProjectJson();
+        TestSpatial();
+        TestPitchRaster();
         TestNodeGraph();
         TestDictionary();
         TestLyricPhrase();
@@ -156,8 +158,10 @@ internal static class Program
             && back.ParameterSets[1].Graph.Nodes.Count(n => n.Kind == NodeKind.ParameterOutput) == 1
             && back.ParameterSets[1].Graph.Nodes.Any(n => n.Kind == NodeKind.VowelManager)
             && back.ParameterSets[1].Graph.Links.Count == 2);
-        Check("JSON 往返：音高线端点", back.Lyrics[0].PitchLine.Count == 2 && back.Lyrics[0].PitchLine[0].Pitch == "G4");
-        Check("JSON 往返：无声端点保持 null", back.Lyrics[0].PitchLine[1].Pitch is null);
+        Check("JSON 往返：音高曲线已栅格化", back.Lyrics[0].PitchRaster is { HasValues: true }
+            && back.Lyrics[0].PitchLine.Count == 0);
+        Check("JSON 往返：栅格音高保留 G4", back.Lyrics[0].PitchRaster is { } rasterBack
+            && rasterBack.Values[0] is { } firstValue && Math.Abs(firstValue - 7) < 1e-6);
         Check("JSON 使用 camelCase",
             json.Contains("\"beatStart\"") && json.Contains("\"pitchLine\"")
             && json.Contains("\"lyrics\"") && json.Contains("\"parameterSets\"") && json.Contains("\"singers\""));
@@ -183,6 +187,168 @@ internal static class Program
             legacy.IsLegacyReadOnly && legacy.Singers.Count == 1 && legacy.Lyrics.Count == 1
             && legacy.Lyrics[0].Segments.Count == 1
             && Math.Abs(legacy.ParameterSets[0].Base.ApScale - 0.33) < 1e-9);
+    }
+
+    // ------------------------------------------------------------------
+    // 2b. Spatial trajectory solver
+    // ------------------------------------------------------------------
+    private static void TestSpatial()
+    {
+        var disabled = SpatialSolver.Solve(new SpatialTrajectory
+        {
+            X = [new SpatialPoint { Beat = 1, Value = 1 }],
+        }, 8, 4);
+        Check("空间解算：未启用时返回 null", disabled is null);
+
+        var empty = SpatialSolver.Solve(new SpatialTrajectory { Enabled = true }, 8, 4);
+        Check("空间解算：没有关键帧时返回 null", empty is null);
+
+        var trajectory = new SpatialTrajectory
+        {
+            Enabled = true,
+            X =
+            [
+                new SpatialPoint { Beat = 5, Value = 1 },
+                new SpatialPoint { Beat = 1, Value = -1 },
+            ],
+            Y =
+            [
+                new SpatialPoint { Beat = 1, Value = 0 },
+                new SpatialPoint { Beat = 5, Value = 1 },
+            ],
+        };
+
+        var frames = SpatialSolver.Solve(trajectory, 17, 4);
+        Check("空间解算：启用后产生逐帧数据", frames is not null && frames.Pan.Length == 17);
+        if (frames is null)
+            return;
+
+        Check("空间解算：X 轴按拍插值到左右声像",
+            Math.Abs(frames.Pan[0] + 1) < 0.02
+            && Math.Abs(frames.Pan[8]) < 0.02
+            && Math.Abs(frames.Pan[16] - 1) < 0.02,
+            $"{frames.Pan[0]:F2}/{frames.Pan[8]:F2}/{frames.Pan[16]:F2}");
+
+        Check("空间解算：Y 轴由近到远衰减", Math.Abs(frames.Gain[0] - 1) < 0.01
+            && frames.Gain[16] < frames.Gain[0]
+            && Math.Abs(frames.Gain[16] - 1.0 / 3.0) < 0.01,
+            $"{frames.Gain[0]:F3}→{frames.Gain[16]:F3}");
+
+        Check("空间解算：高频滚降随距离单调下降",
+            Math.Abs(frames.CutoffHz[0] - SpatialSolver.MaxCutoffHz) < 1
+            && Math.Abs(frames.CutoffHz[16] - SpatialSolver.MinCutoffHz) < 1
+            && frames.CutoffHz.Zip(frames.CutoffHz.Skip(1)).All(pair => pair.Second <= pair.First + 1e-9),
+            $"{frames.CutoffHz[0]:F0}→{frames.CutoffHz[16]:F0}");
+
+        var high = trajectory.Clone();
+        high.Z = [new SpatialPoint { Beat = 1, Value = 1 }];
+        var highFrames = SpatialSolver.Solve(high, 17, 4);
+        Check("空间解算：Z 轴抬高截止频率",
+            highFrames is not null && highFrames.CutoffHz[16] > frames.CutoffHz[16] * 1.5);
+
+        var project = new ProjectDocument { Name = "空间工程" };
+        var singer = new SingerDocument { Name = "空间歌手" };
+        singer.Spatial.Enabled = true;
+        singer.Spatial.X.Add(new SpatialPoint { Beat = 2, Value = -0.5 });
+        singer.Spatial.Y.Add(new SpatialPoint { Beat = 6, Value = 0.8 });
+        project.Singers.Add(singer);
+
+        var json = ProjectJson.Serialize(project);
+        var back = ProjectJson.Deserialize(json);
+        Check("空间：JSON 往返保留轨迹",
+            back.Singers.Count == 1
+            && back.Singers[0].Spatial.Enabled
+            && back.Singers[0].Spatial.X.Count == 1
+            && Math.Abs(back.Singers[0].Spatial.X[0].Value + 0.5) < 1e-9
+            && back.Singers[0].Spatial.Y.Count == 1);
+        Check("空间：JSON 使用 camelCase", json.Contains("\"spatial\"") && json.Contains("\"x\""));
+
+        var legacy = ProjectJson.Deserialize("{\"formatVersion\":\"3.0\",\"singers\":[{\"name\":\"旧\"}]}");
+        Check("空间：旧工程默认关闭且无关键帧",
+            legacy.Singers.Count == 1
+            && !legacy.Singers[0].Spatial.Enabled
+            && !legacy.Singers[0].Spatial.HasPoints);
+
+        var strays = new SpatialTrajectory
+        {
+            X = [new SpatialPoint { Beat = double.NaN, Value = 0 }, new SpatialPoint { Beat = 3, Value = 9 }],
+        };
+        strays.Normalize();
+        Check("空间：清洗非有限值并钳制范围",
+            strays.X.Count == 1 && Math.Abs(strays.X[0].Beat - 3) < 1e-9
+            && Math.Abs(strays.X[0].Value - 1) < 1e-9);
+    }
+
+    // ------------------------------------------------------------------
+    // 2c. Raster pitch curve (brush editing)
+    // ------------------------------------------------------------------
+    private static void TestPitchRaster()
+    {
+        var raster = new PitchRaster();
+        Check("音高位图：空格子视为未覆盖", raster.ValueAt(1) is null && !raster.HasValues);
+
+        raster.Paint(1, 1.5, 7);
+        Check("音高位图：画笔按 1/128 拍写入",
+            raster.IndexOfBeat(1.5) == 64
+            && raster.ValueAt(1.1) is { } painted && Math.Abs(painted - 7) < 1e-9
+            && raster.ValueAt(2) is null,
+            $"index1.5={raster.IndexOfBeat(1.5)}");
+
+        raster.SetValue(10, 7.375);
+        Check("音高位图：音高以连续半音保存",
+            raster.ValueAt(1.08) is { } fine && Math.Abs(fine - 7.375) < 1e-9);
+
+        var jitter = new PitchRaster();
+        for (var i = 0; i < 16; i++)
+            jitter.SetValue(i, i % 2 == 0 ? 60 : 64);
+        jitter.Smooth(0, 15, 2);
+        Check("音高位图：防抖平滑降低抖动幅度",
+            jitter.Values.OfType<double>().Max() < 64
+            && jitter.Values.OfType<double>().Min() > 60);
+
+        raster.SetValue(70, null);
+        var encoded = raster.ToPitchPoints();
+        Check("音高位图：渲染点按变化压缩并编码 KEEP",
+            encoded.Count >= 2
+            && encoded[0].Pitch == "7"
+            && encoded[^1].Pitch == "KEEP",
+            string.Join(",", encoded.Select(p => $"{p.Beat:0.###}={p.Pitch ?? "null"}")));
+
+        var legacy = new LyricDocument
+        {
+            PitchLine =
+            [
+                new PitchPoint { Beat = 1, Pitch = "G4" },
+                new PitchPoint { Beat = 2, Pitch = "A4" },
+            ],
+        };
+        var migrated = PitchRaster.FromPitchLine(legacy.BuildRenderPitchLine());
+        Check("音高位图：旧曲线按 smoothstep 栅格化",
+            migrated is not null
+            && migrated.ValueAt(1.0) is { } start && Math.Abs(start - 7) < 1e-3
+            && migrated.ValueAt(1.5) is { } mid && Math.Abs(mid - 8) < 0.05
+            && migrated.ValueAt(1.99) is { } tail && tail > 8.9);
+
+        var project = new ProjectDocument { Name = "位图工程" };
+        var lyric = new LyricDocument { Name = "位图歌词" };
+        lyric.PitchRaster = new PitchRaster();
+        lyric.PitchRaster.Paint(1, 2, 7);
+        lyric.PitchRaster.SetValue(96, double.NaN);
+        project.Lyrics.Add(lyric);
+        var back = ProjectJson.Deserialize(ProjectJson.Serialize(project));
+        Check("音高位图：JSON 往返保留曲线",
+            back.Lyrics.Count == 1
+            && back.Lyrics[0].PitchRaster is { HasValues: true }
+            && back.Lyrics[0].PitchRaster!.ValueAt(1.2) is { } value && Math.Abs(value - 7) < 1e-6
+            && back.Lyrics[0].PitchRaster!.ValueAt(1.75) is { } silent && double.IsNaN(silent));
+
+        var track = new LyricDocument();
+        track.PitchRaster = new PitchRaster();
+        track.PitchRaster.Paint(2, 3, 5);
+        track.PitchRaster.ShiftRange(2, 3, 1, 2);
+        Check("音高位图：随音符平移并移调",
+            track.PitchRaster.ValueAt(2.2) is null
+            && track.PitchRaster.ValueAt(3.2) is { } moved && Math.Abs(moved - 7) < 1e-6);
     }
 
     // ------------------------------------------------------------------

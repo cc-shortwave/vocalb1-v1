@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using VocalB1.App.Services;
 
 namespace VocalB1.App.Controls;
 
@@ -53,7 +54,7 @@ public sealed class FormantBarsView : FrameworkElement
         var values = Values;
         if (values is null || values.Count == 0)
         {
-            DrawText(dc, Hint ?? "未选择音节", width / 2, height / 2, dim, 10, TextAlignment.Center);
+            DrawText(dc, Hint ?? LanguageService.Translate("未选择音节"), width / 2, height / 2, dim, 10, TextAlignment.Center);
             return;
         }
 

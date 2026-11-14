@@ -66,6 +66,10 @@ FORMANT_TARGETS = None
 FRAMES_PER_BEAT = None
 SEGMENT_FRAME_OFFSETS = None
 MIX_GAIN = 1.0
+#   SPATIAL : {"pan": [...], "gain": [...], "cutoffHz": [...]} per synthesis frame or None.
+#   When set, the final mono signal is filtered with a per-frame high-frequency rolloff and
+#   written as an equal-power stereo wav (pan comes from the spatial solver's X axis).
+SPATIAL = None
 
 # ======================================================================
 # Default parameter section (overridden item by item by synthesize() keyword args)
@@ -1926,6 +1930,73 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
                 sr=sr, fp=fp, semitones=semitones, name=os.path.basename(audio_path))
 
 
+def _apply_spatial(out_data, sample_rate, frame_period, spatial):
+    """Apply per-frame pan, distance gain and high-frequency rolloff; returns an (n, 2) stereo array.
+
+    The rolloff is a 12 dB/oct two-stage one-pole low-pass whose cutoff follows the Y (distance)
+    axis. Cutoffs at or above 16 kHz bypass the filter so a centred singer keeps its original timbre.
+    Pan is an equal-power position in [-1, 1] (X axis), so the summed power stays constant.
+    """
+    pan = np.asarray(spatial.get("pan") or [], dtype=np.float64)
+    if pan.size == 0:
+        return out_data
+
+    mono = np.asarray(out_data, dtype=np.float64)
+    if mono.ndim > 1:
+        mono = np.mean(mono, axis=1)
+    n = mono.shape[0]
+    if n == 0:
+        return mono
+
+    frames = pan.shape[0]
+
+    def _fit(values, default):
+        values = np.asarray(values if values is not None else [], dtype=np.float64)
+        if values.size == 0:
+            return np.full(frames, float(default))
+        if values.size < frames:
+            values = np.concatenate([values, np.full(frames - values.size, values[-1])])
+        return values[:frames]
+
+    gain = _fit(spatial.get("gain"), 1.0)
+    cutoff = _fit(spatial.get("cutoffHz") or spatial.get("cutoff_hz"), 18000.0)
+
+    hop = max(1, int(round(frame_period / 1000.0 * sample_rate)))
+    positions = np.arange(n, dtype=np.float64) / hop
+    grid = np.arange(frames, dtype=np.float64)
+    pan_s = np.interp(positions, grid, pan)
+    gain_s = np.interp(positions, grid, gain)
+    cutoff_s = np.interp(positions, grid, cutoff)
+
+    from scipy.signal import lfilter
+
+    filtered = mono.copy()
+    y1 = y2 = 0.0
+    for start in range(0, n, hop):
+        end = min(n, start + hop)
+        fc = float(np.mean(cutoff_s[start:end]))
+        if not np.isfinite(fc):
+            fc = 18000.0
+        fc = min(max(fc, 200.0), sample_rate * 0.45)
+        if fc >= 16000.0:
+            # Transparent at the near/centre position: leave the samples untouched.
+            y1 = y2 = float(filtered[end - 1])
+            continue
+
+        a = 1.0 - np.exp(-2.0 * np.pi * fc / sample_rate)
+        den = [1.0, -(1.0 - a)]
+        seg = filtered[start:end]
+        seg, _ = lfilter([a], den, seg, zi=[(1.0 - a) * y1])
+        y1 = float(seg[-1])
+        seg, _ = lfilter([a], den, seg, zi=[(1.0 - a) * y2])
+        y2 = float(seg[-1])
+        filtered[start:end] = seg
+
+    theta = (np.clip(pan_s, -1.0, 1.0) + 1.0) * (np.pi / 4.0)
+    level = filtered * gain_s
+    return np.stack([level * np.cos(theta), level * np.sin(theta)], axis=1)
+
+
 def synthesize(segments,
                output_path,
                *,
@@ -1937,6 +2008,8 @@ def synthesize(segments,
                frames_per_beat=None,
                # [1.3] per-singer linear mix gain applied before the final save
                mix_gain=1.0,
+               # [1.4] per-singer spatial solver output (stereo pan + distance rolloff)
+               spatial=None,
                # [2] pitch shift (global defaults, overridable by same-named keys inside a segment)
                follow_ratio=FOLLOW_RATIO,
                band_ratios=BAND_RATIOS,
@@ -2054,6 +2127,7 @@ def synthesize(segments,
         FORMANT_TARGETS=formant_targets,
         FRAMES_PER_BEAT=frames_per_beat,
         MIX_GAIN=mix_gain,
+        SPATIAL=spatial,
         # [2]
         FOLLOW_RATIO=follow_ratio,
         BAND_RATIOS=band_ratios,
@@ -2543,6 +2617,11 @@ def run() -> vl.WAVAudio:
         if MIX_GAIN is not None and abs(float(MIX_GAIN) - 1.0) > 1e-9:
             out_data = np.clip(out_data * float(MIX_GAIN), -1.0, 1.0)
             print(f"[Mix] singer gain applied: {float(MIX_GAIN):.3f}")
+        if SPATIAL:
+            out_data = _apply_spatial(out_data, sr, fp, SPATIAL)
+            print(f"[Spatial] per-frame pan/distance applied → stereo "
+                  f"({len(SPATIAL.get('pan') or [])} frames, cutoff "
+                  f"{min(SPATIAL.get('cutoffHz') or [0]):.0f}~{max(SPATIAL.get('cutoffHz') or [0]):.0f} Hz)")
         final = vl.WAVAudio(data=out_data, sample_rate=sr)
         final.save(OUTPUT_WAV, bit_depth=BIT_DEPTH)
     print(f"[Done] saved: {OUTPUT_WAV}  (duration {final.duration:.2f}s, RMS={final.rms:.4f})")

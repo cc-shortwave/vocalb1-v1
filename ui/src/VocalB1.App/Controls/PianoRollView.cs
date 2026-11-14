@@ -90,6 +90,10 @@ public sealed class PianoRollView : FrameworkElement
 
     private DragState? _drag;
 
+    /// <summary>Right-button pitch brush state (raster paint mode).</summary>
+    private bool _brushing;
+    private double _brushLastBeat;
+
     /// <summary>Box/multi selection: selected notes are tracked by Id and selected points by reference to avoid index drift.</summary>
     private readonly HashSet<string> _selectedSegmentIds = [];
     private readonly List<PitchPoint> _selectedPoints = [];
@@ -206,6 +210,7 @@ public sealed class PianoRollView : FrameworkElement
         view._selectedSegmentIds.Clear();
         view._selectedPoints.Clear();
         view._drag = null;
+        view._brushing = false;
     }
 
     public static readonly DependencyProperty BpmProperty = DependencyProperty.Register(
@@ -224,6 +229,11 @@ public sealed class PianoRollView : FrameworkElement
     public static readonly DependencyProperty IsPencilProperty = DependencyProperty.Register(
         nameof(IsPencil), typeof(bool), typeof(PianoRollView),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>Anti-shake for the pitch brush: the painted stroke is box-averaged as it is drawn.</summary>
+    public static readonly DependencyProperty SmoothPitchProperty = DependencyProperty.Register(
+        nameof(SmoothPitch), typeof(bool), typeof(PianoRollView),
+        new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender));
 
     /// <summary>Minor grid lines per beat: 0 = off, 2 = eighth notes, 4 = sixteenth notes.</summary>
     public static readonly DependencyProperty GridDivisionProperty = DependencyProperty.Register(
@@ -304,6 +314,13 @@ public sealed class PianoRollView : FrameworkElement
     {
         get => (bool)GetValue(IsPencilProperty);
         set => SetValue(IsPencilProperty, value);
+    }
+
+    /// <summary>When true the pitch brush smooths each painted stroke (anti-shake).</summary>
+    public bool SmoothPitch
+    {
+        get => (bool)GetValue(SmoothPitchProperty);
+        set => SetValue(SmoothPitchProperty, value);
     }
 
     public int GridDivision
@@ -428,11 +445,12 @@ public sealed class PianoRollView : FrameworkElement
 
         var track = Lyric;
         var segments = track?.Segments ?? [];
+        var raster = track?.PitchRaster;
         var points = track?.PitchLine ?? [];
         // Curve drawing uses the same compiled sequence that is sent to the engine,
         // so what is on screen is what is rendered (hidden anchors no longer join the curve).
-        var curve = track?.BuildRenderPitchLine() ?? [];
-        var layout = BuildLayout(size, segments, points);
+        var curve = raster is { HasValues: true } ? [] : track?.BuildRenderPitchLine() ?? [];
+        var layout = BuildLayout(size, segments, points, raster);
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
         DrawPitchRows(dc, layout, dpi);
@@ -442,7 +460,10 @@ public sealed class PianoRollView : FrameworkElement
         DrawRests(dc, layout, dpi);
         DrawPencilPreview(dc, layout);
         DrawNoteTransitions(dc, layout);
-        DrawPitchLine(dc, layout, curve);
+        if (raster is { HasValues: true })
+            DrawPitchRaster(dc, layout, raster);
+        else
+            DrawPitchLine(dc, layout, curve);
         DrawNoteLyrics(dc, layout, segments, dpi);
         DrawSelectionBox(dc);
         DrawPlayhead(dc, layout);
@@ -455,12 +476,13 @@ public sealed class PianoRollView : FrameworkElement
     private RollLayout BuildLayout(
         Size size,
         IReadOnlyList<VoiceSegment> segments,
-        IReadOnlyList<PitchPoint> points)
+        IReadOnlyList<PitchPoint> points,
+        PitchRaster? raster)
     {
         var beatsPerBar = Math.Max(1, BeatsPerBar);
         var totalBeats = TotalBeats();
 
-        var (low, high) = PitchWindow(segments, points);
+        var (low, high) = PitchWindow(segments, points, raster);
         // The BGM lane is always the last row of the control: pitch rows shrink by its height while a BGM exists.
         var laneHeight = HasBgm ? BgmLaneHeight : 0;
         var plot = new Rect(
@@ -484,9 +506,10 @@ public sealed class PianoRollView : FrameworkElement
     /// </summary>
     private (int Low, int High) PitchWindow(
         IReadOnlyList<VoiceSegment> segments,
-        IReadOnlyList<PitchPoint> points)
+        IReadOnlyList<PitchPoint> points,
+        PitchRaster? raster)
     {
-        var (autoLow, autoHigh) = PitchRange(segments, points, RestRegions);
+        var (autoLow, autoHigh) = PitchRange(segments, points, RestRegions, raster);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
         var low = autoLow + _pitchScroll - (rows - baseRows) / 2;
@@ -502,6 +525,8 @@ public sealed class PianoRollView : FrameworkElement
             total = Math.Max(total, Math.Max(segment.BeatStart, segment.BeatEnd));
         foreach (var point in Lyric?.PitchLine ?? [])
             total = Math.Max(total, point.Beat);
+        if (Lyric?.PitchRaster is { HasValues: true } raster)
+            total = Math.Max(total, raster.BeatOfIndex(raster.Values.Count));
         foreach (var rest in RestRegions ?? [])
             total = Math.Max(total, Math.Max(rest.BeatStart, rest.BeatEnd));
         return total;
@@ -1093,6 +1118,53 @@ public sealed class PianoRollView : FrameworkElement
         }
     }
 
+    /// <summary>Draws the raster pitch curve: one polyline through the painted cells, no Bézier smoothing.</summary>
+    private void DrawPitchRaster(DrawingContext dc, RollLayout layout, PitchRaster raster)
+    {
+        var pen = new Pen(_pitchFill, 2)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze();
+
+        var first = Math.Max(0, raster.IndexOfBeat(layout.ViewStartBeat) - 1);
+        var last = Math.Min(raster.Values.Count,
+            raster.IndexOfBeat(layout.ViewStartBeat + layout.Plot.Width / Math.Max(1e-9, layout.PxPerBeat)) + 2);
+        if (last <= first)
+            return;
+
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            var open = false;
+            for (var i = first; i < last; i++)
+            {
+                var value = raster.Values[i];
+                if (value is not { } v || double.IsNaN(v))
+                {
+                    open = false;
+                    continue;
+                }
+
+                var point = new Point(layout.X(raster.BeatOfIndex(i)), layout.RowCenter(v));
+                if (!open)
+                {
+                    ctx.BeginFigure(point, isFilled: false, isClosed: false);
+                    open = true;
+                }
+                else
+                {
+                    ctx.LineTo(point, isStroked: true, isSmoothJoin: false);
+                }
+            }
+        }
+
+        geometry.Freeze();
+        dc.DrawGeometry(null, pen, geometry);
+    }
+
     private static bool IsInsideOverlap(
         IReadOnlyList<SegmentLayout.Overlap> overlaps, double beat)
     {
@@ -1546,6 +1618,24 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
+        if (_brushing)
+        {
+            if (e.RightButton != MouseButtonState.Pressed)
+                return;
+
+            var brushLayout = Layout();
+            if (brushLayout is null)
+                return;
+
+            var brushPosition = e.GetPosition(this);
+            var brushBeat = Math.Max(1, brushLayout.BeatAt(brushPosition.X));
+            var brushSemitone = brushLayout.SemitoneAtFine(brushPosition.Y);
+            PaintPitchStroke(brushBeat, brushSemitone);
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
         if (_drag is null)
         {
             UpdateHoverCursor(e.GetPosition(this));
@@ -1882,6 +1972,12 @@ public sealed class PianoRollView : FrameworkElement
         base.OnLostMouseCapture(e);
         if (_panning)
             EndPan();
+        if (_brushing)
+        {
+            _brushing = false;
+            EditCommitted?.Invoke(this, EventArgs.Empty);
+            InvalidateVisual();
+        }
     }
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
@@ -1897,19 +1993,43 @@ public sealed class PianoRollView : FrameworkElement
             || position.Y < layout.Plot.Top || position.Y > layout.Plot.Bottom)
             return;
 
-        var beat = Math.Max(1, Snap(layout.BeatAt(position.X)));
+        var rawBeat = Math.Max(1, layout.BeatAt(position.X));
         var semitone = Math.Clamp(layout.SemitoneAt(position.Y), layout.Low, layout.High);
 
         if (Mode == PianoRollMode.Notes)
         {
-            NoteAddRequested?.Invoke(this, new NoteAddEventArgs(beat, semitone));
+            NoteAddRequested?.Invoke(this, new NoteAddEventArgs(Snap(rawBeat), semitone));
         }
         else
         {
-            AddPitchPoint(beat, semitone);
+            // The pitch brush is not grid-snapped: time resolution is the raster cell itself.
+            BeginPitchBrush(rawBeat, layout.SemitoneAtFine(position.Y));
         }
 
         Focus();
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseRightButtonUp(e);
+        if (!_brushing)
+            return;
+
+        _brushing = false;
+        ReleaseMouseCapture();
+        Cursor = Cursors.Arrow;
+
+        var track = Lyric;
+        if (track?.PitchRaster is { } raster)
+        {
+            raster.Normalize();
+            if (!raster.HasValues)
+                track.PitchRaster = null;
+        }
+
+        EditCommitted?.Invoke(this, EventArgs.Empty);
         InvalidateVisual();
         e.Handled = true;
     }
@@ -1966,11 +2086,19 @@ public sealed class PianoRollView : FrameworkElement
             segment.DstPitch = PitchMath.ToPitchName(drag.OriginalSemitone + drag.SemitoneDelta);
 
         if (drag.Kind == DragKind.Note)
+        {
             MovePitchPoints(track, segment.Id, drag.PreviewStart - originalStart,
                 drag.SemitoneDelta);
+            track.PitchRaster?.ShiftRange(originalStart, originalEnd,
+                drag.PreviewStart - originalStart, drag.SemitoneDelta);
+        }
         else
+        {
             ScalePitchPoints(track, segment.Id, originalStart, originalEnd,
                 drag.PreviewStart, drag.PreviewEnd);
+            track.PitchRaster?.ScaleRange(originalStart, originalEnd,
+                drag.PreviewStart, drag.PreviewEnd);
+        }
 
         // Notes pushed by the drag shift as a whole, and their points follow.
         foreach (var (index, delta) in drag.Shifts)
@@ -1982,6 +2110,7 @@ public sealed class PianoRollView : FrameworkElement
             other.BeatStart += delta;
             other.BeatEnd += delta;
             MovePitchPoints(track, other.Id, delta, 0);
+            track.PitchRaster?.ShiftRange(other.BeatStart - delta, other.BeatEnd - delta, delta);
         }
 
         // Overlaps are never allowed to survive an edit: resolve them before transitions are rebuilt.
@@ -2018,6 +2147,8 @@ public sealed class PianoRollView : FrameworkElement
             if (semitone != 0)
                 segment.DstPitch = PitchMath.ToPitchName(SemitoneOf(segment.DstPitch) + semitone);
             MovePitchPoints(track, segment.Id, moveDelta, semitone);
+            track.PitchRaster?.ShiftRange(
+                preview.OriginalStart, preview.OriginalEnd, moveDelta, semitone);
         }
 
         // Points selected on their own whose owning note is not selected also move with the group.
@@ -2172,7 +2303,8 @@ public sealed class PianoRollView : FrameworkElement
             return;
         _pitchZoom = zoom;
 
-        var (autoLow, autoHigh) = PitchRange(Lyric?.Segments ?? [], Lyric?.PitchLine ?? [], RestRegions);
+        var (autoLow, autoHigh) = PitchRange(Lyric?.Segments ?? [], Lyric?.PitchLine ?? [],
+            RestRegions, Lyric?.PitchRaster);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
         var desiredLow = semitone - fraction * (rows - 1);
@@ -2192,6 +2324,8 @@ public sealed class PianoRollView : FrameworkElement
         if (_selectedSegmentIds.Count > 0)
         {
             var ids = new HashSet<string>(_selectedSegmentIds);
+            foreach (var segment in track.Segments.Where(s => ids.Contains(s.Id)))
+                track.PitchRaster?.ClearRange(segment.BeatStart, segment.BeatEnd);
             track.Segments.RemoveAll(s => ids.Contains(s.Id));
             track.PitchLine.RemoveAll(p => p.SegmentId is not null && ids.Contains(p.SegmentId));
         }
@@ -2255,6 +2389,57 @@ public sealed class PianoRollView : FrameworkElement
 
         if (changed)
             track.SortPitchLine();
+    }
+
+    /// <summary>Starts a right-button brush stroke; painting is only allowed over an existing note.</summary>
+    private void BeginPitchBrush(double beat, double semitone)
+    {
+        var track = Lyric;
+        if (track is null)
+            return;
+
+        var owner = track.Segments.FirstOrDefault(
+            s => beat >= s.BeatStart - 1e-9 && beat <= s.BeatEnd + 1e-9);
+        if (owner is null)
+            return;
+
+        EditStarted?.Invoke(this, EventArgs.Empty);
+        track.PitchRaster ??= new PitchRaster();
+        _brushing = true;
+        _brushLastBeat = beat;
+        PaintPitchStroke(beat, semitone);
+        CaptureMouse();
+        Cursor = Cursors.Pen;
+    }
+
+    /// <summary>Paints the cells between the previous and current brush position, replacing the old curve.</summary>
+    private void PaintPitchStroke(double beat, double semitone)
+    {
+        var track = Lyric;
+        if (track?.PitchRaster is not { } raster)
+            return;
+
+        // 1/1000 semitone is far below the audible threshold and keeps stored values compact.
+        semitone = Math.Round(semitone, 3);
+        var from = Math.Min(_brushLastBeat, beat);
+        var to = Math.Max(_brushLastBeat, beat);
+        var start = Math.Max(0, raster.IndexOfBeat(from));
+        var end = raster.IndexOfBeat(to);
+        for (var i = start; i <= end; i++)
+        {
+            var cellBeat = raster.BeatOfIndex(i) + raster.CellBeats / 2;
+            if (!track.Segments.Any(s => cellBeat >= s.BeatStart - 1e-9 && cellBeat <= s.BeatEnd + 1e-9))
+                continue;
+            raster.SetValue(i, semitone);
+        }
+
+        _brushLastBeat = beat;
+
+        if (SmoothPitch)
+        {
+            raster.Smooth(start - PitchRaster.SmoothRadius, end + PitchRaster.SmoothRadius,
+                PitchRaster.SmoothRadius);
+        }
     }
 
     private void AddPitchPoint(double beat, int semitone)
@@ -2420,7 +2605,8 @@ public sealed class PianoRollView : FrameworkElement
         return BuildLayout(
             new Size(ActualWidth, ActualHeight),
             track?.Segments ?? [],
-            track?.PitchLine ?? []);
+            track?.PitchLine ?? [],
+            track?.PitchRaster);
     }
 
     /// <summary>Hovering the playhead shows the horizontal resize cursor; hovering note ends shows the resize cursor.</summary>
@@ -2572,7 +2758,8 @@ public sealed class PianoRollView : FrameworkElement
     private static (int Low, int High) PitchRange(
         IReadOnlyList<VoiceSegment> segments,
         IReadOnlyList<PitchPoint> points,
-        IReadOnlyList<RestRegion>? rests)
+        IReadOnlyList<RestRegion>? rests,
+        PitchRaster? raster = null)
     {
         var any = false;
         var low = 0;
@@ -2599,6 +2786,11 @@ public sealed class PianoRollView : FrameworkElement
         }
         foreach (var rest in rests ?? [])
             Extend(rest.Semitone);
+        foreach (var value in raster?.Values ?? [])
+        {
+            if (value is { } v && !double.IsNaN(v))
+                Extend((int)Math.Round(v));
+        }
 
         if (!any)
             return (0, 11);
@@ -2730,10 +2922,15 @@ public sealed class PianoRollView : FrameworkElement
 
         public double RowTop(int semitone) => Plot.Bottom - (semitone - Low + 1) * RowHeight;
 
-        public double RowCenter(int semitone) => RowTop(semitone) + RowHeight / 2;
+        /// <summary>Vertical centre of a (possibly fractional) semitone, so curves are not row-quantised.</summary>
+        public double RowCenter(double semitone) => Plot.Bottom - (semitone - Low + 0.5) * RowHeight;
 
         public int SemitoneAt(double y) =>
             Math.Clamp(Low + (int)Math.Floor((Plot.Bottom - y) / RowHeight), Low, High);
+
+        /// <summary>Continuous semitone under the cursor; the pitch brush writes these values directly.</summary>
+        public double SemitoneAtFine(double y) =>
+            Math.Clamp(Low - 0.5 + (Plot.Bottom - y) / Math.Max(1e-9, RowHeight), Low, High);
 
         public Rect NoteBox(double beatStart, double beatEnd, int semitone)
         {

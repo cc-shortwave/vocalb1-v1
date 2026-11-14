@@ -213,6 +213,32 @@ def _convert(value, kind):
     return str(value)
 
 
+def _spatial_payload(spatial):
+    """Normalises the spatial solver payload; None keeps the mono render path."""
+    if not spatial:
+        return None
+
+    pan = spatial.get("pan") or []
+    if not pan:
+        return None
+
+    n = len(pan)
+
+    def fit(values, default):
+        values = [float(v) for v in (values or [])]
+        if not values:
+            return [default] * n
+        if len(values) < n:
+            values.extend([values[-1]] * (n - len(values)))
+        return values[:n]
+
+    return {
+        "pan": [float(v) for v in pan],
+        "gain": fit(spatial.get("gain"), 1.0),
+        "cutoffHz": fit(spatial.get("cutoffHz") or spatial.get("cutoff_hz"), 18000.0),
+    }
+
+
 def _build_kwargs(project):
     settings = project.get("settings") or {}
 
@@ -245,6 +271,8 @@ def _build_kwargs(project):
         ),
         # v3 singer mix gain (applied by the synthesizer before saving)
         "mix_gain": float((project.get("singer") or {}).get("mixGain", 1.0) or 1.0),
+        # v3 spatial solver output (equal-power pan / distance gain / rolloff cutoff, one value per frame)
+        "spatial": _spatial_payload(project.get("spatial")),
         # Logs are forwarded to the UI by default; a project may opt out with "verbose": false
         "verbose": bool(settings.get("verbose", True)),
     }

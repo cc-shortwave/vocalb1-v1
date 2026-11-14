@@ -172,7 +172,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         LoadProject(_project, null);
         LoadDefaultDictionary();
         AddLog("info", $"Repository root: {services.Options.RepositoryRoot}");
-        AddLog("info", "v3 对象库工程已就绪：歌词 / 参数 / 歌手三库，无音轨、无舞台。");
+        AddLog("info", "对象库工程已就绪：歌词 / 参数 / 歌手三库，无音轨、无舞台。");
     }
 
     // ------------------------------------------------------------------
@@ -191,7 +191,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     public ObservableCollection<LanguageRow> Languages { get; } = [];
 
     /// <summary>Node kinds offered by the pickers, in catalogue display order.</summary>
-    public IReadOnlyList<NodeKind> NodeKinds { get; } = NodeCatalog.All.Select(d => d.Kind).ToList();
+    public IReadOnlyList<NodeKind> NodeKinds => NodeCatalog.All.Select(d => d.Kind).ToList();
 
     private NodeKind _newNodeKind = NodeKind.TimeInput;
 
@@ -219,7 +219,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     public IReadOnlyList<string> VowelChoices { get; } = ["", "a", "i", "u", "e", "o", "n", "-"];
 
     /// <summary>Fields the field-decompose node can read out of the voicebank bundle.</summary>
-    public IReadOnlyList<VoicebankField> VoicebankFields { get; } = VoicebankField.All;
+    public IReadOnlyList<VoicebankFieldRow> VoicebankFields { get; } =
+        VoicebankField.All.Select(f => new VoicebankFieldRow(f)).ToList();
 
     // ------------------------------------------------------------------
     // Commands
@@ -776,7 +777,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
     public string RollModeText => RollMode == PianoRollMode.Notes
         ? LanguageService.Translate("模式：音块（右键加块）")
-        : LanguageService.Translate("模式：Pitch 线（右键加节点）");
+        : LanguageService.Translate("模式：音高（右键画笔）");
 
     public bool IsPencil
     {
@@ -873,7 +874,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             }
             catch (Exception ex)
             {
-                AddLog("warn", "读取 BGM 失败：" + ex.Message);
+                AddLog("warn", LanguageService.TranslateFormat("读取 BGM 失败：{0}", ex.Message));
                 return 0;
             }
         }
@@ -1070,7 +1071,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "打开工程",
-            Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            Filter = LanguageService.TranslateFormat(
+                "VocalB1 工程 (*{0})|*{0}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+                ProjectJson.FileExtension),
         };
         if (dialog.ShowDialog() != true)
             return;
@@ -1094,7 +1097,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     {
         if (!CanEdit)
         {
-            MessageBox.Show("旧版 v2 工程为只读，不能保存。请新建 v3 工程。", "只读工程",
+            MessageBox.Show(LanguageService.Translate("旧版 v2 工程为只读，不能保存。请新建工程。"),
+                LanguageService.Translate("只读工程"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1105,7 +1109,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             var dialog = new SaveFileDialog
             {
                 Title = "保存工程",
-                Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}",
+                Filter = LanguageService.TranslateFormat(
+                    "VocalB1 工程 (*{0})|*{0}", ProjectJson.FileExtension),
                 FileName = _project.Name + ProjectJson.FileExtension,
             };
             if (dialog.ShowDialog() != true)
@@ -1136,7 +1141,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (string.Equals(current, _savedSnapshot, StringComparison.Ordinal))
             return true;
 
-        return MessageBox.Show($"工程有未保存的修改，仍要{action}吗？", "未保存的修改",
+        return MessageBox.Show(
+            LanguageService.TranslateFormat("工程有未保存的修改，仍要{0}吗？", LanguageService.Translate(action)),
+            LanguageService.Translate("未保存的修改"),
             MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
     }
 
@@ -1328,7 +1335,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var users = _project.LyricUsers(row.Id);
         if (users > 0)
         {
-            MessageBox.Show($"歌词「{row.Name}」仍被 {users} 个歌手引用。请先解除绑定。", "无法删除",
+            MessageBox.Show(
+                LanguageService.TranslateFormat("歌词「{0}」仍被 {1} 个歌手引用。请先解除绑定。", row.Name, users),
+                LanguageService.Translate("无法删除"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1420,7 +1429,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             var dialog = new OpenFileDialog
             {
                 Title = "为新音符选择音频",
-                Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+                Filter = LanguageService.Translate("WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*"),
             };
             if (dialog.ShowDialog() != true)
                 return;
@@ -1465,6 +1474,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (_selectedSegment is { } segment && ActiveLyric is { } lyric)
         {
             PushUndo();
+            lyric.PitchRaster?.ClearRange(segment.Model.BeatStart, segment.Model.BeatEnd);
             lyric.Segments.Remove(segment.Model);
             lyric.PitchLine.RemoveAll(p => p.SegmentId == segment.Model.Id);
             foreach (var word in lyric.Phrase.Words)
@@ -1554,7 +1564,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (parts.Length != 7)
         {
             ReportError(new StageException(nameof(MainViewModel), "apply-formants",
-                $"需要 7 个共振峰目标，实际 {parts.Length} 个。"));
+                LanguageService.TranslateFormat("需要 7 个共振峰目标，实际 {0} 个。", parts.Length)));
             return;
         }
 
@@ -1564,13 +1574,13 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             if (!double.TryParse(parts[i], out var value) || !double.IsFinite(value) || value <= 0)
             {
                 ReportError(new StageException(nameof(MainViewModel), "apply-formants",
-                    $"F{i + 1} 不是有效正数：{parts[i]}"));
+                    LanguageService.TranslateFormat("F{0} 不是有效正数：{1}", i + 1, parts[i])));
                 return;
             }
             if (i > 0 && value <= values[i - 1])
             {
                 ReportError(new StageException(nameof(MainViewModel), "apply-formants",
-                    $"F{i + 1} 必须大于 F{i}。"));
+                    LanguageService.TranslateFormat("F{0} 必须大于 F{1}。", i + 1, i)));
                 return;
             }
             values[i] = value;
@@ -1625,7 +1635,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var users = _project.ParameterSetUsers(row.Id);
         if (users > 0)
         {
-            MessageBox.Show($"参数「{row.Name}」仍被 {users} 个歌手引用。请先解除绑定。", "无法删除",
+            MessageBox.Show(
+                LanguageService.TranslateFormat("参数「{0}」仍被 {1} 个歌手引用。请先解除绑定。", row.Name, users),
+                LanguageService.Translate("无法删除"),
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1886,8 +1898,10 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             AddLog("info", "没有需要清理的孤立数据块。");
             return;
         }
-        if (MessageBox.Show($"将清理 {orphans.Count} 个孤立数据块：\n{string.Join("\n", orphans)}",
-                "清理孤立数据块", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+        if (MessageBox.Show(
+                LanguageService.TranslateFormat("将清理 {0} 个孤立数据块：\n{1}", orphans.Count, string.Join("\n", orphans)),
+                LanguageService.Translate("清理孤立数据块"),
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
             return;
         PushUndo();
         var count = _project.PurgeOrphans();
@@ -1977,7 +1991,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         }
         catch (Exception ex)
         {
-            AddLog("warn", "声库图片无法解码：" + ex.Message);
+            AddLog("warn", LanguageService.TranslateFormat("声库图片无法解码：{0}", ex.Message));
             return null;
         }
     }
@@ -2113,7 +2127,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new SaveFileDialog
         {
             Title = "导出歌词数据块",
-            Filter = "歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json",
+            Filter = LanguageService.Translate("歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json"),
             FileName = SafeFileName(row.Name) + ".vblyric.json",
         };
         if (dialog.ShowDialog() != true)
@@ -2122,7 +2136,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             File.WriteAllText(dialog.FileName,
                 JsonSerializer.Serialize(row.Model, ProjectJson.WriteOptions));
-            AddLog("info", "歌词数据块已导出：" + dialog.FileName);
+            AddLog("info", LanguageService.TranslateFormat("歌词数据块已导出：{0}", dialog.FileName));
         }
         catch (Exception ex)
         {
@@ -2135,20 +2149,20 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "导入歌词数据块",
-            Filter = "歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            Filter = LanguageService.Translate("歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
         };
         if (dialog.ShowDialog() != true)
             return;
         try
         {
             var lyric = JsonSerializer.Deserialize<LyricDocument>(File.ReadAllText(dialog.FileName),
-                ProjectJson.ReadOptions) ?? throw new InvalidDataException("歌词文件为空。");
+                ProjectJson.ReadOptions) ?? throw new InvalidDataException(LanguageService.Translate("歌词文件为空。"));
             lyric.Id = Guid.NewGuid().ToString("N");
             lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
             PushUndo();
             _project.Lyrics.Add(lyric);
             RebuildRows();
-            AddLog("info", $"歌词数据块已导入：{lyric.Name}");
+            AddLog("info", LanguageService.TranslateFormat("歌词数据块已导入：{0}", lyric.Name));
         }
         catch (Exception ex)
         {
@@ -2164,7 +2178,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new SaveFileDialog
         {
             Title = "导出参数数据块",
-            Filter = "参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json",
+            Filter = LanguageService.Translate("参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json"),
             FileName = SafeFileName(row.Name) + ".vbparam.json",
         };
         if (dialog.ShowDialog() != true)
@@ -2173,7 +2187,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             File.WriteAllText(dialog.FileName,
                 JsonSerializer.Serialize(row.Model, ProjectJson.WriteOptions));
-            AddLog("info", "参数数据块已导出：" + dialog.FileName);
+            AddLog("info", LanguageService.TranslateFormat("参数数据块已导出：{0}", dialog.FileName));
         }
         catch (Exception ex)
         {
@@ -2186,20 +2200,20 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "导入参数数据块",
-            Filter = "参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            Filter = LanguageService.Translate("参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
         };
         if (dialog.ShowDialog() != true)
             return;
         try
         {
             var parameters = JsonSerializer.Deserialize<ParameterSet>(File.ReadAllText(dialog.FileName),
-                ProjectJson.ReadOptions) ?? throw new InvalidDataException("参数文件为空。");
+                ProjectJson.ReadOptions) ?? throw new InvalidDataException(LanguageService.Translate("参数文件为空。"));
             parameters.Id = Guid.NewGuid().ToString("N");
             parameters.Name = ProjectDocument.UniqueName(parameters.Name, _project.ParameterSets.Select(p => p.Name));
             PushUndo();
             _project.ParameterSets.Add(parameters);
             RebuildRows();
-            AddLog("info", $"参数数据块已导入：{parameters.Name}");
+            AddLog("info", LanguageService.TranslateFormat("参数数据块已导入：{0}", parameters.Name));
         }
         catch (Exception ex)
         {
@@ -2214,7 +2228,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new SaveFileDialog
         {
             Title = "导出音色参数",
-            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json",
+            Filter = LanguageService.TranslateFormat(
+                "音色参数 (*{0})|*{0}|JSON (*.json)|*.json", TimbreProfile.FileExtension),
             FileName = SafeFileName(ActiveParameterSet.Name) + TimbreProfile.FileExtension,
         };
         if (dialog.ShowDialog() != true)
@@ -2222,7 +2237,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         try
         {
             TimbreProfile.From(ActiveParameterSet.Base).Save(dialog.FileName);
-            AddLog("info", "音色参数已导出：" + dialog.FileName);
+            AddLog("info", LanguageService.TranslateFormat("音色参数已导出：{0}", dialog.FileName));
         }
         catch (Exception ex)
         {
@@ -2237,7 +2252,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "导入音色参数",
-            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+            Filter = LanguageService.TranslateFormat(
+                "音色参数 (*{0})|*{0}|JSON (*.json)|*.json|所有文件 (*.*)|*.*", TimbreProfile.FileExtension),
         };
         if (dialog.ShowDialog() != true)
             return;
@@ -2246,7 +2262,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             var profile = TimbreProfile.Load(dialog.FileName);
             PushUndo();
             foreach (var item in profile.ApplyTo(ActiveParameterSet.Base))
-                AddLog("warn", "音色导入跳过：" + item);
+                AddLog("warn", LanguageService.TranslateFormat("音色导入跳过：{0}", item));
             OnPropertyChanged(nameof(BaseValue));
             AddLog("info", "音色参数已导入。");
         }
@@ -2262,7 +2278,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (singer is null || string.IsNullOrWhiteSpace(singer.LibraryRoot))
         {
             ReportError(new StageException(nameof(MainViewModel), "analyze-voicebank",
-                "请先为歌手选择声库。"));
+                LanguageService.Translate("请先为歌手选择声库。")));
             return;
         }
 
@@ -2270,7 +2286,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (!File.Exists(script))
         {
             ReportError(new StageException(nameof(MainViewModel), "analyze-voicebank",
-                "找不到声库分析脚本：" + script));
+                LanguageService.TranslateFormat("找不到声库分析脚本：{0}", script)));
             return;
         }
 
@@ -2309,7 +2325,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
             if (process.ExitCode != 0)
                 throw new StageException("VoicebankAnalyzer", "run",
-                    $"声库分析失败（退出码 {process.ExitCode}），详见日志。");
+                    LanguageService.TranslateFormat("声库分析失败（退出码 {0}），详见日志。", process.ExitCode));
 
             // Reload the profile so the next plan/vowel-manager read uses measured formants.
             OnPropertyChanged(nameof(UnitFormantInfo));
@@ -2340,14 +2356,14 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         if (ProjectValidator.HasError(issues))
         {
             ReportError(new StageException(nameof(MainViewModel), "validate-render",
-                "工程校验未通过，详见日志。"));
+                LanguageService.Translate("工程校验未通过，详见日志。")));
             return;
         }
 
         var singers = _project.Singers.Where(s => s.Enabled).ToList();
         if (singers.Count == 0)
         {
-            ReportError(new StageException(nameof(MainViewModel), "render", "没有启用的歌手。"));
+            ReportError(new StageException(nameof(MainViewModel), "render", LanguageService.Translate("没有启用的歌手。")));
             return;
         }
 
@@ -2477,7 +2493,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         }
         catch (Exception ex)
         {
-            AddLog("warn", "BGM 混合失败：" + ex.Message);
+            AddLog("warn", LanguageService.TranslateFormat("BGM 混合失败：{0}", ex.Message));
             return null;
         }
     }
@@ -2487,7 +2503,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "导入 BGM 伴奏",
-            Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+            Filter = LanguageService.Translate("WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*"),
         };
         if (dialog.ShowDialog() != true)
             return;
@@ -2510,7 +2526,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             OnPropertyChanged(nameof(BgmDurationBeats));
             (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
             SetStatus("已导入 BGM：{0}", BgmName);
-            AddLog("info", $"BGM 已导入：{full}（{info.SampleRate} Hz，{info.DurationSeconds:F1}s）。");
+            AddLog("info", LanguageService.TranslateFormat("BGM 已导入：{0}（{1} Hz，{2:0.0}s）。",
+                full, info.SampleRate, info.DurationSeconds));
         }
         catch (Exception ex)
         {
@@ -2572,12 +2589,12 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var pack = LanguageService.Import(dialog.FileName, out var error);
         if (pack is null)
         {
-            AddLog("error", "语言包导入失败：" + error);
+            AddLog("error", LanguageService.TranslateFormat("语言包导入失败：{0}", error));
             return;
         }
         RebuildLanguages();
         RefreshLanguageText();
-        AddLog("info", $"语言包已导入：{pack.Name}（{pack.Code}）");
+        AddLog("info", LanguageService.TranslateFormat("语言包已导入：{0}（{1}）", pack.Name, pack.Code));
     }
 
     public void RefreshLanguageText()
@@ -2591,6 +2608,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         OnPropertyChanged(nameof(DictionaryPathText));
         OnPropertyChanged(nameof(LyricStatus));
         OnPropertyChanged(nameof(GraphOwnerText));
+        OnPropertyChanged(nameof(NodeKinds));
         OnPropertyChanged(nameof(BgmName));
         OnPropertyChanged(nameof(UnitFormantInfo));
         OnPropertyChanged(nameof(UnitFormantHint));
@@ -2606,6 +2624,10 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             row.Refresh();
         foreach (var row in ParameterKeyRows)
             row.RefreshText();
+        foreach (var row in VoicebankFields)
+            row.Refresh();
+        SelectedNodeRow?.Refresh();
+        BumpGraph();
         foreach (var row in DictionaryEntries)
             row.Refresh();
     }
@@ -2624,7 +2646,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             path = Path.Combine(root, "README.md");
         if (!File.Exists(path))
         {
-            AddLog("warn", "未找到帮助文件：" + fileName);
+            AddLog("warn", LanguageService.TranslateFormat("未找到帮助文件：{0}", fileName));
             return;
         }
         try
@@ -2654,7 +2676,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             ?? new StageException(nameof(MainViewModel), "command", ex.Message, ex);
         AddLog("error", error.Message);
         SetStatus("出错：{0} @ {1}", error.ClassName, error.Stage);
-        MessageBox.Show(error.Message, "VocalB1 错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        MessageBox.Show(error.Message, LanguageService.Translate("VocalB1 错误"), MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private static string SafeFileName(string name)

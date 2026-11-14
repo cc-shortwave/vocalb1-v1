@@ -145,6 +145,10 @@ public static class SegmentLayout
     /// </summary>
     public static void SyncTransitionPoints(LyricDocument track)
     {
+        // Raster pitch curves have no control nodes; transition smoothing is handled by the brush.
+        if (track.HasPitchRaster)
+            return;
+
         var overlaps = Overlaps(track);
 
         // Each overlap is attached to the later segment: a segment has at most one leading transition node.
@@ -215,11 +219,20 @@ public static class SegmentLayout
     /// <summary>Shifts all nodes owned by the given segments (used when dragging pushed segments).</summary>
     private static void ShiftPitchPoints(LyricDocument track, IEnumerable<VoiceSegment> segments, double delta)
     {
-        var ids = segments.Select(s => s.Id).ToHashSet();
+        var moved = segments as IReadOnlyList<VoiceSegment> ?? segments.ToList();
+        var ids = moved.Select(s => s.Id).ToHashSet();
         foreach (var point in track.PitchLine)
         {
             if (point.SegmentId is string segmentId && ids.Contains(segmentId))
                 point.Beat += delta;
+        }
+
+        // The segments were already shifted when this is called, so the raster range is derived by
+        // subtracting the delta from the new bounds.
+        if (track.PitchRaster is { HasValues: true } raster)
+        {
+            foreach (var segment in moved)
+                raster.ShiftRange(segment.BeatStart - delta, segment.BeatEnd - delta, delta);
         }
     }
 }

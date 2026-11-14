@@ -169,6 +169,20 @@ public static class ProjectJson
             // Notes may never overlap: legacy projects with stacked segments are pushed apart on load.
             if (SegmentLayout.RemoveOverlaps(lyric))
                 SegmentLayout.SyncTransitionPoints(lyric);
+
+            // Migration: sparse Bézier pitch points are rasterised once and then edited with the brush.
+            if (lyric.PitchRaster is { } raster)
+            {
+                raster.Normalize();
+                if (raster.HasValues)
+                    lyric.PitchLine.Clear();
+            }
+            else if (lyric.PitchLine.Count > 0)
+            {
+                lyric.PitchRaster = PitchRaster.FromPitchLine(lyric.BuildRenderPitchLine());
+                if (lyric.PitchRaster is not null)
+                    lyric.PitchLine.Clear();
+            }
         }
 
         foreach (var parameters in project.ParameterSets)
@@ -193,6 +207,8 @@ public static class ProjectJson
                 singer.ParameterSetId = null;
             if (!double.IsFinite(singer.MixGain))
                 singer.MixGain = 1.0;
+            singer.Spatial ??= new SpatialTrajectory();
+            singer.Spatial.Normalize();
         }
 
         // A lyric must belong to at most one singer. Duplicate bindings are broken explicitly so the
@@ -297,7 +313,7 @@ public static class ProjectJson
         {
             if (project.IsLegacyReadOnly)
                 throw new StageException(nameof(ProjectJson), "save",
-                    "旧版本工程（v2）为只读格式，不能保存；请新建 v3 工程。");
+                    "旧版本工程（v2）为只读格式，不能保存；请新建工程。");
 
             var full = Path.GetFullPath(path);
             var dir = Path.GetDirectoryName(full);

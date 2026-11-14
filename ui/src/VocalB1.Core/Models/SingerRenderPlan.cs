@@ -49,6 +49,18 @@ public sealed class SingerRenderPlan
     /// <summary>Frames × 7 formant target positions in Hz, always present.</summary>
     public double[,] FormantTargetsHz { get; private set; } = new double[0, 7];
 
+    /// <summary>True when the singer's spatial trajectory produced per-frame data.</summary>
+    public bool HasSpatial { get; private set; }
+
+    /// <summary>Per-frame pan position (-1..1); empty when <see cref="HasSpatial"/> is false.</summary>
+    public double[] SpatialPan { get; private set; } = [];
+
+    /// <summary>Per-frame distance gain; empty when <see cref="HasSpatial"/> is false.</summary>
+    public double[] SpatialGain { get; private set; } = [];
+
+    /// <summary>Per-frame high-frequency rolloff cutoff in Hz; empty when <see cref="HasSpatial"/> is false.</summary>
+    public double[] SpatialCutoffHz { get; private set; } = [];
+
     /// <summary>
     /// Evaluates one singer. Every failure is raised with the exact class and stage; nothing is skipped.
     /// </summary>
@@ -187,6 +199,16 @@ public sealed class SingerRenderPlan
             }
 
             plan.FormantTargetsHz = formantTargets;
+
+            var spatial = SpatialSolver.Solve(singer.Spatial, frameCount, framesPerBeat);
+            if (spatial is not null)
+            {
+                plan.HasSpatial = true;
+                plan.SpatialPan = spatial.Pan;
+                plan.SpatialGain = spatial.Gain;
+                plan.SpatialCutoffHz = spatial.CutoffHz;
+            }
+
             ApplyCurveMeans(plan);
             return plan;
         });
@@ -291,27 +313,32 @@ public sealed class SingerRenderPlan
         if (points.Count == 0)
             return fallback;
 
-        var previous = points[0];
-        if (beat <= previous.Beat)
-            return ParsePitch(previous.Pitch, fallback);
+        if (beat <= points[0].Beat)
+            return ParsePitch(points[0].Pitch, fallback);
 
-        for (var i = 1; i < points.Count; i++)
+        // Dense raster curves can hold thousands of points; binary search keeps the per-frame
+        // parameter evaluation linear instead of quadratic.
+        var lo = 0;
+        var hi = points.Count - 1;
+        while (lo < hi)
         {
-            var point = points[i];
-            if (beat > point.Beat)
-            {
-                previous = point;
-                continue;
-            }
-
-            var a = ParsePitch(previous.Pitch, fallback);
-            var b = ParsePitch(point.Pitch, fallback);
-            var span = Math.Max(1e-9, point.Beat - previous.Beat);
-            var t = Math.Clamp((beat - previous.Beat) / span, 0, 1);
-            return a + (b - a) * t;
+            var mid = (lo + hi + 1) / 2;
+            if (points[mid].Beat <= beat)
+                lo = mid;
+            else
+                hi = mid - 1;
         }
 
-        return ParsePitch(points[^1].Pitch, fallback);
+        if (lo >= points.Count - 1)
+            return ParsePitch(points[^1].Pitch, fallback);
+
+        var previous = points[lo];
+        var point = points[lo + 1];
+        var a = ParsePitch(previous.Pitch, fallback);
+        var b = ParsePitch(point.Pitch, fallback);
+        var span = Math.Max(1e-9, point.Beat - previous.Beat);
+        var t = Math.Clamp((beat - previous.Beat) / span, 0, 1);
+        return a + (b - a) * t;
     }
 
     private static double ParsePitch(string? pitch, double fallback)

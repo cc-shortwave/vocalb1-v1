@@ -25,6 +25,14 @@ public sealed class LyricDocument : IDatablock
 
     public List<PitchPoint> PitchLine { get; set; } = [];
 
+    /// <summary>
+    /// Rasterised pitch curve (1/128-beat cells, continuous semitones) painted with the brush. When it holds values it replaces
+    /// <see cref="PitchLine"/> as the pitch source; the render path converts it back to dense points.
+    /// </summary>
+    public PitchRaster? PitchRaster { get; set; }
+
+    public bool HasPitchRaster => PitchRaster is { HasValues: true };
+
     /// <summary>End beat of the last segment.</summary>
     public double TotalBeats => Segments.Count == 0 ? 0 : Segments.Max(s => s.BeatEnd);
 
@@ -53,6 +61,11 @@ public sealed class LyricDocument : IDatablock
     /// </summary>
     public List<PitchPoint> BuildRenderPitchLine()
     {
+        // The painted raster is the authoritative curve; legacy point lists remain supported for
+        // projects that were constructed in memory (and for the migration path).
+        if (PitchRaster is { } raster && raster.HasValues)
+            return raster.ToPitchPoints();
+
         if (PitchLine.Count == 0)
             return [];
 
@@ -119,5 +132,6 @@ public sealed class LyricDocument : IDatablock
         Phrase = Phrase.Clone(),
         Segments = Segments.Select(s => s.Clone()).ToList(),
         PitchLine = PitchLine.Select(p => p.Clone()).ToList(),
+        PitchRaster = PitchRaster?.Clone(),
     };
 }
