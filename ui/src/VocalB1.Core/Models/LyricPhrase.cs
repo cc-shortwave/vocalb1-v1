@@ -57,6 +57,12 @@ public sealed class LyricPhrase
             SegmentId = segment.Id,
             BeatStart = segment.BeatStart,
             Length = Math.Max(0.01, segment.BeatEnd - segment.BeatStart),
+            Vowel = segment.Vowel,
+            FormantHz = segment.FormantHz?.ToArray(),
+            FormantBandwidthHz = segment.FormantBandwidthHz?.ToArray(),
+            FormantGainDb = segment.FormantGainDb?.ToArray(),
+            Phoneme = segment.Phoneme,
+            PreferAbsoluteAudio = segment.PreferAbsoluteAudio,
         };
         return new LyricWord { Surface = text, Units = [unit] };
     }
@@ -161,5 +167,29 @@ public sealed class LyricUnit
         SegmentId = SegmentId,
         BeatStart = BeatStart,
         Length = Length,
+        Vowel = Vowel,
+        FormantHz = FormantHz?.ToArray(),
+        FormantBandwidthHz = FormantBandwidthHz?.ToArray(),
+        FormantGainDb = FormantGainDb?.ToArray(),
+        Phoneme = Phoneme,
+        PreferAbsoluteAudio = PreferAbsoluteAudio,
     };
+
+    /// <summary>Vowel class driving the vowel manager (a/i/u/e/o/N/-).</summary>
+    public string Vowel { get; set; } = "a";
+
+    /// <summary>Manual formant targets F1~F7 in Hz; null = automatic (vowel manager).</summary>
+    public double[]? FormantHz { get; set; }
+
+    /// <summary>Optional per-formant bandwidths in Hz.</summary>
+    public double[]? FormantBandwidthHz { get; set; }
+
+    /// <summary>Optional per-formant gain multipliers.</summary>
+    public double[]? FormantGainDb { get; set; }
+
+    /// <summary>Phoneme/sample name resolved against the singer's voicebank (dual mode).</summary>
+    public string? Phoneme { get; set; }
+
+    /// <summary>Per-unit override: use the absolute audio path even when voicebank resolution is on.</summary>
+    public bool PreferAbsoluteAudio { get; set; }
 }

@@ -15,7 +15,7 @@ public sealed record EngineEvent(EngineEventKind Kind, string Message, double? P
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.Now;
 }
 
-public sealed record RenderRequest(ProjectDocument Project, TrackDocument Track, string OutputPath);
+public sealed record RenderRequest(ProjectDocument Project, SingerRenderPlan Plan, string OutputPath);
 
 public sealed record RenderResult(string OutputPath, TimeSpan Elapsed)
 {

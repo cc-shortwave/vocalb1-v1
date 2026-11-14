@@ -47,6 +47,30 @@ public sealed class VoiceSegment
     /// <summary>Manually entered lyric; null = derive from the file name.</summary>
     public string? LyricOverride { get; set; }
 
+    /// <summary>
+    /// Vowel class of this syllable (a/i/u/e/o/N/-). Drives the vowel manager's F1~F7 output unless
+    /// <see cref="FormantHz"/> is supplied manually.
+    /// </summary>
+    public string Vowel { get; set; } = "a";
+
+    /// <summary>Manual formant target positions F1~F7 in Hz; null = use the vowel manager.</summary>
+    public double[]? FormantHz { get; set; }
+
+    /// <summary>Per-formant bandwidths in Hz (optional; 0 / missing = engine default).</summary>
+    public double[]? FormantBandwidthHz { get; set; }
+
+    /// <summary>Per-formant gain multipliers (optional; 1 / missing = unchanged).</summary>
+    public double[]? FormantGainDb { get; set; }
+
+    /// <summary>Phoneme name resolved against the singer's voicebank (dual mode).</summary>
+    public string? Phoneme { get; set; }
+
+    /// <summary>
+    /// When true the segment's absolute <see cref="Audio"/> path wins even if the lyric resolves
+    /// phonemes against the singer's voicebank (per-unit override in dual mode).
+    /// </summary>
+    public bool PreferAbsoluteAudio { get; set; }
+
     /// <summary>Lyric shown on the segment: manual input takes precedence, otherwise the file name with leading underscores removed.</summary>
     [JsonIgnore]
     public string Lyric => LyricOverride ?? (string.IsNullOrWhiteSpace(Audio)
@@ -69,5 +93,11 @@ public sealed class VoiceSegment
         BandRatios = BandRatios?.ToArray(),
         BreathyThr = BreathyThr,
         LyricOverride = LyricOverride,
+        Vowel = Vowel,
+        FormantHz = FormantHz?.ToArray(),
+        FormantBandwidthHz = FormantBandwidthHz?.ToArray(),
+        FormantGainDb = FormantGainDb?.ToArray(),
+        Phoneme = Phoneme,
+        PreferAbsoluteAudio = PreferAbsoluteAudio,
     };
 }

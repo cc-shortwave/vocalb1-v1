@@ -1,19 +1,22 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VocalB1.Core.Diagnostics;
 using VocalB1.Core.Models;
 
 namespace VocalB1.Core.Serialization;
 
 /// <summary>
-/// Project file I/O (*.vbproj.json). The format is defined by the C# side and is decoupled from Python;
-/// the engine bridge translates a single track into the routing parameters for synthesize().
+/// Project file I/O (*.vbproj.json). v3 stores three data-block libraries (lyrics / parameter sets /
+/// singers). v2 projects are converted in memory for read-only inspection and rendering; they are never
+/// written back, and every conversion failure is reported with class + stage.
 /// </summary>
 public static class ProjectJson
 {
     public const string FileExtension = ".vbproj.json";
 
-    /// <summary>Read options: tolerant of projects written by older versions (including NaN/Infinity literals).</summary>
+    public const string CurrentFormatVersion = "3.0";
+
     public static readonly JsonSerializerOptions ReadOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -24,7 +27,6 @@ public static class ProjectJson
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
-    /// <summary>Write options: rejects NaN/Infinity instead of persisting unusable values.</summary>
     public static readonly JsonSerializerOptions WriteOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -32,174 +34,324 @@ public static class ProjectJson
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
-    /// <summary>
-    /// Serializes the project. When <paramref name="baseDirectory"/> is given, voicebank paths
-    /// (library roots and wav paths inside it) are stored relative to it, so the file does not
-    /// carry the original machine's user name or drive layout.
-    /// </summary>
     public static string Serialize(ProjectDocument project, string? baseDirectory = null) =>
         JsonSerializer.Serialize(ToPortable(project, baseDirectory), WriteOptions);
 
-    public static ProjectDocument Deserialize(string json, string? baseDirectory = null)
-    {
-        var project = JsonSerializer.Deserialize<ProjectDocument>(json, ReadOptions)
-            ?? throw new InvalidDataException("工程 JSON 为空或无法解析。");
-
-        project.Tracks ??= [];
-
-        // 1.x compatibility: top-level segments / pitchLine / settings → migrated to the first track.
-        if (project.Tracks.Count == 0)
+    public static ProjectDocument Deserialize(string json, string? baseDirectory = null) =>
+        StageGuard.Run(nameof(ProjectJson), "deserialize", () =>
         {
-            var legacy = JsonSerializer.Deserialize<LegacyProject>(json, ReadOptions);
-            if (legacy is not null && (legacy.Segments.Count > 0 || legacy.PitchLine.Count > 0))
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var version = root.TryGetProperty("formatVersion", out var versionElement)
+                ? versionElement.GetString() ?? string.Empty
+                : string.Empty;
+            var hasTracks = root.TryGetProperty("tracks", out var tracksElement)
+                && tracksElement.ValueKind == JsonValueKind.Array
+                && tracksElement.GetArrayLength() > 0;
+
+            ProjectDocument project;
+            if (version.StartsWith("3", StringComparison.Ordinal) && !hasTracks)
             {
-                project.Tracks.Add(new TrackDocument
+                project = JsonSerializer.Deserialize<ProjectDocument>(json, ReadOptions)
+                    ?? throw new InvalidDataException("工程 JSON 为空或无法解析。");
+                project.IsLegacyReadOnly = false;
+            }
+            else
+            {
+                project = ConvertLegacy(json);
+                project.IsLegacyReadOnly = true;
+            }
+
+            Sanitize(project);
+            return ResolvePaths(project, baseDirectory);
+        });
+
+    /// <summary>
+    /// Converts a v2 project (tracks + chorus stage) into v3 data-blocks. Each legacy track becomes one
+    /// lyric + one parameter set + one singer; stage positions are discarded because v3 singers have no
+    /// spatial component. If legacy chorus singers exist, only tracks actually used by them are kept.
+    /// </summary>
+    private static ProjectDocument ConvertLegacy(string json)
+    {
+        var legacy = JsonSerializer.Deserialize<LegacyProject>(json, ReadOptions);
+        if (legacy is null)
+            throw new InvalidDataException("旧工程 JSON 为空或无法解析。");
+
+        var project = new ProjectDocument
+        {
+            FormatVersion = CurrentFormatVersion,
+            Name = legacy.Name ?? "旧工程",
+            Bpm = legacy.Bpm is > 0 ? legacy.Bpm : 120,
+            BeatsPerBar = legacy.BeatsPerBar is > 0 ? legacy.BeatsPerBar : 3,
+            BeatUnit = legacy.BeatUnit is > 0 ? legacy.BeatUnit : 4,
+            BgmPath = legacy.BgmPath,
+            BgmStartBeat = legacy.BgmStartBeat,
+        };
+
+        var tracks = legacy.Tracks ?? [];
+        if (tracks.Count == 0 && legacy.Segments is { Count: > 0 })
+        {
+            tracks =
+            [
+                new LegacyTrack
                 {
                     Name = "音轨 1",
                     Segments = legacy.Segments,
-                    PitchLine = legacy.PitchLine,
+                    PitchLine = legacy.PitchLine ?? [],
                     Settings = legacy.Settings ?? new SynthesisSettings(),
-                });
-            }
+                },
+            ];
         }
 
-        if (project.Tracks.Count == 0)
-            project.Tracks.Add(new TrackDocument());
+        var usedTrackIds = (legacy.Chorus?.Singers ?? [])
+            .Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.TrackId))
+            .Select(s => s.TrackId!)
+            .ToHashSet(StringComparer.Ordinal);
 
-        foreach (var track in project.Tracks)
+        foreach (var track in tracks)
         {
-            // Projects written before chorus mode have no track ids; singers bind to ids, so backfill them.
-            if (string.IsNullOrWhiteSpace(track.Id))
-                track.Id = Guid.NewGuid().ToString("N");
-            track.Segments ??= [];
-            track.PitchLine ??= [];
-            track.Settings ??= new SynthesisSettings();
-            track.LyricPhrase ??= new LyricPhrase();
-            track.LyricPhrase.Words ??= [];
+            if (usedTrackIds.Count > 0 && track.Id is { Length: > 0 } id && !usedTrackIds.Contains(id))
+                continue;
 
-            // Projects written before the lyric object model store no phrase: rebuild it from the segments
-            // so the lyric bar can manage every existing segment.
-            if (track.LyricPhrase.Words.Count == 0 && track.Segments.Count > 0)
-                track.LyricPhrase = LyricPhrase.FromSegments(track.Segments);
+            var lyric = new LyricDocument
+            {
+                Name = track.Name ?? "歌词",
+                ResolveFromVoicebank = false,
+                Phrase = track.LyricPhrase ?? new LyricPhrase(),
+                Segments = track.Segments ?? [],
+                PitchLine = track.PitchLine ?? [],
+            };
+            if (lyric.Phrase.Words.Count == 0 && lyric.Segments.Count > 0)
+                lyric.Phrase = LyricPhrase.FromSegments(lyric.Segments);
+
+            var parameters = new ParameterSet
+            {
+                Name = (track.Name ?? "参数") + " - 参数",
+                Base = track.Settings ?? new SynthesisSettings(),
+            };
+
+            var singer = new SingerDocument
+            {
+                Name = track.Name ?? "歌手",
+                LibraryRoot = track.LibraryRoot ?? string.Empty,
+                LyricId = lyric.Id,
+                ParameterSetId = parameters.Id,
+            };
+
+            project.Lyrics.Add(lyric);
+            project.ParameterSets.Add(parameters);
+            project.Singers.Add(singer);
         }
 
-        project.Chorus ??= new ChorusDocument();
-        SanitizeChorus(project.Chorus);
-        project.Chorus.Singers ??= [];
-        foreach (var singer in project.Chorus.Singers)
+        return project;
+    }
+
+    private static void Sanitize(ProjectDocument project)
+    {
+        project.Lyrics ??= [];
+        project.ParameterSets ??= [];
+        project.Singers ??= [];
+
+        foreach (var lyric in project.Lyrics)
+        {
+            if (string.IsNullOrWhiteSpace(lyric.Id))
+                lyric.Id = Guid.NewGuid().ToString("N");
+            lyric.Segments ??= [];
+            lyric.PitchLine ??= [];
+            lyric.Phrase ??= new LyricPhrase();
+            lyric.Phrase.Words ??= [];
+            if (lyric.Phrase.Words.Count == 0 && lyric.Segments.Count > 0)
+                lyric.Phrase = LyricPhrase.FromSegments(lyric.Segments);
+
+            // Notes may never overlap: legacy projects with stacked segments are pushed apart on load.
+            if (SegmentLayout.RemoveOverlaps(lyric))
+                SegmentLayout.SyncTransitionPoints(lyric);
+        }
+
+        foreach (var parameters in project.ParameterSets)
+        {
+            if (string.IsNullOrWhiteSpace(parameters.Id))
+                parameters.Id = Guid.NewGuid().ToString("N");
+            parameters.Base ??= new SynthesisSettings();
+            parameters.Graph = SanitizeGraph(parameters.Graph);
+        }
+
+        var lyricIds = project.Lyrics.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
+        var parameterIds = project.ParameterSets.Select(p => p.Id).ToHashSet(StringComparer.Ordinal);
+
+        foreach (var singer in project.Singers)
         {
             if (string.IsNullOrWhiteSpace(singer.Id))
                 singer.Id = Guid.NewGuid().ToString("N");
-            singer.Path ??= [];
-            singer.Path.Sort((a, b) => a.Beat.CompareTo(b.Beat));
+            singer.Graph = SanitizeGraph(singer.Graph);
+            if (singer.LyricId is not null && !lyricIds.Contains(singer.LyricId))
+                singer.LyricId = null;
+            if (singer.ParameterSetId is not null && !parameterIds.Contains(singer.ParameterSetId))
+                singer.ParameterSetId = null;
+            if (!double.IsFinite(singer.MixGain))
+                singer.MixGain = 1.0;
         }
 
-        project.Chorus.Formations ??= [];
-        foreach (var formation in project.Chorus.Formations)
+        // A lyric must belong to at most one singer. Duplicate bindings are broken explicitly so the
+        // one-to-one invariant never depends on UI behaviour.
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var singer in project.Singers)
         {
-            if (string.IsNullOrWhiteSpace(formation.Id))
-                formation.Id = Guid.NewGuid().ToString("N");
-            if (string.IsNullOrWhiteSpace(formation.Name))
-                formation.Name = "导入队形";
-            formation.Positions ??= [];
+            if (singer.LyricId is null)
+                continue;
+            if (!claimed.Add(singer.LyricId))
+                singer.LyricId = null;
         }
-
-        return ResolvePaths(project, baseDirectory);
     }
 
     /// <summary>
-    /// Repairs non-finite chorus values read from hand-edited or older projects. A NaN coordinate used to
-    /// propagate through the whole STFT block and silently silence the rendered audio, so it is replaced
-    /// with the neutral stage defaults here instead of reaching the mixer.
+    /// Normalises a node graph after loading: unique node ids, known node kinds, valid output keys and only
+    /// links whose endpoints and sockets still exist. Broken links are dropped instead of failing the load.
     /// </summary>
-    private static void SanitizeChorus(ChorusDocument chorus)
+    private static ParameterNodeGraph SanitizeGraph(ParameterNodeGraph? graph)
     {
-        if (!double.IsFinite(chorus.StageWidth) || chorus.StageWidth <= 0)
-            chorus.StageWidth = 10.0;
-        if (!double.IsFinite(chorus.StageDepth) || chorus.StageDepth <= 0)
-            chorus.StageDepth = 6.0;
-        if (!double.IsFinite(chorus.MicX))
-            chorus.MicX = 0.0;
-        if (!double.IsFinite(chorus.MicY))
-            chorus.MicY = -2.0;
+        graph ??= new ParameterNodeGraph();
+        graph.Nodes ??= [];
+        graph.Links ??= [];
 
-        chorus.Singers ??= [];
-        foreach (var singer in chorus.Singers)
+        if (!double.IsFinite(graph.PanX))
+            graph.PanX = 40;
+        if (!double.IsFinite(graph.PanY))
+            graph.PanY = 32;
+        if (!double.IsFinite(graph.Zoom))
+            graph.Zoom = 1.0;
+        graph.Zoom = Math.Clamp(graph.Zoom, 0.2, 3.0);
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = graph.Nodes.Count - 1; i >= 0; i--)
         {
-            singer.Path ??= [];
-            singer.Path.RemoveAll(p =>
-                !double.IsFinite(p.Beat) || !double.IsFinite(p.X) || !double.IsFinite(p.Y));
-            foreach (var point in singer.Path)
-                point.Beat = Math.Max(1.0, point.Beat);
-            if (singer.Path.Count == 0)
-                singer.Path.Add(new ChorusKeyframe { Beat = 1, X = 0, Y = 0 });
+            var node = graph.Nodes[i];
+            if (node is null || !Enum.IsDefined(node.Kind))
+            {
+                graph.Nodes.RemoveAt(i);
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(node.Id) || !ids.Add(node.Id))
+            {
+                node.Id = Guid.NewGuid().ToString("N");
+                ids.Add(node.Id);
+            }
+
+            node.Label ??= string.Empty;
+            node.Function ??= "sin";
+            node.Global ??= "beat";
+            node.Text ??= string.Empty;
+            node.BreathOutput ??= "gain";
+            node.Curve ??= new ParameterCurve();
+            node.Curve.Points ??= [];
+            node.InputDefaults ??= [];
+            node.FormantIndex = Math.Clamp(node.FormantIndex, 0, 6);
+            node.Field = VoicebankField.Get(node.Field).Key;
+
+            if (node.Kind == NodeKind.ParameterInput
+                && (string.IsNullOrWhiteSpace(node.Text) || !ParameterKeys.TryGet(node.Text, out _)))
+            {
+                node.Text = "breathGain";
+            }
         }
 
-        chorus.Formations ??= [];
-        foreach (var formation in chorus.Formations)
+        // Older graphs used one output node per parameter key; fold them into the four summary sockets.
+        graph.MigrateLegacyOutputs();
+
+        for (var i = graph.Links.Count - 1; i >= 0; i--)
         {
-            formation.Positions ??= [];
-            formation.Positions.RemoveAll(p => !double.IsFinite(p.X) || !double.IsFinite(p.Y));
+            var link = graph.Links[i];
+            if (link is null)
+            {
+                graph.Links.RemoveAt(i);
+                continue;
+            }
+
+            var source = graph.Find(link.FromNode);
+            var target = graph.Find(link.ToNode);
+            if (source is null || target is null
+                || !ParameterNodeGraph.CanConnect(source, link.FromSocket, target, link.ToSocket))
+            {
+                graph.Links.RemoveAt(i);
+            }
         }
+
+        var claimed = new HashSet<(string, int)>();
+        for (var i = graph.Links.Count - 1; i >= 0; i--)
+        {
+            var link = graph.Links[i];
+            if (!claimed.Add((link.ToNode, link.ToSocket)))
+                graph.Links.RemoveAt(i);
+        }
+
+        return graph;
     }
 
     public static void Save(ProjectDocument project, string path, string? baseDirectory = null)
     {
-        var full = Path.GetFullPath(path);
-        var dir = Path.GetDirectoryName(full);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
+        StageGuard.Run(nameof(ProjectJson), "save", () =>
+        {
+            if (project.IsLegacyReadOnly)
+                throw new StageException(nameof(ProjectJson), "save",
+                    "旧版本工程（v2）为只读格式，不能保存；请新建 v3 工程。");
 
-        AtomicFile.WriteAllText(full, Serialize(project, baseDirectory));
-        project.ProjectDirectory ??= dir;
+            var full = Path.GetFullPath(path);
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            AtomicFile.WriteAllText(full, Serialize(project, baseDirectory));
+            project.ProjectDirectory ??= dir;
+        });
     }
 
     public static ProjectDocument Load(string path, string? baseDirectory = null) =>
-        Deserialize(File.ReadAllText(path), baseDirectory);
+        StageGuard.Run(nameof(ProjectJson), "load",
+            () => Deserialize(File.ReadAllText(path), baseDirectory));
 
-    /// <summary>Copy of the project with every voicebank path made relative to the base directory.</summary>
     private static ProjectDocument ToPortable(ProjectDocument project, string? baseDirectory)
     {
         if (string.IsNullOrWhiteSpace(baseDirectory))
             return project;
 
         var copy = project.Clone();
-        foreach (var track in copy.Tracks)
+        foreach (var lyric in copy.Lyrics)
         {
-            track.LibraryRoot = ToRelativePath(track.LibraryRoot, baseDirectory) ?? string.Empty;
-            foreach (var segment in track.Segments)
+            foreach (var segment in lyric.Segments)
                 segment.Audio = ToRelativePath(segment.Audio, baseDirectory) ?? string.Empty;
-            foreach (var unit in track.LyricPhrase.Words.SelectMany(w => w.Units))
+            foreach (var unit in lyric.Phrase.Words.SelectMany(w => w.Units))
                 unit.Audio = ToRelativePath(unit.Audio, baseDirectory) ?? string.Empty;
         }
+        foreach (var singer in copy.Singers)
+            singer.LibraryRoot = ToRelativePath(singer.LibraryRoot, baseDirectory) ?? string.Empty;
+
         copy.BgmPath = ToRelativePath(copy.BgmPath, baseDirectory);
         return copy;
     }
 
-    /// <summary>Makes stored relative paths absolute again; absolute paths from older projects are kept.</summary>
     private static ProjectDocument ResolvePaths(ProjectDocument project, string? baseDirectory)
     {
         if (string.IsNullOrWhiteSpace(baseDirectory))
             return project;
 
-        foreach (var track in project.Tracks)
+        foreach (var lyric in project.Lyrics)
         {
-            track.LibraryRoot = ToAbsolutePath(track.LibraryRoot, baseDirectory) ?? string.Empty;
-            foreach (var segment in track.Segments)
+            foreach (var segment in lyric.Segments)
                 segment.Audio = ToAbsolutePath(segment.Audio, baseDirectory) ?? string.Empty;
-            foreach (var unit in track.LyricPhrase.Words.SelectMany(w => w.Units))
+            foreach (var unit in lyric.Phrase.Words.SelectMany(w => w.Units))
                 unit.Audio = ToAbsolutePath(unit.Audio, baseDirectory) ?? string.Empty;
         }
+        foreach (var singer in project.Singers)
+            singer.LibraryRoot = ToAbsolutePath(singer.LibraryRoot, baseDirectory) ?? string.Empty;
+
         project.BgmPath = ToAbsolutePath(project.BgmPath, baseDirectory);
         return project;
     }
 
-    /// <summary>
-    /// Converts an absolute path inside <paramref name="baseDirectory"/> to a forward-slash relative path.
-    /// Paths outside the base directory are left untouched because they cannot be made portable.
-    /// </summary>
     private static string? ToRelativePath(string? path, string baseDirectory)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
@@ -214,11 +366,6 @@ public static class ProjectJson
         return relative.Replace('\\', '/');
     }
 
-    /// <summary>
-    /// Resolves a stored relative path against the base directory. An absolute path that no longer
-    /// exists (a project written on another machine) is re-anchored to this machine's voicebank
-    /// directory when the same relative location exists here.
-    /// </summary>
     private static string? ToAbsolutePath(string? path, string baseDirectory)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -234,7 +381,6 @@ public static class ProjectJson
         return RebaseOnVoicebank(full, baseDirectory) ?? full;
     }
 
-    /// <summary>Maps ".../voicebank/&lt;rest&gt;" of an old absolute path onto the current base directory.</summary>
     private static string? RebaseOnVoicebank(string fullPath, string baseDirectory)
     {
         var segments = fullPath.Split('\\', '/');
@@ -250,11 +396,42 @@ public static class ProjectJson
         return File.Exists(candidate) || Directory.Exists(candidate) ? candidate : null;
     }
 
-    /// <summary>Top-level structure of 1.x project files, used only for migration reads.</summary>
+    // ---- Legacy v2 shapes (read only) ----------------------------------
+
     private sealed class LegacyProject
     {
-        public List<VoiceSegment> Segments { get; set; } = [];
-        public List<PitchPoint> PitchLine { get; set; } = [];
+        public string? Name { get; set; }
+        public double Bpm { get; set; } = 120;
+        public int BeatsPerBar { get; set; } = 3;
+        public int BeatUnit { get; set; } = 4;
+        public List<LegacyTrack>? Tracks { get; set; }
+        public List<VoiceSegment>? Segments { get; set; }
+        public List<PitchPoint>? PitchLine { get; set; }
         public SynthesisSettings? Settings { get; set; }
+        public LegacyChorus? Chorus { get; set; }
+        public string? BgmPath { get; set; }
+        public double BgmStartBeat { get; set; }
+    }
+
+    private sealed class LegacyTrack
+    {
+        public string? Id { get; set; }
+        public string? Name { get; set; }
+        public string? LibraryRoot { get; set; }
+        public List<VoiceSegment>? Segments { get; set; }
+        public LyricPhrase? LyricPhrase { get; set; }
+        public List<PitchPoint>? PitchLine { get; set; }
+        public SynthesisSettings? Settings { get; set; }
+    }
+
+    private sealed class LegacyChorus
+    {
+        public List<LegacySinger>? Singers { get; set; }
+    }
+
+    private sealed class LegacySinger
+    {
+        public string? TrackId { get; set; }
+        public bool Enabled { get; set; } = true;
     }
 }

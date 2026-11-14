@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -10,8 +12,8 @@ using VocalB1.App.Controls;
 using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
 using VocalB1.Core.Abstractions;
-using VocalB1.Core.Chorus;
 using VocalB1.Core.Dictionaries;
+using VocalB1.Core.Diagnostics;
 using VocalB1.Core.Library;
 using VocalB1.Core.Models;
 using VocalB1.Core.Pitch;
@@ -21,138 +23,146 @@ using VocalB1.Engine.Audio;
 namespace VocalB1.App.ViewModels;
 
 /// <summary>
-/// Main window ViewModel: only owns project state and command orchestration;
-/// all engine/audio/serialization capabilities come from the Core / Engine projects.
-/// A project contains multiple tracks; parameters and library are per track, while BPM and beat type are shared.
+/// Main window ViewModel for the v3 object-library model. There are no tracks and no stage: the project owns
+/// lyrics, parameter sets and singers; each singer references one lyric (one-to-one) and one shared parameter
+/// set, and the synthesizer is invoked once per singer.
 /// </summary>
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, INodeGraphHost
 {
     private const int MaxLogEntries = 500;
     private const int MaxUndoSteps = 100;
-
-    /// <summary>Synthesis frame constant: 12000 / BPM gives the frames per beat (frame period 5 ms).</summary>
     private const double FramesPerBeatConstant = 12000.0;
-
-    /// <summary>Default crossfade between adjacent notes: 0.25 beat at the current tempo, stored as 5 ms frames.</summary>
-    private double DefaultTransitionFrames => Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _bpm));
+    private const double DefaultLyricUnitBeats = 1.0;
+    private const string LyricBlockPitch = "D4";
 
     private readonly AppServices _services;
     private readonly List<ProjectDocument> _undoStack = [];
     private readonly List<ProjectDocument> _redoStack = [];
-    private string? _undoCoalesceKey;
+    private readonly DispatcherTimer _playheadTimer;
+
     private ProjectDocument _project;
-    private TrackDocument _activeTrack = new();
     private string? _projectPath;
-    /// <summary>Project snapshot taken on load/save, used to tell whether there are unsaved changes.</summary>
     private string _savedSnapshot = string.Empty;
     private ImageSource? _libraryIcon;
     private CancellationTokenSource? _renderCts;
-    private readonly Dictionary<TrackDocument, RenderedTrack> _trackOutputs = [];
-    private readonly DispatcherTimer _playheadTimer;
+    private string? _lastMixPath;
+    private string? _bgmMixPath;
+    private string? _bgmMixKey;
 
-    private string _projectName = string.Empty;
-    private double _bpm = 120;
-    private int _beatsPerBar = 3;
-    private int _beatUnit = 4;
-    private TrackRow? _selectedTrack;
-    private LibraryEntry? _selectedLibraryItem;
+    private LyricRow? _selectedLyric;
+    private ParameterSetRow? _selectedParameterSet;
+    private SingerRow? _selectedSinger;
     private SegmentRow? _selectedSegment;
-    private PianoRollMode _rollMode = PianoRollMode.Notes;
+    private LyricUnitRow? _selectedUnit;
+    private ParameterKeyRow? _selectedParameterKey;
+    private ParameterNode? _selectedNode;
+    private NodeRow? _selectedNodeRow;
+    private LibraryEntry? _selectedLibraryItem;
+    private DictionaryEntryRow? _selectedDictionaryEntry;
+    private LanguageRow? _selectedLanguage;
+
+    private bool _editSingerGraph;
+    private int _graphRevision;
+    private bool _isBusy;
+    private bool _isPlaying;
     private bool _isPencil;
+    private bool _isLightTheme;
+    private bool _languageReady;
+    private bool _syncingRows;
+    private PianoRollMode _rollMode = PianoRollMode.Notes;
     private int _gridDivisionIndex;
     private int? _selectedNoteIndex;
     private int? _selectedPitchIndex;
     private int _rollRevision = 1;
-    private string _previewInfo = "尚未渲染";
-    private bool _isBusy;
-    private bool _isPlaying;
-    private string _statusText = "就绪";
-    private string? _lastRenderPath;
-    /// <summary>Merged WAV of the last render and the tracks it contains; playback prefers it.</summary>
-    private string? _lastMixPath;
-    private List<TrackDocument>? _lastMixTracks;
-    private double _lastMixDurationSeconds;
-    /// <summary>Cached WAV that already contains the BGM, rebuilt when the vocal/BGM/start time changes.</summary>
-    private string? _bgmMixPath;
-    private string? _bgmMixKey;
     private double? _playheadBeat;
-    private bool _isLightTheme;
-    private LanguageRow? _selectedLanguage;
-    private bool _languageReady;
-    private int _chorusRevision = 1;
-    private ChorusSingerRow? _selectedChorusSinger;
-    private ChorusFormationPreset? _selectedChorusFormation;
+    private string _statusText = "就绪";
+    private string? _statusFormat;
+    private object?[]? _statusArgs;
+    private string _previewInfo = "尚未渲染";
+    private string? _previewFormat;
+    private object?[]? _previewArgs;
+    private string _lyricInput = string.Empty;
+    private string _lyricStatus = "输入歌词后按回车，按字典分解为最小声库单位";
+    private string? _lyricStatusFormat;
+    private object?[]? _lyricStatusArgs;
+    private string _unitFormantText = string.Empty;
 
     private UserDictionary? _dictionary;
     private string? _dictionaryPath;
-    private DictionaryEntryRow? _selectedDictionaryEntry;
     private double _dictionaryStartBeat = 1.0;
     private double _dictionaryBeats = 1.0;
     private string _dictionaryDstPitch = "G4";
 
-    /// <summary>Default beat length of one minimal unit: one quarter note (= one beat in a 4/4 grid).</summary>
-    private const double DefaultLyricUnitBeats = 1.0;
-    private const double MinLyricUnitBeats = 0.25;
-    /// <summary>Pitch of every block generated from the lyric bar.</summary>
-    private const string LyricBlockPitch = "D4";
-
-    private string _lyricInput = string.Empty;
-    private string _lyricStatus = "输入歌词后按回车或点击别处，按字典分解为最小声库单位";
-
     public MainViewModel(AppServices services)
     {
         _services = services;
-        // Startup no longer loads a demo project; it starts with an empty project. The demo can still be loaded from the "Demo" button in the top bar.
         _project = ProjectFactory.CreateEmpty(services.Options.LibraryRoot);
 
-        // Restore the last used language (Chinese when no record exists) and list the available language packs.
         LanguageService.Initialize(services.Options.RepositoryRoot);
         RebuildLanguages();
 
         NewProjectCommand = new RelayCommand(_ => NewProject());
-        LoadDemoCommand = new RelayCommand(_ => LoadDemo());
         OpenProjectCommand = new RelayCommand(_ => OpenProject());
         SaveProjectCommand = new RelayCommand(_ => SaveProject());
-        UndoCommand = new RelayCommand(_ => Undo(), _ => _undoStack.Count > 0);
-        RedoCommand = new RelayCommand(_ => Redo(), _ => _redoStack.Count > 0);
-        DeleteSelectionCommand = new RelayCommand(_ => DeleteSelection(), _ => CanDeleteSelection);
-        RefreshLibraryCommand = new RelayCommand(_ => RefreshLibrary());
-        AddLibraryItemCommand = new RelayCommand(p => AddLibraryItem(p as LibraryEntry));
-        AddTrackCommand = new RelayCommand(_ => AddTrack());
-        RemoveTrackCommand = new RelayCommand(_ => RemoveTrack(), _ => _project.Tracks.Count > 1);
+        LoadDemoCommand = new RelayCommand(_ => LoadDemo());
+        UndoCommand = new RelayCommand(_ => Undo(), _ => _undoStack.Count > 0 && CanEdit);
+        RedoCommand = new RelayCommand(_ => Redo(), _ => _redoStack.Count > 0 && CanEdit);
+        DeleteSelectionCommand = new RelayCommand(_ => DeleteSelection(), _ => CanEdit);
         ToggleRollModeCommand = new RelayCommand(_ => ToggleRollMode());
-        ImportDictionaryCommand = new RelayCommand(_ => ImportDictionary());
-        ImportBgmCommand = new RelayCommand(_ => ImportBgm());
-        ClearBgmCommand = new RelayCommand(_ => ClearBgm(), _ => HasBgm);
-        InsertDictionaryEntryCommand = new RelayCommand(
-            _ => InsertDictionaryEntry(),
-            _ => _dictionary is not null && SelectedDictionaryEntry is not null);
+        CommitLyricCommand = new RelayCommand(_ => CommitLyric(), _ => CanEdit && ActiveLyric is not null);
+        ApplyUnitFormantsCommand = new RelayCommand(_ => ApplyUnitFormants(), _ => CanEdit && SelectedUnit is not null);
+        ClearUnitFormantsCommand = new RelayCommand(_ => ClearUnitFormants(), _ => CanEdit && SelectedUnit is not null);
+
+        AddLyricCommand = new RelayCommand(_ => AddLyric(), _ => CanEdit);
+        RemoveLyricCommand = new RelayCommand(_ => RemoveLyric(), _ => CanEdit && SelectedLyric is not null);
+        DuplicateLyricCommand = new RelayCommand(_ => DuplicateLyric(), _ => CanEdit && SelectedLyric is not null);
+        ToggleLyricFakeCommand = new RelayCommand(_ => ToggleLyricFake(), _ => CanEdit && SelectedLyric is not null);
+
+        AddParameterSetCommand = new RelayCommand(_ => AddParameterSet(), _ => CanEdit);
+        RemoveParameterSetCommand = new RelayCommand(_ => RemoveParameterSet(), _ => CanEdit && SelectedParameterSet is not null);
+        DuplicateParameterSetCommand = new RelayCommand(_ => DuplicateParameterSet(), _ => CanEdit && SelectedParameterSet is not null);
+        ToggleParameterFakeCommand = new RelayCommand(_ => ToggleParameterFake(), _ => CanEdit && SelectedParameterSet is not null);
+
+        AddSingerCommand = new RelayCommand(_ => AddSinger(), _ => CanEdit);
+        RemoveSingerCommand = new RelayCommand(_ => RemoveSinger(), _ => CanEdit && SelectedSinger is not null);
+        DuplicateSingerCommand = new RelayCommand(_ => DuplicateSinger(), _ => CanEdit && SelectedSinger is not null);
+        ToggleSingerFakeCommand = new RelayCommand(_ => ToggleSingerFake(), _ => CanEdit && SelectedSinger is not null);
+        PurgeOrphansCommand = new RelayCommand(_ => PurgeOrphans(), _ => CanEdit);
+
+        AddOutputNodeCommand = new RelayCommand(_ => AddOutputNode(), _ => CanEdit && ActiveGraph is not null);
+        AddNodeCommand = new RelayCommand(_ => AddNode(NewNodeKind), _ => CanEdit && ActiveGraph is not null);
+        RemoveNodeCommand = new RelayCommand(_ => RemoveSelectedNode(), _ => CanEdit && SelectedNode is not null);
+        FrameGraphCommand = new RelayCommand(_ => FrameGraph(), _ => ActiveGraph is not null);
+
         RenderCommand = new AsyncRelayCommand(_ => RenderAsync(), _ => !IsBusy, ReportError);
         CancelRenderCommand = new RelayCommand(_ => _renderCts?.Cancel(), _ => IsBusy);
         PlayCommand = new RelayCommand(_ => TogglePlay());
         StopCommand = new RelayCommand(_ => StopPlayback());
+
         ToggleThemeCommand = new RelayCommand(_ => ToggleTheme());
         ImportLanguageCommand = new RelayCommand(_ => ImportLanguagePack());
-        ExportTimbreCommand = new RelayCommand(_ => ExportTimbre());
-        ImportTimbreCommand = new RelayCommand(_ => ImportTimbre());
         OpenHelpCommand = new RelayCommand(_ => OpenHelp());
+        ImportBgmCommand = new RelayCommand(_ => ImportBgm(), _ => CanEdit);
+        ClearBgmCommand = new RelayCommand(_ => ClearBgm(), _ => CanEdit && HasBgm);
+        RefreshLibraryCommand = new RelayCommand(_ => RefreshLibrary());
+        AddLibraryItemCommand = new RelayCommand(p => AddLibraryItem(p as LibraryEntry), _ => CanEdit);
+        ImportDictionaryCommand = new RelayCommand(_ => ImportDictionary());
+        InsertDictionaryEntryCommand = new RelayCommand(_ => InsertDictionaryEntry(),
+            _ => CanEdit && _dictionary is not null && SelectedDictionaryEntry is not null);
+        ExportLyricAssetCommand = new RelayCommand(_ => ExportLyricAsset(), _ => SelectedLyric is not null);
+        ImportLyricAssetCommand = new RelayCommand(_ => ImportLyricAsset(), _ => CanEdit);
+        ExportParameterAssetCommand = new RelayCommand(_ => ExportParameterAsset(), _ => SelectedParameterSet is not null);
+        ImportParameterAssetCommand = new RelayCommand(_ => ImportParameterAsset(), _ => CanEdit);
+        ExportTimbreCommand = new RelayCommand(_ => ExportTimbre(), _ => SelectedParameterSet is not null);
+        ImportTimbreCommand = new RelayCommand(_ => ImportTimbre(), _ => CanEdit && SelectedParameterSet is not null);
+        AnalyzeVoicebankCommand = new AsyncRelayCommand(_ => AnalyzeVoicebankAsync(),
+            _ => SelectedSinger is not null && !IsBusy, ReportError);
 
-        AddChorusSingerCommand = new RelayCommand(_ => AddChorusSinger());
-        RemoveChorusSingerCommand = new RelayCommand(
-            _ => RemoveChorusSinger(), _ => _selectedChorusSinger is not null);
-        ImportChorusFormationCommand = new RelayCommand(_ => ImportChorusFormation());
-        ApplyChorusFormationPresetCommand = new RelayCommand(
-            _ => ApplyChorusFormationPreset(), _ => _selectedChorusFormation is not null);
-        JumpToChorusTrackCommand = new RelayCommand(
-            _ => JumpToSingerTrack(), _ => SelectedSingerTrack is not null);
-
-        // The playhead position is converted from the player position to beats at 30fps; the piano roll scrolls the track accordingly.
         _playheadTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
             Interval = TimeSpan.FromMilliseconds(33),
         };
         _playheadTimer.Tick += (_, _) => SyncPlayheadFromPlayback();
-
         _services.Playback.PlaybackStopped += (_, _) => Dispatch(() =>
         {
             _playheadTimer.Stop();
@@ -162,987 +172,158 @@ public sealed class MainViewModel : ObservableObject
         LoadProject(_project, null);
         LoadDefaultDictionary();
         AddLog("info", $"Repository root: {services.Options.RepositoryRoot}");
-        AddLog("info", "Empty project created. Use \"Add to project\" in the library or \"Demo\" in the top bar to start.");
+        AddLog("info", "v3 对象库工程已就绪：歌词 / 参数 / 歌手三库，无音轨、无舞台。");
     }
 
     // ------------------------------------------------------------------
-    // Collections and binding properties
+    // Collections
     // ------------------------------------------------------------------
-    public ObservableCollection<TrackRow> Tracks { get; } = [];
+    public ObservableCollection<LyricRow> Lyrics { get; } = [];
+    public ObservableCollection<ParameterSetRow> ParameterSets { get; } = [];
+    public ObservableCollection<SingerRow> Singers { get; } = [];
     public ObservableCollection<SegmentRow> Segments { get; } = [];
+    public ObservableCollection<LyricUnitRow> LyricUnits { get; } = [];
+    public ObservableCollection<ParameterKeyRow> ParameterKeyRows { get; } = [];
     public ObservableCollection<LibraryEntry> Library { get; } = [];
     public ObservableCollection<DictionaryEntryRow> DictionaryEntries { get; } = [];
     public ObservableCollection<LogEntry> Logs { get; } = [];
     public ObservableCollection<VoicebankOption> Voicebanks { get; } = [];
-    public ObservableCollection<ChorusSingerRow> ChorusSingers { get; } = [];
-    public ObservableCollection<ChorusFormationPreset> ChorusFormations { get; } = [];
+    public ObservableCollection<LanguageRow> Languages { get; } = [];
 
-    /// <summary>Chorus stage, microphone, singers and imported formations; persisted with the project.</summary>
-    public ChorusDocument Chorus => _project.Chorus;
+    /// <summary>Node kinds offered by the pickers, in catalogue display order.</summary>
+    public IReadOnlyList<NodeKind> NodeKinds { get; } = NodeCatalog.All.Select(d => d.Kind).ToList();
 
-    public bool HasChorusSingers => ChorusSingers.Count > 0;
+    private NodeKind _newNodeKind = NodeKind.TimeInput;
 
-    public bool HasChorusFormations => ChorusFormations.Count > 0;
-
-    /// <summary>Imported formation selected in the chorus tab; applied with the matching command.</summary>
-    public ChorusFormationPreset? SelectedChorusFormation
+    /// <summary>Kind inserted by the toolbar's 添加节点 button.</summary>
+    public NodeKind NewNodeKind
     {
-        get => _selectedChorusFormation;
+        get => _newNodeKind;
         set
         {
-            if (!SetProperty(ref _selectedChorusFormation, value))
-                return;
-            (ApplyChorusFormationPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            if (SetProperty(ref _newNodeKind, value))
+                (AddNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
         }
     }
 
-    /// <summary>Redraw token for the stage editor; incremented whenever the stage model changes.</summary>
-    public int ChorusRevision => _chorusRevision;
+    public IReadOnlyList<string> MathFunctions { get; } =
+        ["sin", "cos", "tan", "asin", "acos", "atan", "abs", "sqrt", "log", "log10", "exp",
+         "floor", "ceil", "round", "sign", "negate", "smoothstep", "add", "subtract", "multiply",
+         "divide", "pow", "min", "max", "mod", "atan2", "lerp"];
 
-    public ChorusSingerRow? SelectedChorusSinger
-    {
-        get => _selectedChorusSinger;
-        set
-        {
-            if (!SetProperty(ref _selectedChorusSinger, value))
-                return;
-            OnPropertyChanged(nameof(SelectedChorusSingerModel));
-            OnPropertyChanged(nameof(SelectedSingerTrack));
-            OnPropertyChanged(nameof(SelectedSingerText));
-            (RemoveChorusSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
-            (JumpToChorusTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        }
-    }
+    public IReadOnlyList<string> GlobalVariables { get; } =
+        ["time", "beat", "progress", "pitchHz", "pitch", "vowelIndex", "singerIndex", "singerCount", "frame"];
 
-    /// <summary>Selected singer model handed to the stage editor for drawing and dragging.</summary>
-    public ChorusSinger? SelectedChorusSingerModel => _selectedChorusSinger?.Model;
+    public IReadOnlyList<string> BreathOutputs { get; } = ["gain", "threshold", "apScale", "apMax"];
 
-    /// <summary>Track bound to the selected singer; setting it rebinds that singer's score.</summary>
-    public TrackRow? SelectedSingerTrack
-    {
-        get
-        {
-            var trackId = _selectedChorusSinger?.Model.TrackId;
-            return trackId is null ? null : Tracks.FirstOrDefault(t => t.Model.Id == trackId);
-        }
-        set
-        {
-            var singer = _selectedChorusSinger?.Model;
-            if (singer is null || value is null || singer.TrackId == value.Model.Id)
-                return;
+    public IReadOnlyList<string> VowelChoices { get; } = ["", "a", "i", "u", "e", "o", "n", "-"];
 
-            PushUndo();
-            singer.TrackId = value.Model.Id;
-            _selectedChorusSinger?.Refresh();
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(SelectedSingerText));
-            TouchChorus();
-            AddLog("info", $"Singer \"{singer.Name}\" now uses track \"{value.Name}\".");
-        }
-    }
+    /// <summary>Fields the field-decompose node can read out of the voicebank bundle.</summary>
+    public IReadOnlyList<VoicebankField> VoicebankFields { get; } = VoicebankField.All;
 
-    public string SelectedSingerText
-    {
-        get
-        {
-            if (_selectedChorusSinger is null)
-                return LanguageService.Translate("未选择歌手（单击舞台上的歌手）");
+    // ------------------------------------------------------------------
+    // Commands
+    // ------------------------------------------------------------------
+    public ICommand NewProjectCommand { get; }
+    public ICommand OpenProjectCommand { get; }
+    public ICommand SaveProjectCommand { get; }
+    public ICommand LoadDemoCommand { get; }
+    public ICommand UndoCommand { get; }
+    public ICommand RedoCommand { get; }
+    public ICommand DeleteSelectionCommand { get; }
+    public ICommand ToggleRollModeCommand { get; }
+    public ICommand CommitLyricCommand { get; }
+    public ICommand ApplyUnitFormantsCommand { get; }
+    public ICommand ClearUnitFormantsCommand { get; }
+    public ICommand AddLyricCommand { get; }
+    public ICommand RemoveLyricCommand { get; }
+    public ICommand DuplicateLyricCommand { get; }
+    public ICommand ToggleLyricFakeCommand { get; }
+    public ICommand AddParameterSetCommand { get; }
+    public ICommand RemoveParameterSetCommand { get; }
+    public ICommand DuplicateParameterSetCommand { get; }
+    public ICommand ToggleParameterFakeCommand { get; }
+    public ICommand AddSingerCommand { get; }
+    public ICommand RemoveSingerCommand { get; }
+    public ICommand DuplicateSingerCommand { get; }
+    public ICommand ToggleSingerFakeCommand { get; }
+    public ICommand PurgeOrphansCommand { get; }
+    public ICommand AddOutputNodeCommand { get; }
+    public ICommand AddNodeCommand { get; }
+    public ICommand RemoveNodeCommand { get; }
+    public ICommand FrameGraphCommand { get; }
+    public ICommand RenderCommand { get; }
+    public ICommand CancelRenderCommand { get; }
+    public ICommand PlayCommand { get; }
+    public ICommand StopCommand { get; }
+    public ICommand ToggleThemeCommand { get; }
+    public ICommand ImportLanguageCommand { get; }
+    public ICommand OpenHelpCommand { get; }
+    public ICommand ImportBgmCommand { get; }
+    public ICommand ClearBgmCommand { get; }
+    public ICommand RefreshLibraryCommand { get; }
+    public ICommand AddLibraryItemCommand { get; }
+    public ICommand ImportDictionaryCommand { get; }
+    public ICommand InsertDictionaryEntryCommand { get; }
+    public ICommand ExportLyricAssetCommand { get; }
+    public ICommand ImportLyricAssetCommand { get; }
+    public ICommand ExportParameterAssetCommand { get; }
+    public ICommand ImportParameterAssetCommand { get; }
+    public ICommand ExportTimbreCommand { get; }
+    public ICommand ImportTimbreCommand { get; }
+    public ICommand AnalyzeVoicebankCommand { get; }
 
-            var track = SelectedSingerTrack;
-            return track is null
-                ? LanguageService.TranslateFormat("{0} · 未绑定音轨", _selectedChorusSinger.Name)
-                : LanguageService.TranslateFormat("{0} · 音轨：{1}", _selectedChorusSinger.Name, track.Name);
-        }
-    }
+    // ------------------------------------------------------------------
+    // Project state
+    // ------------------------------------------------------------------
+    public bool CanEdit => !_project.IsLegacyReadOnly;
 
-    public string ChorusStageInfo => LanguageService.TranslateFormat(
-        "舞台 {0:0.#} m × {1:0.#} m · 麦克风 ({2:0.0}, {3:0.0})",
-        Chorus.StageWidth, Chorus.StageDepth, Chorus.MicX, Chorus.MicY);
+    public bool IsLegacyReadOnly => _project.IsLegacyReadOnly;
 
-    /// <summary>Stage width in meters, editable from the chorus panel; only a 1 m minimum is enforced.</summary>
-    public double StageWidth
-    {
-        get => Chorus.StageWidth;
-        set
-        {
-            var width = Math.Max(1, Math.Round(value, 2));
-            if (Math.Abs(Chorus.StageWidth - width) < 1e-6)
-                return;
-
-            BeginChorusEdit();
-            Chorus.StageWidth = width;
-            Chorus.MicX = Math.Round(Math.Clamp(Chorus.MicX, -width / 2, width / 2), 2);
-            foreach (var keyframe in Chorus.Singers.SelectMany(s => s.Path))
-                keyframe.X = Math.Round(ChorusMath.ClampX(keyframe.X, width), 2);
-            CommitChorusEdit();
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Stage depth in meters, editable from the chorus panel; only a 1 m minimum is enforced.</summary>
-    public double StageDepth
-    {
-        get => Chorus.StageDepth;
-        set
-        {
-            var depth = Math.Max(1, Math.Round(value, 2));
-            if (Math.Abs(Chorus.StageDepth - depth) < 1e-6)
-                return;
-
-            BeginChorusEdit();
-            Chorus.StageDepth = depth;
-            Chorus.MicY = Math.Round(Math.Clamp(Chorus.MicY, -depth / 2, 0), 2);
-            foreach (var keyframe in Chorus.Singers.SelectMany(s => s.Path))
-                keyframe.Y = Math.Round(ChorusMath.ClampY(keyframe.Y, depth), 2);
-            CommitChorusEdit();
-            OnPropertyChanged();
-        }
-    }
-
-    /// <summary>Top-level tab: 0 = track editor, 1 = stage mode.</summary>
-    private int _mainTabIndex;
-
-    public int MainTabIndex
-    {
-        get => _mainTabIndex;
-        set => SetProperty(ref _mainTabIndex, value);
-    }
-
-    /// <summary>声库目录下与音频同级的 icon.jpg，显示在顶栏「新建」旁。</summary>
-    public ImageSource? LibraryIcon => _libraryIcon;
-
-    public bool HasLibraryIcon => _libraryIcon is not null;
-
-    /// <summary>当前声库是否有可用音频：没有时整个主界面变灰并锁定，只保留拖入声库的安装入口。</summary>
-    public bool HasVoicebank => Library.Count > 0;
-
-    public string ProjectName
-    {
-        get => _projectName;
-        set
-        {
-            if (SetProperty(ref _projectName, value))
-                _project.Name = value;
-        }
-    }
+    public string ProjectPathText => _projectPath ?? LanguageService.Translate("（未保存）");
 
     public double Bpm
     {
-        get => _bpm;
+        get => _project.Bpm;
         set
         {
-            if (SetProperty(ref _bpm, value))
-            {
-                _project.Bpm = value;
-                // Transition parameters are stored as frames; the derived beat width changes when BPM changes.
-                OnPropertyChanged(nameof(SelectedTransitionBeats));
-                // The BGM block width is expressed in beats, so it changes with the tempo.
-                OnPropertyChanged(nameof(BgmDurationBeats));
-            }
+            if (!CanEdit || Math.Abs(_project.Bpm - value) < 1e-9 || value <= 0)
+                return;
+            PushUndo();
+            _project.Bpm = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(BgmDurationBeats));
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
         }
     }
 
     public int BeatsPerBar
     {
-        get => _beatsPerBar;
+        get => _project.BeatsPerBar;
         set
         {
-            if (SetProperty(ref _beatsPerBar, value))
-                _project.BeatsPerBar = value;
+            if (!CanEdit || _project.BeatsPerBar == value || value <= 0)
+                return;
+            PushUndo();
+            _project.BeatsPerBar = value;
+            OnPropertyChanged();
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
         }
     }
 
     public int BeatUnit
     {
-        get => _beatUnit;
+        get => _project.BeatUnit;
         set
         {
-            if (SetProperty(ref _beatUnit, value))
-                _project.BeatUnit = value;
-        }
-    }
-
-    /// <summary>Library path of the current track (independent per track).</summary>
-    public string LibraryRoot
-    {
-        get => _activeTrack.LibraryRoot;
-        set
-        {
-            if (string.Equals(_activeTrack.LibraryRoot, value, StringComparison.Ordinal))
+            if (!CanEdit || _project.BeatUnit == value || value <= 0)
                 return;
-            _activeTrack.LibraryRoot = value;
+            PushUndo();
+            _project.BeatUnit = value;
             OnPropertyChanged();
         }
-    }
-
-    /// <summary>Voicebank picked for the current track: singer names are the folder names under voicebank/.</summary>
-    public VoicebankOption? SelectedVoicebank
-    {
-        get
-        {
-            var current = _activeTrack.LibraryRoot;
-            if (string.IsNullOrWhiteSpace(current) || SamePath(current, VoicebankRoot))
-                return Voicebanks.FirstOrDefault();
-            return Voicebanks.FirstOrDefault(option => SamePath(option.Path, current));
-        }
-        set
-        {
-            if (value is null || SamePath(_activeTrack.LibraryRoot, value.Path))
-                return;
-
-            // Notes store absolute wav paths, so a switch alone would keep the old singer in the project.
-            var previousRoot = EffectiveLibraryRoot;
-            LibraryRoot = value.Path;
-            var missing = RetargetSegments(previousRoot, value.Path);
-
-            InvalidateRender();
-            RefreshSegments();
-            OnPropertyChanged();
-            RefreshLibrary();
-            StatusText = missing > 0
-                ? $"声库：{value.Name}（{missing} 个音符无同名采样）"
-                : $"声库：{value.Name}";
-        }
-    }
-
-    /// <summary>True when the project differs from the last loaded/saved snapshot (prompted on load and on close).</summary>
-    public bool HasUnsavedChanges =>
-        !string.Equals(_savedSnapshot, ProjectJson.Serialize(_project, _services.Options.RepositoryRoot), StringComparison.Ordinal);
-
-    private string VoicebankRoot => Path.Combine(_services.Options.RepositoryRoot, "voicebank");
-
-    public TrackRow? SelectedTrack
-    {
-        get => _selectedTrack;
-        set
-        {
-            if (!SetProperty(ref _selectedTrack, value) || value is null)
-                return;
-            ActivateTrack(value.Model);
-        }
-    }
-
-    // ---- Independent synthesis parameters of the current track ----
-
-    /// <summary>Formant follow ratios (7 bands, one slider per band).</summary>
-    public ObservableCollection<ParameterRow> FollowRatioRows { get; } = [];
-
-    /// <summary>Band energy distribution (formant gains, 8 bands, one slider per band).</summary>
-    public ObservableCollection<ParameterRow> BandRatioRows { get; } = [];
-
-    /// <summary>Pitch jitter intensity (0-100).</summary>
-    public double Jitter
-    {
-        get => _activeTrack.Settings.Jitter;
-        set
-        {
-            if (_activeTrack.Settings.Jitter == value)
-                return;
-            _activeTrack.Settings.Jitter = value;
-            OnPropertyChanged();
-            InvalidateRender();
-        }
-    }
-
-    /// <summary>Amplitude shimmer intensity (0-100).</summary>
-    public double Shimmer
-    {
-        get => _activeTrack.Settings.Shimmer;
-        set
-        {
-            if (_activeTrack.Settings.Shimmer == value)
-                return;
-            _activeTrack.Settings.Shimmer = value;
-            OnPropertyChanged();
-            InvalidateRender();
-        }
-    }
-
-    public double BreathyThr
-    {
-        get => _activeTrack.Settings.BreathyThr;
-        set
-        {
-            if (_activeTrack.Settings.BreathyThr == value)
-                return;
-            _activeTrack.Settings.BreathyThr = value;
-            OnPropertyChanged();
-            InvalidateRender();
-        }
-    }
-
-    public double ApScale
-    {
-        get => _activeTrack.Settings.ApScale;
-        set
-        {
-            if (_activeTrack.Settings.ApScale == value)
-                return;
-            _activeTrack.Settings.ApScale = value;
-            OnPropertyChanged();
-            InvalidateRender();
-        }
-    }
-
-    public double ApMax
-    {
-        get => _activeTrack.Settings.ApMax;
-        set
-        {
-            if (_activeTrack.Settings.ApMax == value)
-                return;
-            _activeTrack.Settings.ApMax = value;
-            OnPropertyChanged();
-            InvalidateRender();
-        }
-    }
-
-    public int BitDepth
-    {
-        get => _activeTrack.Settings.BitDepth;
-        set
-        {
-            if (_activeTrack.Settings.BitDepth == value)
-                return;
-            _activeTrack.Settings.BitDepth = value;
-            OnPropertyChanged();
-        }
-    }
-
-    private string EffectiveLibraryRoot =>
-        string.IsNullOrWhiteSpace(_activeTrack.LibraryRoot)
-            ? _services.Options.LibraryRoot
-            : _activeTrack.LibraryRoot;
-
-    public string ProjectPathText => LanguageService.Translate(_projectPath ?? "（未保存）");
-
-    public string EngineInfo =>
-        $"{Path.GetFileName(_services.Options.PythonPath)} · {Path.GetFileName(_services.Options.BridgeScriptPath)}";
-
-    public LibraryEntry? SelectedLibraryItem
-    {
-        get => _selectedLibraryItem;
-        set => SetProperty(ref _selectedLibraryItem, value);
-    }
-
-    public SegmentRow? SelectedSegment
-    {
-        get => _selectedSegment;
-        set
-        {
-            if (!SetProperty(ref _selectedSegment, value))
-                return;
-
-            var index = value is null ? (int?)null : IndexOfSegment(value);
-            if (_selectedNoteIndex != index)
-            {
-                _selectedNoteIndex = index;
-                OnPropertyChanged(nameof(SelectedNoteIndex));
-            }
-
-            OnPropertyChanged(nameof(HasSelectedSegment));
-            OnPropertyChanged(nameof(SelectedTransitionBeats));
-        }
-    }
-
-    /// <summary>Whether a segment is selected (the transition slider is enabled based on this).</summary>
-    public bool HasSelectedSegment => _selectedSegment is not null;
-
-    /// <summary>
-    /// Transition length (in beats) between the selected segment and the previous one. The underlying synthesis parameter is a
-    /// frame count (frame period 5 ms); here it is converted to beats at the current BPM for comparison on the piano roll.
-    /// </summary>
-    public double SelectedTransitionBeats
-    {
-        get => _selectedSegment is null
-            ? 0
-            : _selectedSegment.Model.Transition * _bpm / FramesPerBeatConstant;
-        set
-        {
-            var row = _selectedSegment;
-            if (row is null)
-                return;
-
-            var frames = Math.Round(Math.Max(0, value) * FramesPerBeatConstant / Math.Max(1, _bpm));
-            if (Math.Abs(row.Model.Transition - frames) < 0.5)
-                return;
-
-            PushUndo("transition:" + row.Model.Id);
-            row.Model.Transition = frames;
-            OnPropertyChanged();
-            RollRevision++;
-        }
-    }
-
-    /// <summary>Index of the selected segment in the piano roll (kept in sync with the segment list).</summary>
-    public int? SelectedNoteIndex
-    {
-        get => _selectedNoteIndex;
-        set
-        {
-            if (!SetProperty(ref _selectedNoteIndex, value))
-                return;
-
-            SelectedSegment = value is int index && index >= 0 && index < Segments.Count
-                ? Segments[index]
-                : null;
-            RaiseEditCommandStates();
-        }
-    }
-
-    /// <summary>Index of the selected point in Pitch line mode.</summary>
-    public int? SelectedPitchIndex
-    {
-        get => _selectedPitchIndex;
-        set
-        {
-            if (!SetProperty(ref _selectedPitchIndex, value))
-                return;
-            RaiseEditCommandStates();
-        }
-    }
-
-    /// <summary>Revision number used to trigger piano roll redraws; incremented when the model changes externally.</summary>
-    public int RollRevision
-    {
-        get => _rollRevision;
-        private set => SetProperty(ref _rollRevision, value);
-    }
-
-    /// <summary>Current track model, read and written directly by the piano roll.</summary>
-    public TrackDocument ActiveTrack => _activeTrack;
-
-    public PianoRollMode RollMode
-    {
-        get => _rollMode;
-        set
-        {
-            if (!SetProperty(ref _rollMode, value))
-                return;
-            OnPropertyChanged(nameof(RollModeText));
-            RaiseEditCommandStates();
-        }
-    }
-
-    public string RollModeText => LanguageService.Translate(
-        RollMode == PianoRollMode.Notes ? "模式：音块（右键加块）" : "模式：Pitch 线（右键加节点）");
-
-    public ICommand OpenHelpCommand { get; }
-
-    /// <summary>Open the bundled README that matches the current UI language (zh-CN / ja / en).</summary>
-    private void OpenHelp()
-    {
-        var root = _services.Options.RepositoryRoot;
-        var fileName = LanguageService.Current.Code.ToLowerInvariant() switch
-        {
-            "ja" => "README.ja.md",
-            "zh" => "README.zh-CN.md",
-            _ => "README.md",
-        };
-
-        var path = Path.Combine(root, fileName);
-        if (!File.Exists(path))
-            path = Path.Combine(root, "README.md");
-        if (!File.Exists(path))
-        {
-            AddLog("warn", $"Help file not found: {fileName}");
-            return;
-        }
-
-        try
-        {
-            System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-            AddLog("info", $"Opened help: {path}");
-        }
-        catch (Exception ex)
-        {
-            ReportError(ex);
-        }
-    }
-
-    /// <summary>Pencil tool: left-drag inside the piano roll draws a new note from press to release.</summary>
-    public bool IsPencil
-    {
-        get => _isPencil;
-        set => SetProperty(ref _isPencil, value);
-    }
-
-    /// <summary>Index of the piano-roll minor-grid choice: 0 = off, 1 = eighth notes, 2 = sixteenth notes.</summary>
-    public int GridDivisionIndex
-    {
-        get => _gridDivisionIndex;
-        set
-        {
-            if (!SetProperty(ref _gridDivisionIndex, value))
-                return;
-            OnPropertyChanged(nameof(GridDivision));
-        }
-    }
-
-    /// <summary>Minor grid lines per beat passed to the piano roll: 0 = off, 2 = eighth, 4 = sixteenth.</summary>
-    public int GridDivision => _gridDivisionIndex switch
-    {
-        1 => 2,
-        2 => 4,
-        _ => 0,
-    };
-
-    // ------------------------------------------------------------------
-    // User dictionary
-    // ------------------------------------------------------------------
-    public string DictionaryName => _dictionary?.Name ?? LanguageService.Translate("（未导入）");
-
-    public string DictionaryPathText => _dictionaryPath is null
-        ? LanguageService.Translate("内置默认字典：假名 + 常见汉字（可导入 .json 覆盖）")
-        : _dictionaryPath;
-
-    public DictionaryEntryRow? SelectedDictionaryEntry
-    {
-        get => _selectedDictionaryEntry;
-        set
-        {
-            if (!SetProperty(ref _selectedDictionaryEntry, value))
-                return;
-
-            if (value?.Model.DefaultBeats is double beats && beats > 0)
-                DictionaryBeats = beats;
-            if (!string.IsNullOrWhiteSpace(value?.Model.DstPitch))
-                DictionaryDstPitch = value.Model.DstPitch!;
-
-            (InsertDictionaryEntryCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        }
-    }
-
-    /// <summary>Start beat for inserting a dictionary entry (1-based).</summary>
-    public double DictionaryStartBeat
-    {
-        get => _dictionaryStartBeat;
-        set => SetProperty(ref _dictionaryStartBeat, value);
-    }
-
-    /// <summary>Total beat length occupied by an inserted dictionary entry; values of 0 or less use the entry default.</summary>
-    public double DictionaryBeats
-    {
-        get => _dictionaryBeats;
-        set => SetProperty(ref _dictionaryBeats, value);
-    }
-
-    /// <summary>Target pitch string for inserting a dictionary entry.</summary>
-    public string DictionaryDstPitch
-    {
-        get => _dictionaryDstPitch;
-        set => SetProperty(ref _dictionaryDstPitch, value);
-    }
-
-    // ------------------------------------------------------------------
-    // Lyric bar (top of the editor): type text, commit -> minimal voicebank units + D4 blocks
-    // ------------------------------------------------------------------
-
-    /// <summary>Raw lyric text typed in the top bar.</summary>
-    public string LyricInput
-    {
-        get => _lyricInput;
-        set => SetProperty(ref _lyricInput, value);
-    }
-
-    /// <summary>One-line feedback under the lyric bar (decomposed unit count, skipped samples, etc.).</summary>
-    public string LyricStatus
-    {
-        get => LanguageService.Translate(_lyricStatus);
-        private set => SetProperty(ref _lyricStatus, value);
-    }
-
-    /// <summary>Minimal units of the last commit; each item is one generated D4 block.</summary>
-    public ObservableCollection<LyricUnitRow> LyricUnits { get; } = [];
-
-    public bool HasLyricUnits => LyricUnits.Count > 0;
-
-    /// <summary>Rest regions (deleted lyric units) drawn as dashed blocks in the piano roll.</summary>
-    public IReadOnlyList<RestRegion> RollRestRegions { get; private set; } = [];
-
-    /// <summary>Result of a lyric deletion key press: the new text and where the caret should sit.</summary>
-    public sealed record LyricTextEdit(string Text, int Caret);
-
-    /// <summary>
-    /// Called when the lyric input loses focus or Enter is pressed: parses the whole text into word/unit
-    /// objects and applies an object-level diff onto the track's persisted <see cref="LyricPhrase"/>.
-    /// Matched words keep their melody; dropped words lose their segments; new words are appended.
-    /// The text box is then rewritten to the phrase projection (missing audio / unmatched characters
-    /// become rests and therefore appear as spaces).
-    /// </summary>
-    public void CommitLyricInput()
-    {
-        if (_dictionary is null)
-        {
-            AddLog("warn", "当前没有可用字典，无法分解歌词。");
-            return;
-        }
-
-        var text = _lyricInput ?? string.Empty;
-        var phrase = _activeTrack.LyricPhrase;
-
-        // The box already shows the projection: nothing to diff.
-        if (string.Equals(text, phrase.Text, StringComparison.Ordinal))
-            return;
-
-        var dictionaryDirectory = string.IsNullOrWhiteSpace(_dictionaryPath)
-            ? null
-            : Path.GetDirectoryName(_dictionaryPath);
-        var parsed = LyricPhraseParser.Parse(
-            _dictionary, text, dictionaryDirectory, ResolveDictionaryLibraryRoot(), _dictionary.DefaultSrcPitch);
-
-        PushUndo("lyric:" + text);
-        var result = LyricPhraseComposer.Apply(
-            phrase, parsed.Words, _activeTrack,
-            DefaultLyricUnitBeats, DefaultTransitionFrames, LyricBlockPitch);
-
-        // Full refresh: kept units follow their segments, new units get rows, the box shows the projection.
-        RefreshSegments();
-
-        var units = phrase.AllUnits;
-        var realCount = units.Count(u => !u.IsRest);
-        var restCount = units.Count - realCount;
-
-        if (units.Count == 0)
-        {
-            LyricStatus = parsed.MissingAudio.Count > 0
-                ? $"声库中找不到音频：{string.Join("、", parsed.MissingAudio.Distinct().Take(6))}"
-                : "歌词与休止已全部删除";
-            AddLog("info", "Lyric bar cleared: all generated blocks and rests removed.");
-            return;
-        }
-
-        var message = $"已分解为 {units.Count} 个最小单位：{realCount} 个音块";
-        if (result.Reused > 0 || result.Removed > 0)
-        {
-            message += $"（复用原旋律 {result.Reused} 个词";
-            if (result.Added > 0)
-                message += $"，新增 {result.Added} 个词";
-            if (result.Removed > 0)
-                message += $"，移除 {result.Removed} 个词";
-            message += "）";
-        }
-
-        if (restCount > 0)
-            message += $"，{restCount} 个休止";
-        if (parsed.Unmatched.Count > 0)
-            message += $"（字典未匹配，已保存为休止：{string.Join("、", parsed.Unmatched.Distinct().Take(6))}）";
-        if (parsed.MissingAudio.Count > 0)
-            message += $"（音频缺失，已保存为休止：{string.Join("、", parsed.MissingAudio.Distinct().Take(6))}）";
-
-        LyricStatus = message;
-        AddLog("info", $"Lyric \"{text}\" -> {units.Count} unit(s): "
-            + string.Join(" + ", units.Select(u => u.Display)) + $", {_activeTrack.Name}");
-        foreach (var character in parsed.Unmatched.Distinct())
-            AddLog("warn", $"Lyric character \"{character}\" has no dictionary entry; saved as a rest.");
-    }
-
-    /// <summary>
-    /// Backspace/Delete on committed lyrics, expressed on the object graph: deleting a word mutes all of
-    /// its pronunciation units (each becomes a rest of the same beat span); deleting a rest word removes
-    /// it and pulls the following words left. Returns null when the text box no longer matches the
-    /// projection (uncommitted typing), so the box keeps its default editing behavior.
-    /// </summary>
-    public LyricTextEdit? TryBuildLyricDeletion(string text, int caret, int selectionLength, bool backspace)
-    {
-        var phrase = _activeTrack.LyricPhrase;
-        if (phrase.Words.Count == 0)
-            return null;
-
-        text ??= string.Empty;
-        var projection = phrase.Text;
-        if (!string.Equals(text, projection, StringComparison.Ordinal))
-            return null;
-
-        var spans = WordTextSpans(phrase);
-        int start;
-        int end;
-        if (selectionLength > 0)
-        {
-            start = caret;
-            end = caret + selectionLength;
-        }
-        else if (backspace)
-        {
-            if (caret <= 0)
-                return null;
-            start = caret - 1;
-            end = caret;
-        }
-        else
-        {
-            if (caret >= text.Length)
-                return null;
-            start = caret;
-            end = caret + 1;
-        }
-
-        start = Math.Clamp(start, 0, text.Length);
-        end = Math.Clamp(end, start, text.Length);
-        if (end <= start)
-            return null;
-
-        var affected = new List<int>();
-        for (var i = 0; i < spans.Count; i++)
-        {
-            if (spans[i].Start < end && spans[i].End > start)
-                affected.Add(i);
-        }
-
-        if (affected.Count == 0)
-            return null;
-
-        PushUndo();
-
-        if (affected.Count == 1)
-        {
-            var index = affected[0];
-            var word = phrase.Words[index];
-            if (word.IsRest)
-            {
-                LyricPhraseComposer.RemoveWord(phrase, word, _activeTrack, pullFollowing: true);
-                caret = WordOffset(phrase, index);
-            }
-            else
-            {
-                var endLength = word.Units.Count;
-                LyricPhraseComposer.MuteWord(phrase, word, _activeTrack);
-                caret = WordOffset(phrase, index) + endLength;
-            }
-        }
-        else
-        {
-            var firstIndex = affected[0];
-            for (var i = affected.Count - 1; i >= 0; i--)
-            {
-                var word = phrase.Words[affected[i]];
-                if (word.IsRest)
-                    LyricPhraseComposer.RemoveWord(phrase, word, _activeTrack, pullFollowing: false);
-                else
-                    LyricPhraseComposer.MuteWord(phrase, word, _activeTrack);
-            }
-
-            caret = WordOffset(phrase, firstIndex);
-        }
-
-        RefreshSegments();
-        if (phrase.Words.Count == 0)
-            LyricStatus = "歌词与休止已全部删除";
-        else
-            LyricStatus = "已删除歌词：对应音块已变为同拍长休止";
-
-        return new LyricTextEdit(phrase.Text, Math.Clamp(caret, 0, phrase.Text.Length));
-    }
-
-    /// <summary>Character spans of each word in the projected text.</summary>
-    private static List<(int Start, int End)> WordTextSpans(LyricPhrase phrase)
-    {
-        var spans = new List<(int, int)>(phrase.Words.Count);
-        var offset = 0;
-        foreach (var word in phrase.Words)
-        {
-            var length = word.Projection.Length;
-            spans.Add((offset, offset + length));
-            offset += length;
-        }
-
-        return spans;
-    }
-
-    /// <summary>Character offset where the given word starts in the current projection.</summary>
-    private static int WordOffset(LyricPhrase phrase, int wordIndex)
-    {
-        var offset = 0;
-        for (var i = 0; i < wordIndex && i < phrase.Words.Count; i++)
-            offset += phrase.Words[i].Projection.Length;
-        return offset;
-    }
-
-    /// <summary>
-    /// Drag on the vertical line at the right edge of one unit: changes that unit's beat length and
-    /// shifts the following units so the strip stays contiguous. Works for rests as well.
-    /// </summary>
-    public void ResizeLyricUnit(LyricUnitRow? row, double deltaBeats)
-    {
-        if (row is null)
-            return;
-
-        var flat = _activeTrack.LyricPhrase.AllUnits;
-        var index = flat.IndexOf(row.Model);
-        if (index < 0)
-            return;
-
-        var unit = row.Model;
-        var newLength = Math.Max(MinLyricUnitBeats, unit.Length + deltaBeats);
-        if (Math.Abs(newLength - unit.Length) < 0.001)
-            return;
-
-        PushUndo("lyric-length:" + unit.Id);
-
-        var delta = newLength - unit.Length;
-        RelayoutUnit(unit, unit.BeatStart, newLength);
-        foreach (var following in flat.Skip(index + 1))
-            RelayoutUnit(following, following.BeatStart + delta, following.Length);
-
-        foreach (var item in LyricUnits)
-            item.RefreshMetrics();
-
-        RefreshRollRestRegions();
-        RollRevision++;
-    }
-
-    /// <summary>Moves/resizes a unit object and keeps its linked segment and pitch nodes in sync.</summary>
-    private void RelayoutUnit(LyricUnit unit, double beatStart, double length)
-    {
-        var segment = FindSegment(unit.SegmentId);
-        if (segment is not null)
-        {
-            var oldStart = segment.BeatStart;
-            var oldEnd = segment.BeatEnd;
-            var newEnd = beatStart + length;
-            if (Math.Abs(oldStart - beatStart) > 1e-9 || Math.Abs(oldEnd - newEnd) > 1e-9)
-            {
-                ScaleSegmentPoints(segment, oldStart, oldEnd, beatStart, newEnd);
-                segment.BeatStart = beatStart;
-                segment.BeatEnd = newEnd;
-            }
-        }
-
-        unit.BeatStart = beatStart;
-        unit.Length = Math.Max(0.01, length);
-    }
-
-    private VoiceSegment? FindSegment(string? segmentId) => segmentId is null
-        ? null
-        : _activeTrack.Segments.FirstOrDefault(s => s.Id == segmentId);
-
-    /// <summary>Rebuilds the unit strip from the track's persisted lyric objects and rewrites the text projection.</summary>
-    private void RebuildLyricRows()
-    {
-        LyricUnits.Clear();
-        foreach (var word in _activeTrack.LyricPhrase.Words)
-        foreach (var unit in word.Units)
-            LyricUnits.Add(new LyricUnitRow(unit));
-
-        var projection = _activeTrack.LyricPhrase.Text;
-        if (!string.Equals(_lyricInput, projection, StringComparison.Ordinal))
-        {
-            _lyricInput = projection;
-            OnPropertyChanged(nameof(LyricInput));
-        }
-
-        OnPropertyChanged(nameof(HasLyricUnits));
-        RefreshRollRestRegions();
-    }
-
-    /// <summary>Shows the active track's persisted lyric phrase (track switch / project load / undo).</summary>
-    private void LoadLyricFromTrack()
-    {
-        RebuildLyricRows();
-        LyricStatus = "输入歌词后按回车或点击别处，按字典分解为最小声库单位";
-    }
-
-    /// <summary>Keeps the piano-roll rest markers in sync with the unit strip.</summary>
-    private void RefreshRollRestRegions()
-    {
-        var semitone = PitchMath.TryParseSemitones(LyricBlockPitch, out var value)
-            ? (int)Math.Round(value)
-            : 0;
-        RollRestRegions = _activeTrack.LyricPhrase.AllUnits
-            .Where(u => u.IsRest)
-            .Select(u => new RestRegion(u.BeatStart, u.BeatEnd, semitone))
-            .ToList();
-        OnPropertyChanged(nameof(RollRestRegions));
-    }
-
-    /// <summary>Maps a segment's pitch nodes from one beat range onto another (first/last stay at the ends).</summary>
-    private void ScaleSegmentPoints(
-        VoiceSegment segment, double oldStart, double oldEnd, double newStart, double newEnd)
-    {
-        var oldSpan = Math.Max(0.001, oldEnd - oldStart);
-        var newSpan = Math.Max(0.001, newEnd - newStart);
-        foreach (var point in _activeTrack.PitchLine)
-        {
-            if (point.SegmentId != segment.Id || point.IsTransition)
-                continue;
-            var t = Math.Clamp((point.Beat - oldStart) / oldSpan, 0, 1);
-            point.Beat = newStart + t * newSpan;
-        }
-
-        _activeTrack.SortPitchLine();
-    }
-
-    /// <summary>Adds a lyric word object for a segment created outside the lyric bar.</summary>
-    private void AddLyricWordForSegment(VoiceSegment segment)
-    {
-        var surface = FindPlaceholderLyric(segment.Audio) ?? segment.Lyric;
-        segment.LyricOverride ??= surface;
-
-        var word = new LyricWord
-        {
-            Surface = surface,
-            Units =
-            [
-                new LyricUnit
-                {
-                    Text = surface,
-                    Audio = segment.Audio,
-                    Display = LyricPhrase.SampleLabel(segment.Audio),
-                    SrcPitch = segment.SrcPitch,
-                    KeepUnvoicedHead = segment.KeepUnvoicedHead,
-                    IsRest = false,
-                    SegmentId = segment.Id,
-                    BeatStart = segment.BeatStart,
-                    Length = Math.Max(0.01, segment.BeatEnd - segment.BeatStart),
-                },
-            ],
-        };
-        InsertLyricWord(word, segment.BeatStart);
-    }
-
-    /// <summary>Adds one word object covering the segments of a dictionary entry inserted from the panel.</summary>
-    private void AddLyricWordForSegments(string surface, IReadOnlyList<VoiceSegment> segments)
-    {
-        if (segments.Count == 0)
-            return;
-
-        var word = new LyricWord { Surface = surface };
-        foreach (var segment in segments)
-        {
-            segment.LyricOverride ??= surface;
-            word.Units.Add(new LyricUnit
-            {
-                Text = surface,
-                Audio = segment.Audio,
-                Display = LyricPhrase.SampleLabel(segment.Audio),
-                SrcPitch = segment.SrcPitch,
-                KeepUnvoicedHead = segment.KeepUnvoicedHead,
-                IsRest = false,
-                SegmentId = segment.Id,
-                BeatStart = segment.BeatStart,
-                Length = Math.Max(0.01, segment.BeatEnd - segment.BeatStart),
-            });
-        }
-
-        InsertLyricWord(word, segments[0].BeatStart);
-    }
-
-    /// <summary>Inserts a word at its time position so the phrase order matches the timeline.</summary>
-    private void InsertLyricWord(LyricWord word, double startBeat)
-    {
-        var words = _activeTrack.LyricPhrase.Words;
-        var index = words.FindIndex(w => w.BeatStart > startBeat + 1e-9);
-        if (index < 0)
-            words.Add(word);
-        else
-            words.Insert(index, word);
-    }
-
-    public string PreviewInfo
-    {
-        get => LanguageService.Translate(_previewInfo);
-        private set => SetProperty(ref _previewInfo, value);
     }
 
     public bool IsBusy
@@ -1154,6 +335,7 @@ public sealed class MainViewModel : ObservableObject
                 return;
             (RenderCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
             (CancelRenderCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (AnalyzeVoicebankCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
         }
     }
 
@@ -1165,309 +347,722 @@ public sealed class MainViewModel : ObservableObject
 
     public string StatusText
     {
-        get => LanguageService.Translate(_statusText);
-        private set => SetProperty(ref _statusText, value);
+        get => _statusFormat is null
+            ? LanguageService.Translate(_statusText)
+            : LanguageService.TranslateFormat(_statusFormat, _statusArgs ?? []);
+        set
+        {
+            var hadFormat = _statusFormat is not null;
+            _statusFormat = null;
+            _statusArgs = null;
+            if (hadFormat || !string.Equals(_statusText, value, StringComparison.Ordinal))
+            {
+                _statusText = value;
+                OnPropertyChanged();
+            }
+        }
     }
 
-    public string? LastRenderPath
+    /// <summary>Stores a localized status template; the getter translates it whenever the language changes.</summary>
+    private void SetStatus(string format, params object?[] args)
     {
-        get => _lastRenderPath;
-        private set => SetProperty(ref _lastRenderPath, value);
+        _statusFormat = format;
+        _statusArgs = args;
+        OnPropertyChanged(nameof(StatusText));
     }
 
-    /// <summary>Playhead position (1-based beat); null = playhead hidden.</summary>
+    public string PreviewInfo
+    {
+        get => _previewFormat is null
+            ? LanguageService.Translate(_previewInfo)
+            : LanguageService.TranslateFormat(_previewFormat, _previewArgs ?? []);
+        private set
+        {
+            var hadFormat = _previewFormat is not null;
+            _previewFormat = null;
+            _previewArgs = null;
+            if (hadFormat || !string.Equals(_previewInfo, value, StringComparison.Ordinal))
+            {
+                _previewInfo = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    private void SetPreviewInfo(string format, params object?[] args)
+    {
+        _previewFormat = format;
+        _previewArgs = args;
+        OnPropertyChanged(nameof(PreviewInfo));
+    }
+
+    public string EngineInfo =>
+        $"{Path.GetFileName(_services.Options.PythonPath)} · {Path.GetFileName(_services.Options.BridgeScriptPath)}";
+
+    public string ThemeToggleText =>
+        LanguageService.Translate(_isLightTheme ? "深色模式" : "浅色模式");
+
+    // ------------------------------------------------------------------
+    // Selection: lyrics / parameters / singers
+    // ------------------------------------------------------------------
+    public LyricRow? SelectedLyric
+    {
+        get => _selectedLyric;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedLyric = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedLyric, value))
+                return;
+            OnPropertyChanged(nameof(ActiveLyric));
+            RefreshSegments();
+            RefreshLyricUnits();
+            (CommitLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (RemoveLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (DuplicateLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (ToggleLyricFakeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (ExportLyricAssetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    public ParameterSetRow? SelectedParameterSet
+    {
+        get => _selectedParameterSet;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedParameterSet = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedParameterSet, value))
+                return;
+            OnPropertyChanged(nameof(ActiveParameterSet));
+            OnPropertyChanged(nameof(GraphOwnerText));
+            OnPropertyChanged(nameof(ActiveGraph));
+            OnPropertyChanged(nameof(BaseValue));
+            OnPropertyChanged(nameof(IsBaseEditable));
+            RefreshParameterKeys();
+            ResetNodeSelection();
+            RaiseSelectionCommands();
+        }
+    }
+
+    public SingerRow? SelectedSinger
+    {
+        get => _selectedSinger;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedSinger = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedSinger, value))
+                return;
+            var model = value?.Model;
+            if (model is not null)
+            {
+                _selectedLyric = Lyrics.FirstOrDefault(r => r.Id == model.LyricId) ?? _selectedLyric;
+                _selectedParameterSet = ParameterSets.FirstOrDefault(r => r.Id == model.ParameterSetId)
+                    ?? _selectedParameterSet;
+                OnPropertyChanged(nameof(SelectedLyric));
+                OnPropertyChanged(nameof(SelectedParameterSet));
+                OnPropertyChanged(nameof(ActiveLyric));
+                OnPropertyChanged(nameof(ActiveParameterSet));
+                OnPropertyChanged(nameof(SelectedSingerVoicebank));
+                OnPropertyChanged(nameof(SelectedSingerLyric));
+                OnPropertyChanged(nameof(SelectedSingerParameter));
+                OnPropertyChanged(nameof(GraphOwnerText));
+                OnPropertyChanged(nameof(ActiveGraph));
+                RefreshSegments();
+                RefreshLyricUnits();
+                RefreshParameterKeys();
+                ResetNodeSelection();
+            }
+            OnPropertyChanged(nameof(GraphOwnerText));
+            OnPropertyChanged(nameof(ActiveGraph));
+            OnPropertyChanged(nameof(BaseValue));
+            OnPropertyChanged(nameof(IsBaseEditable));
+            RaiseSelectionCommands();
+        }
+    }
+
+    public LyricDocument? ActiveLyric =>
+        _selectedSinger?.Model.LyricId is { } id
+            ? _project.FindLyric(id)
+            : _selectedLyric?.Model;
+
+    public ParameterSet? ActiveParameterSet =>
+        _selectedSinger?.Model.ParameterSetId is { } id
+            ? _project.FindParameterSet(id)
+            : _selectedParameterSet?.Model;
+
+    public string SelectedSingerVoicebank
+    {
+        get => _selectedSinger?.Model.LibraryRoot ?? string.Empty;
+        set
+        {
+            if (_selectedSinger is null || !CanEdit || _selectedSinger.Model.LibraryRoot == value)
+                return;
+            PushUndo();
+            // Add the target before notifying the ComboBox: a two-way SelectedValue binding would otherwise
+            // fail to find the new path in ItemsSource and write the old bank back.
+            if (!Voicebanks.Any(v => string.Equals(v.Path, value, StringComparison.OrdinalIgnoreCase)))
+            {
+                Voicebanks.Insert(0, new VoicebankOption(
+                    Path.GetFileName(value.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                    value));
+            }
+            _selectedSinger.Model.LibraryRoot = value;
+            _selectedSinger.Refresh();
+            RefreshLibrary();
+            OnPropertyChanged(nameof(SelectedSingerVoicebank));
+        }
+    }
+
+    public LyricRow? SelectedSingerLyric
+    {
+        get => Lyrics.FirstOrDefault(r => r.Id == _selectedSinger?.Model.LyricId);
+        set
+        {
+            if (_selectedSinger is null || !CanEdit || value is null)
+                return;
+            PushUndo();
+            foreach (var other in _project.Singers.Where(s => s.Id != _selectedSinger.Id))
+            {
+                if (other.LyricId == value.Id)
+                    other.LyricId = null;
+            }
+            _selectedSinger.Model.LyricId = value.Id;
+            _selectedSinger.Refresh();
+            _selectedLyric = value;
+            OnPropertyChanged(nameof(SelectedSingerLyric));
+            OnPropertyChanged(nameof(SelectedLyric));
+            RefreshSegments();
+            RefreshLyricUnits();
+        }
+    }
+
+    public ParameterSetRow? SelectedSingerParameter
+    {
+        get => ParameterSets.FirstOrDefault(r => r.Id == _selectedSinger?.Model.ParameterSetId);
+        set
+        {
+            if (_selectedSinger is null || !CanEdit || value is null)
+                return;
+            PushUndo();
+            _selectedSinger.Model.ParameterSetId = value.Id;
+            _selectedSinger.Refresh();
+            _selectedParameterSet = value;
+            OnPropertyChanged(nameof(SelectedSingerParameter));
+            OnPropertyChanged(nameof(SelectedParameterSet));
+            OnPropertyChanged(nameof(ActiveGraph));
+            RefreshParameterKeys();
+            ResetNodeSelection();
+        }
+    }
+
+    public bool EditSingerGraph
+    {
+        get => _editSingerGraph;
+        set
+        {
+            if (!SetProperty(ref _editSingerGraph, value))
+                return;
+            OnPropertyChanged(nameof(GraphOwnerText));
+            OnPropertyChanged(nameof(ActiveGraph));
+            OnPropertyChanged(nameof(BaseValue));
+            RefreshParameterKeys();
+            ResetNodeSelection();
+        }
+    }
+
+    /// <summary>The node canvas currently shown: the shared parameter set or the singer overlay.</summary>
+    public ParameterNodeGraph? ActiveGraph => _editSingerGraph
+        ? _selectedSinger?.Model.Graph
+        : ActiveParameterSet?.Graph;
+
+    public string GraphOwnerText => _editSingerGraph
+        ? LanguageService.TranslateFormat("歌手「{0}」的叠加节点图",
+            _selectedSinger?.Name ?? LanguageService.Translate("未选择"))
+        : LanguageService.TranslateFormat("共享参数「{0}」的节点图",
+            ActiveParameterSet?.Name ?? LanguageService.Translate("未选择"));
+
+    public int GraphRevision => _graphRevision;
+
+    /// <summary>Bumped to ask the canvas to fit every node into the viewport.</summary>
+    public int FrameRevision => _frameRevision;
+
+    private int _frameRevision;
+
+    // ------------------------------------------------------------------
+    // Lyric editor
+    // ------------------------------------------------------------------
+    public string LyricInput
+    {
+        get => _lyricInput;
+        set => SetProperty(ref _lyricInput, value);
+    }
+
+    public string LyricStatus
+    {
+        get => _lyricStatusFormat is null
+            ? LanguageService.Translate(_lyricStatus)
+            : LanguageService.TranslateFormat(_lyricStatusFormat, _lyricStatusArgs ?? []);
+        set
+        {
+            var hadFormat = _lyricStatusFormat is not null;
+            _lyricStatusFormat = null;
+            _lyricStatusArgs = null;
+            if (hadFormat || !string.Equals(_lyricStatus, value, StringComparison.Ordinal))
+            {
+                _lyricStatus = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    private void SetLyricStatus(string format, params object?[] args)
+    {
+        _lyricStatusFormat = format;
+        _lyricStatusArgs = args;
+        OnPropertyChanged(nameof(LyricStatus));
+    }
+
+    public SegmentRow? SelectedSegment
+    {
+        get => _selectedSegment;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedSegment = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedSegment, value))
+                return;
+            var index = value is null ? (int?)null : Segments.IndexOf(value);
+            if (_selectedNoteIndex != index)
+            {
+                _selectedNoteIndex = index;
+                OnPropertyChanged(nameof(SelectedNoteIndex));
+            }
+            (DeleteSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    public LyricUnitRow? SelectedUnit
+    {
+        get => _selectedUnit;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedUnit = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedUnit, value))
+                return;
+            OnPropertyChanged(nameof(UnitVowel));
+            OnPropertyChanged(nameof(UnitFormantText));
+            OnPropertyChanged(nameof(UnitFormantInfo));
+            OnPropertyChanged(nameof(UnitFormantValues));
+            OnPropertyChanged(nameof(UnitFormantHint));
+            OnPropertyChanged(nameof(UnitUsesAbsoluteAudio));
+            _unitFormantText = value?.Model.FormantHz is { Length: 7 } hz
+                ? string.Join(", ", hz.Select(v => v.ToString("0")))
+                : string.Empty;
+            OnPropertyChanged(nameof(UnitFormantText));
+        }
+    }
+
+    public string UnitVowel
+    {
+        get => _selectedUnit?.Model.Vowel ?? "a";
+        set
+        {
+            if (_selectedUnit is null || !CanEdit || string.IsNullOrWhiteSpace(value))
+                return;
+            PushUndo();
+            _selectedUnit.Model.Vowel = value;
+            var segment = ActiveLyric?.Segments.FirstOrDefault(s => s.Id == _selectedUnit.Model.SegmentId);
+            if (segment is not null)
+                segment.Vowel = value;
+            _selectedUnit.Refresh();
+            RefreshSegments();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(UnitFormantInfo));
+            OnPropertyChanged(nameof(UnitFormantValues));
+            OnPropertyChanged(nameof(UnitFormantHint));
+        }
+    }
+
+    public string UnitFormantText
+    {
+        get => _unitFormantText;
+        set => SetProperty(ref _unitFormantText, value);
+    }
+
+    /// <summary>Per-unit dual-mode override: use the stored absolute audio path instead of the voicebank.</summary>
+    public bool UnitUsesAbsoluteAudio
+    {
+        get => _selectedUnit?.Model.PreferAbsoluteAudio ?? false;
+        set
+        {
+            if (_selectedUnit is null || !CanEdit || _selectedUnit.Model.PreferAbsoluteAudio == value)
+                return;
+            PushUndo();
+            _selectedUnit.Model.PreferAbsoluteAudio = value;
+            var segment = ActiveLyric?.Segments.FirstOrDefault(s => s.Id == _selectedUnit.Model.SegmentId);
+            if (segment is not null)
+                segment.PreferAbsoluteAudio = value;
+            _selectedUnit.Refresh();
+            OnPropertyChanged();
+            AddLog("info", value ? "该音节改为绝对样本路径。" : "该音节改为声库解析。");
+        }
+    }
+
+    public string UnitFormantInfo    {
+        get
+        {
+            if (_selectedUnit is null)
+                return LanguageService.Translate("选择一个音节查看共振峰。");
+            var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
+            var values = _selectedUnit.Model.FormantHz is { Length: 7 } manual
+                ? manual
+                : profile.Resolve(_selectedUnit.Model.Vowel, _selectedUnit.Model.Phoneme);
+            var source = _selectedUnit.Model.FormantHz is { Length: 7 }
+                ? LanguageService.Translate("手动目标")
+                : LanguageService.Translate("元音管理器（自动）");
+            return LanguageService.TranslateFormat("{0}：{1} Hz", source,
+                string.Join(" / ", values.Select(v => v.ToString("0"))));
+        }
+    }
+
+    /// <summary>Seven formant targets for the graphical editor; empty when no syllable is selected.</summary>
+    public IReadOnlyList<double> UnitFormantValues
+    {
+        get
+        {
+            if (_selectedUnit is null)
+                return [];
+            if (_selectedUnit.Model.FormantHz is { Length: 7 } manual)
+                return manual;
+            var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
+            return profile.Resolve(_selectedUnit.Model.Vowel, _selectedUnit.Model.Phoneme);
+        }
+    }
+
+    public string UnitFormantHint => _selectedUnit?.Model.FormantHz is { Length: 7 }
+        ? LanguageService.Translate("手动目标")
+        : _selectedUnit is null
+            ? LanguageService.Translate("未选择音节")
+            : LanguageService.Translate("自动（元音管理器）");
+
+    public PianoRollMode RollMode
+    {
+        get => _rollMode;
+        private set
+        {
+            if (!SetProperty(ref _rollMode, value))
+                return;
+            OnPropertyChanged(nameof(RollModeText));
+        }
+    }
+
+    public string RollModeText => RollMode == PianoRollMode.Notes
+        ? LanguageService.Translate("模式：音块（右键加块）")
+        : LanguageService.Translate("模式：Pitch 线（右键加节点）");
+
+    public bool IsPencil
+    {
+        get => _isPencil;
+        set => SetProperty(ref _isPencil, value);
+    }
+
+    public int GridDivisionIndex
+    {
+        get => _gridDivisionIndex;
+        set
+        {
+            if (!SetProperty(ref _gridDivisionIndex, value))
+                return;
+            OnPropertyChanged(nameof(GridDivision));
+        }
+    }
+
+    /// <summary>Grid subdivisions per bar: 0 = off, then 8 / 12 / 16 / 32.</summary>
+    public int GridDivision => _gridDivisionIndex switch
+    {
+        1 => 8,
+        2 => 12,
+        3 => 16,
+        4 => 32,
+        _ => 0,
+    };
+
+    public int RollRevision => _rollRevision;
+
+    public int? SelectedNoteIndex
+    {
+        get => _selectedNoteIndex;
+        set
+        {
+            if (!SetProperty(ref _selectedNoteIndex, value))
+                return;
+            if (_syncingRows)
+                return;
+            if (value is int index && index >= 0 && index < Segments.Count)
+                _selectedSegment = Segments[index];
+            else
+                _selectedSegment = null;
+            OnPropertyChanged(nameof(SelectedSegment));
+        }
+    }
+
+    public int? SelectedPitchIndex
+    {
+        get => _selectedPitchIndex;
+        set => SetProperty(ref _selectedPitchIndex, value);
+    }
+
     public double? PlayheadBeat
     {
         get => _playheadBeat;
         set => SetProperty(ref _playheadBeat, value);
     }
 
-    // ------------------------------------------------------------------
-    // BGM (backing track): project-wide, original speed, adjustable start
-    // ------------------------------------------------------------------
-
-    /// <summary>Project-wide BGM WAV, shared by every track; null = no BGM.</summary>
-    public string? BgmPath => _project.BgmPath;
+    public bool HasSelectedSegment => _selectedSegment is not null;
 
     public bool HasBgm => !string.IsNullOrWhiteSpace(_project.BgmPath);
 
-    /// <summary>File name shown in the BGM bar below the piano roll.</summary>
-    public string BgmName => string.IsNullOrWhiteSpace(_project.BgmPath)
-        ? "未导入伴奏"
-        : Path.GetFileName(_project.BgmPath);
+    public string? BgmPath => _project.BgmPath;
 
-    /// <summary>
-    /// BGM start offset in beats from the project start (0 = 第 0 小节第 0 音, the default).
-    /// The BGM always plays at its original speed, so this only moves it in time.
-    /// </summary>
+    public string BgmName => HasBgm
+        ? Path.GetFileName(_project.BgmPath!) ?? LanguageService.Translate("未导入")
+        : LanguageService.Translate("未导入");
+
     public double BgmStartBeat
     {
         get => _project.BgmStartBeat;
         set
         {
-            var clamped = Math.Max(0, value);
-            if (Math.Abs(_project.BgmStartBeat - clamped) < 1e-9)
+            if (!CanEdit || Math.Abs(_project.BgmStartBeat - value) < 1e-9)
                 return;
-            _project.BgmStartBeat = clamped;
+            PushUndo();
+            _project.BgmStartBeat = Math.Max(0, value);
             _bgmMixKey = null;
             OnPropertyChanged();
         }
     }
 
-    /// <summary>
-    /// BGM length in beats at the current tempo. The BGM block in the piano roll uses it as a fixed
-    /// width, so the block can only be moved, never resized.
-    /// </summary>
     public double BgmDurationBeats
     {
         get
         {
-            if (!HasBgm)
+            if (!HasBgm || !File.Exists(_project.BgmPath))
                 return 0;
             try
             {
-                return WavReader.ReadInfo(_project.BgmPath!).DurationSeconds * _bpm / 60.0;
+                var info = WavReader.ReadInfo(_project.BgmPath);
+                return info.DurationSeconds * _project.Bpm / 60.0;
             }
-            catch
+            catch (Exception ex)
             {
+                AddLog("warn", "读取 BGM 失败：" + ex.Message);
                 return 0;
             }
         }
     }
 
-    // ------------------------------------------------------------------
-    // Commands
-    // ------------------------------------------------------------------
-    public ICommand NewProjectCommand { get; }
-    public ICommand LoadDemoCommand { get; }
-    public ICommand OpenProjectCommand { get; }
-    public ICommand SaveProjectCommand { get; }
-    public ICommand ExportTimbreCommand { get; }
-    public ICommand ImportTimbreCommand { get; }
-    public ICommand UndoCommand { get; }
-    public ICommand RedoCommand { get; }
-    public ICommand DeleteSelectionCommand { get; }
-    public ICommand RefreshLibraryCommand { get; }
-    public ICommand AddLibraryItemCommand { get; }
-    public ICommand AddTrackCommand { get; }
-    public ICommand RemoveTrackCommand { get; }
-    public ICommand ToggleRollModeCommand { get; }
-    public ICommand ImportDictionaryCommand { get; }
-    public ICommand ImportBgmCommand { get; }
-    public ICommand ClearBgmCommand { get; }
-    public ICommand InsertDictionaryEntryCommand { get; }
-    public ICommand RenderCommand { get; }
-    public ICommand CancelRenderCommand { get; }
-    public ICommand PlayCommand { get; }
-    public ICommand StopCommand { get; }
-    public ICommand ToggleThemeCommand { get; }
-    public ICommand ImportLanguageCommand { get; }
-    public ICommand AddChorusSingerCommand { get; }
-    public ICommand RemoveChorusSingerCommand { get; }
-    public ICommand ImportChorusFormationCommand { get; }
-    public ICommand ApplyChorusFormationPresetCommand { get; }
-    public ICommand JumpToChorusTrackCommand { get; }
+    public void AddNoteAt(double beat, int semitone) =>
+        CreateSegmentAt(beat, beat + 1.0, semitone);
 
-    /// <summary>Theme button text: shows the mode that will be applied when clicked.</summary>
-    public string ThemeToggleText => LanguageService.Translate(_isLightTheme ? "深色模式" : "浅色模式");
+    public void DrawNoteAt(double beatStart, double beatEnd, int semitone) =>
+        CreateSegmentAt(beatStart, Math.Max(beatStart + 0.25, beatEnd), semitone);
 
-    private void ToggleTheme()
+    public void OnRollEdited()
     {
-        _isLightTheme = !_isLightTheme;
-        ThemeManager.Apply(_isLightTheme);
-        OnPropertyChanged(nameof(ThemeToggleText));
+        if (ActiveLyric is null)
+            return;
+        LyricPhraseComposer.SyncWithSegments(ActiveLyric.Phrase, ActiveLyric);
+        _rollRevision++;
+        OnPropertyChanged(nameof(RollRevision));
+        RefreshSegments();
+        RefreshLyricUnits();
+        AddLog("info", "Piano roll edit committed; lyric units synchronized.");
+    }
+
+    /// <summary>
+    /// Moves the playback position to the given beat. This is a seek, not a play command: starting
+    /// playback here would let the 33 ms position timer keep writing PlayheadBeat while the mouse is
+    /// still dragging, so the playhead would snap back to the audio position and refuse to be dragged.
+    /// The next Play starts from this beat.
+    /// </summary>
+    public void SeekToBeat(double beat)
+    {
+        if (IsPlaying || _services.Playback.IsPlaying)
+            StopPlayback();
+        PlayheadBeat = beat;
     }
 
     // ------------------------------------------------------------------
-    // UI language
+    // Parameter editor
     // ------------------------------------------------------------------
-    public ObservableCollection<LanguageRow> Languages { get; } = [];
+    public ParameterKeyRow? SelectedParameterKey
+    {
+        get => _selectedParameterKey;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedParameterKey = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedParameterKey, value))
+                return;
+            OnPropertyChanged(nameof(BaseValue));
+            OnPropertyChanged(nameof(IsBaseEditable));
+            SelectOutputNodeFor(value);
+        }
+    }
 
-    /// <summary>Language selected in the drop-down; changes are applied to the current window immediately.</summary>
+    /// <summary>The node selected on the canvas; drives the inspector below it.</summary>
+    public ParameterNode? SelectedNode
+    {
+        get => _selectedNode;
+        set
+        {
+            if (_syncingRows)
+            {
+                _selectedNode = value;
+                return;
+            }
+            if (!SetProperty(ref _selectedNode, value))
+                return;
+            _selectedNodeRow = value is null || ActiveGraph is null
+                ? null
+                : new NodeRow(value, ActiveGraph, OnNodeChanged);
+            OnPropertyChanged(nameof(SelectedNodeRow));
+            (RemoveNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    public NodeRow? SelectedNodeRow => _selectedNodeRow;
+
+    public bool IsBaseEditable => _selectedParameterKey is { Definition.IsFormant: false };
+
+    public double BaseValue
+    {
+        get => ActiveParameterSet is { } set && _selectedParameterKey is { } key
+            ? set.GetBase(key.Key)
+            : 0;
+        set
+        {
+            if (!CanEdit || !IsBaseEditable || ActiveParameterSet is null || _selectedParameterKey is null)
+                return;
+            var clamped = Math.Clamp(value, _selectedParameterKey.Definition.Min,
+                _selectedParameterKey.Definition.Max);
+            if (Math.Abs(clamped - ActiveParameterSet.GetBase(_selectedParameterKey.Key)) < 1e-9)
+                return;
+            PushUndo();
+            ActiveParameterSet.SetBase(_selectedParameterKey.Key, clamped);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(BaseValueText));
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
+        }
+    }
+
+    public string BaseValueText => BaseValue.ToString("0.###");
+
+    // ------------------------------------------------------------------
+    // Library / dictionary / logs
+    // ------------------------------------------------------------------
+    public LibraryEntry? SelectedLibraryItem
+    {
+        get => _selectedLibraryItem;
+        set => SetProperty(ref _selectedLibraryItem, value);
+    }
+
+    public DictionaryEntryRow? SelectedDictionaryEntry
+    {
+        get => _selectedDictionaryEntry;
+        set
+        {
+            if (!SetProperty(ref _selectedDictionaryEntry, value))
+                return;
+            (InsertDictionaryEntryCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        }
+    }
+
+    public double DictionaryStartBeat
+    {
+        get => _dictionaryStartBeat;
+        set => SetProperty(ref _dictionaryStartBeat, value);
+    }
+
+    public double DictionaryBeats
+    {
+        get => _dictionaryBeats;
+        set => SetProperty(ref _dictionaryBeats, value);
+    }
+
+    public string DictionaryDstPitch
+    {
+        get => _dictionaryDstPitch;
+        set => SetProperty(ref _dictionaryDstPitch, value);
+    }
+
+    public string DictionaryName => LanguageService.Translate(_dictionary?.Name ?? "内置字典");
+
+    public string DictionaryPathText => _dictionaryPath ?? LanguageService.Translate("（内置）");
+
+    public string LibraryRoot => _selectedSinger?.Model.LibraryRoot ?? _services.Options.LibraryRoot;
+
+    public ImageSource? LibraryIcon => _libraryIcon;
+
+    public bool HasLibraryIcon => _libraryIcon is not null;
+
+    public ObservableCollection<LanguageRow> AvailableLanguages => Languages;
+
     public LanguageRow? SelectedLanguage
     {
         get => _selectedLanguage;
         set
         {
-            // The first item is selected while the drop-down initializes and the list is rebuilt; that must not be treated as a user switch.
             if (!_languageReady || value is null)
                 return;
             if (!SetProperty(ref _selectedLanguage, value))
                 return;
-
             LanguageService.Select(value.Pack.Code);
+            if (Application.Current?.MainWindow is { } window)
+                LanguageService.Apply(window);
             RefreshLanguageText();
         }
     }
 
-    /// <summary>Called after the window loads: align the drop-down with the restored language, then allow user switching.</summary>
     public void BeginLanguageSelection()
     {
         var row = Languages.FirstOrDefault(r => r.Pack.Code == LanguageService.Current.Code)
             ?? Languages.FirstOrDefault();
-        if (row is not null && !ReferenceEquals(_selectedLanguage, row))
-        {
-            _selectedLanguage = row;
-            OnPropertyChanged(nameof(SelectedLanguage));
-        }
-
+        _selectedLanguage = row;
+        OnPropertyChanged(nameof(SelectedLanguage));
         RefreshLanguageText();
         _languageReady = true;
     }
 
-    private void RebuildLanguages()
-    {
-        var ready = _languageReady;
-        _languageReady = false;
-
-        Languages.Clear();
-        foreach (var pack in LanguageService.Available)
-            Languages.Add(new LanguageRow(pack));
-
-        _selectedLanguage = Languages.FirstOrDefault(r => r.Pack.Code == LanguageService.Current.Code)
-            ?? Languages.FirstOrDefault();
-        OnPropertyChanged(nameof(SelectedLanguage));
-
-        _languageReady = ready;
-    }
-
-    private void ImportLanguagePack()
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = "导入语言包",
-            Filter = "JSON 语言包 (*.json)|*.json|所有文件 (*.*)|*.*",
-        };
-        if (dialog.ShowDialog() != true)
-            return;
-
-        var pack = LanguageService.Import(dialog.FileName, out var error);
-        if (pack is null)
-        {
-            AddLog("error", "Language pack import failed: " + error);
-            return;
-        }
-
-        RebuildLanguages();
-        RefreshLanguageText();
-        AddLog("info", $"Language pack imported: {pack.Name} ({pack.Code})");
-    }
-
-    /// <summary>Refresh all texts generated for the current language after a language switch.</summary>
-    public void RefreshLanguageText()
-    {
-        OnPropertyChanged(nameof(StatusText));
-        OnPropertyChanged(nameof(PreviewInfo));
-        OnPropertyChanged(nameof(RollModeText));
-        OnPropertyChanged(nameof(ThemeToggleText));
-        OnPropertyChanged(nameof(ProjectPathText));
-        OnPropertyChanged(nameof(DictionaryName));
-        OnPropertyChanged(nameof(DictionaryPathText));
-        OnPropertyChanged(nameof(LyricStatus));
-        OnPropertyChanged(nameof(SelectedSingerText));
-        OnPropertyChanged(nameof(ChorusStageInfo));
-        foreach (var row in ChorusSingers)
-            row.Refresh();
-        RefreshParameterRows();
-    }
-
     // ------------------------------------------------------------------
-    // Project
+    // Project load / save
     // ------------------------------------------------------------------
     private void NewProject()
     {
         LoadProject(ProjectFactory.CreateEmpty(_services.Options.LibraryRoot), null);
-        AddLog("info", "New empty project created.");
-    }
-
-    private void LoadDemo()
-    {
-        var demo = ProjectFactory.CreateDemo(_services.Options.LibraryRoot);
-        if (demo.Tracks.Count == 0 || demo.Tracks[0].Segments.Count == 0)
-        {
-            AddLog("warn", "Demo audio not found in the library; cannot load the demo project.");
-            StatusText = "示例音频缺失";
-            return;
-        }
-        LoadProject(demo, null);
-        AddLog("info", "Demo project loaded (G4 -> G4 -> E4).");
-    }
-
-    /// <summary>Export the core timbre parameters of the active track to a JSON file.</summary>
-    private void ExportTimbre()
-    {
-        var dialog = new SaveFileDialog
-        {
-            Title = "导出音色参数",
-            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json",
-            FileName = SafeFileName(_activeTrack.Name) + TimbreProfile.FileExtension,
-        };
-        if (dialog.ShowDialog() != true)
-            return;
-
-        try
-        {
-            TimbreProfile.From(_activeTrack.Settings).Save(dialog.FileName);
-            AddLog("info", "Timbre profile exported: " + dialog.FileName);
-            StatusText = "音色参数已导出：" + Path.GetFileName(dialog.FileName);
-        }
-        catch (Exception ex)
-        {
-            AddLog("error", "Export timbre profile failed: " + ex.Message);
-            StatusText = "导出失败";
-            MessageBox.Show("无法导出音色参数：" + ex.Message, "导出音色参数",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    /// <summary>Read a timbre profile and apply it to the active track.</summary>
-    private void ImportTimbre()
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = "导入音色参数",
-            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
-        };
-        if (dialog.ShowDialog() != true)
-            return;
-
-        TimbreProfile profile;
-        try
-        {
-            profile = TimbreProfile.Load(dialog.FileName);
-        }
-        catch (Exception ex)
-        {
-            AddLog("error", "Import timbre profile failed: " + ex.Message);
-            StatusText = "导入失败";
-            MessageBox.Show("无法读取音色参数：" + ex.Message, "导入音色参数",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        PushUndo();
-        foreach (var item in profile.ApplyTo(_activeTrack.Settings))
-            AddLog("warn", "Timbre import skipped " + item);
-
-        // The sliders read straight from the track settings, so refresh both the scalar bindings and the band rows.
-        OnPropertyChanged(nameof(BreathyThr));
-        OnPropertyChanged(nameof(ApScale));
-        OnPropertyChanged(nameof(ApMax));
-        OnPropertyChanged(nameof(Jitter));
-        OnPropertyChanged(nameof(Shimmer));
-        RefreshParameterRows();
-
-        AddLog("info", "Timbre profile imported: " + dialog.FileName);
-        StatusText = "音色参数已导入：" + Path.GetFileName(dialog.FileName);
-    }
-
-    /// <summary>File name of the active track without characters the file system rejects.</summary>
-    private static string SafeFileName(string? name)
-    {
-        var text = string.IsNullOrWhiteSpace(name) ? "音色参数" : name.Trim();
-        foreach (var ch in Path.GetInvalidFileNameChars())
-            text = text.Replace(ch, '_');
-        return text;
+        AddLog("info", "新建空对象工程。");
     }
 
     private void OpenProject()
@@ -1475,926 +1070,871 @@ public sealed class MainViewModel : ObservableObject
         var dialog = new OpenFileDialog
         {
             Title = "打开工程",
-            Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}|所有文件 (*.*)|*.*",
+            Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
         };
         if (dialog.ShowDialog() != true)
             return;
 
-        OpenProjectFromPath(dialog.FileName);
-    }
-
-    /// <summary>Load a project file dropped onto the window: prompt for unsaved changes, then replace the workspace.</summary>
-    public void OpenProjectFromPath(string path)
-    {
-        // Ask before touching the current project: a canceled open must not read (or replace) anything.
-        if (!ConfirmDiscardChanges("载入工程"))
-            return;
-
-        ProjectDocument project;
         try
         {
-            project = ProjectJson.Load(path, _services.Options.RepositoryRoot);
+            var project = ProjectJson.Load(dialog.FileName, Path.GetDirectoryName(dialog.FileName));
+            LoadProject(project, dialog.FileName);
+            AddLog(project.IsLegacyReadOnly ? "warn" : "info",
+                project.IsLegacyReadOnly
+                    ? "旧版 v2 工程已加载为只读：可查看和渲染，不能编辑或保存。"
+                    : LanguageService.TranslateFormat("工程已打开：{0}", dialog.FileName));
         }
         catch (Exception ex)
         {
-            AddLog("error", "Failed to open project: " + ex.Message);
-            StatusText = "打开失败";
-            MessageBox.Show("无法打开工程文件：" + ex.Message, "载入工程", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ReportError(ex);
+        }
+    }
+
+    private void SaveProject()
+    {
+        if (!CanEdit)
+        {
+            MessageBox.Show("旧版 v2 工程为只读，不能保存。请新建 v3 工程。", "只读工程",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        LoadProject(project, path);
-        AddLog("info", $"Project opened: {path}");
-        StatusText = "已载入：" + Path.GetFileName(path);
+        var path = _projectPath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            var dialog = new SaveFileDialog
+            {
+                Title = "保存工程",
+                Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}",
+                FileName = _project.Name + ProjectJson.FileExtension,
+            };
+            if (dialog.ShowDialog() != true)
+                return;
+            path = dialog.FileName;
+        }
+
+        try
+        {
+            ProjectJson.Save(_project, path, Path.GetDirectoryName(path));
+            _projectPath = path;
+            _savedSnapshot = ProjectJson.Serialize(_project, Path.GetDirectoryName(path));
+            OnPropertyChanged(nameof(ProjectPathText));
+            SetStatus("已保存：{0}", Path.GetFileName(path));
+            AddLog("info", LanguageService.TranslateFormat("工程已保存：{0}", path));
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
     }
 
-    /// <summary>Ask whether to save unsaved changes; returns false when the user cancels the action.</summary>
     public bool ConfirmDiscardChanges(string action)
     {
-        if (!HasUnsavedChanges)
+        if (!CanEdit || string.IsNullOrWhiteSpace(_projectPath))
+            return true;
+        var current = ProjectJson.Serialize(_project, Path.GetDirectoryName(_projectPath));
+        if (string.Equals(current, _savedSnapshot, StringComparison.Ordinal))
             return true;
 
-        return MessageBox.Show(
-            LanguageService.Translate("当前工程有未保存的更改，是否保存？"),
-            LanguageService.Translate(action),
-            MessageBoxButton.YesNoCancel,
-            MessageBoxImage.Question) switch
-        {
-            MessageBoxResult.Yes => SaveProject(),
-            MessageBoxResult.No => true,
-            _ => false,
-        };
+        return MessageBox.Show($"工程有未保存的修改，仍要{action}吗？", "未保存的修改",
+            MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
     }
 
-    private bool SaveProject()
-    {
-        if (string.IsNullOrWhiteSpace(_projectPath))
-            return SaveProjectAs();
-
-        return SaveTo(_projectPath);
-    }
-
-    private bool SaveProjectAs()
-    {
-        var dialog = new SaveFileDialog
-        {
-            Title = "保存工程",
-            Filter = $"VocalB1 工程 (*{ProjectJson.FileExtension})|*{ProjectJson.FileExtension}",
-            FileName = string.IsNullOrWhiteSpace(ProjectName) ? "untitled" + ProjectJson.FileExtension : ProjectName + ProjectJson.FileExtension,
-        };
-        if (dialog.ShowDialog() != true)
-            return false;
-
-        return SaveTo(dialog.FileName);
-    }
-
-    private bool SaveTo(string path)
+    public void OpenProjectFromPath(string path)
     {
         try
         {
-            ProjectJson.Save(_project, path, _services.Options.RepositoryRoot);
-            _projectPath = path;
-            _savedSnapshot = ProjectJson.Serialize(_project, _services.Options.RepositoryRoot);
-            OnPropertyChanged(nameof(ProjectPathText));
-            StatusText = "已保存：" + Path.GetFileName(path);
-            AddLog("info", "Project saved: " + path);
-            return true;
+            var project = ProjectJson.Load(path, Path.GetDirectoryName(path));
+            LoadProject(project, path);
+            AddLog(project.IsLegacyReadOnly ? "warn" : "info",
+                project.IsLegacyReadOnly ? "旧版工程已加载为只读。"
+                    : LanguageService.TranslateFormat("工程已打开：{0}", path));
         }
         catch (Exception ex)
         {
-            AddLog("error", "Save failed: " + ex.Message);
-            StatusText = "保存失败";
-            return false;
+            ReportError(ex);
         }
+    }
+
+    private void LoadDemo()
+    {
+        var demo = ProjectFactory.CreateDemo(_services.Options.LibraryRoot);
+        if (demo.Lyrics.Count == 0 || demo.Lyrics[0].Segments.Count == 0)
+        {
+            AddLog("warn", "示例音频缺失，无法加载示例工程。");
+            StatusText = "示例音频缺失";
+            return;
+        }
+        LoadProject(demo, null);
+        AddLog("info", "示例工程已加载。");
     }
 
     private void LoadProject(ProjectDocument project, string? path)
     {
         _project = project;
         _projectPath = path;
-
-        // The previous edit history no longer applies after switching projects.
         _undoStack.Clear();
         _redoStack.Clear();
-        _undoCoalesceKey = null;
-        RaiseEditCommandStates();
+        _lastMixPath = null;
+        _bgmMixPath = null;
+        _bgmMixKey = null;
+        _selectedLyric = null;
+        _selectedParameterSet = null;
+        _selectedSinger = null;
+        _selectedSegment = null;
+        _selectedUnit = null;
+        _selectedParameterKey = null;
+        _selectedNode = null;
+        _selectedNodeRow = null;
+        _savedSnapshot = path is null ? string.Empty : ProjectJson.Serialize(project, Path.GetDirectoryName(path));
 
-        _projectName = project.Name;
-        _bpm = project.Bpm;
-        _beatsPerBar = project.BeatsPerBar;
-        _beatUnit = project.BeatUnit;
-
-        OnPropertyChanged(nameof(ProjectName));
+        RebuildRows();
+        RefreshLibrary();
         OnPropertyChanged(nameof(Bpm));
         OnPropertyChanged(nameof(BeatsPerBar));
         OnPropertyChanged(nameof(BeatUnit));
+        OnPropertyChanged(nameof(IsLegacyReadOnly));
+        OnPropertyChanged(nameof(CanEdit));
         OnPropertyChanged(nameof(ProjectPathText));
+        OnPropertyChanged(nameof(HasBgm));
+        OnPropertyChanged(nameof(BgmName));
+        OnPropertyChanged(nameof(BgmDurationBeats));
+        RaiseAllCommandStates();
 
-        Tracks.Clear();
-        foreach (var track in project.Tracks)
-            Tracks.Add(new TrackRow(track));
-
-        _trackOutputs.Clear();
-        ClearMergedRender();
-        _selectedTrack = Tracks[0];
-        OnPropertyChanged(nameof(SelectedTrack));
-
-        _selectedChorusSinger = null;
-        RebuildChorusRows();
-        RebuildChorusFormations();
-        _chorusRevision++;
-        OnPropertyChanged(nameof(ChorusRevision));
-        OnPropertyChanged(nameof(Chorus));
-        OnPropertyChanged(nameof(ChorusStageInfo));
-        OnPropertyChanged(nameof(StageWidth));
-        OnPropertyChanged(nameof(StageDepth));
-
-        _bgmMixKey = null;
-        RaiseBgmChanged();
-        ActivateTrack(_project.Tracks[0]);
-        _savedSnapshot = ProjectJson.Serialize(_project, _services.Options.RepositoryRoot);
-        (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        StatusText = "就绪";
+        if (_project.IsLegacyReadOnly)
+            StatusText = "旧版工程（只读）：可渲染，不可编辑或保存";
+        else
+            StatusText = "就绪";
     }
 
-    private void RefreshSegments()
+    private void RebuildRows()
     {
-        var selectedIndex = _selectedNoteIndex;
+        var lyricId = _selectedLyric?.Id;
+        var parameterId = _selectedParameterSet?.Id;
+        var singerId = _selectedSinger?.Id;
 
-        // Keep the lyric object graph in sync with segments edited outside the lyric bar
-        // (piano roll moves/resizes, segment deletion, undo, voicebank retargeting).
-        LyricPhraseComposer.SyncWithSegments(_activeTrack.LyricPhrase, _activeTrack);
+        Lyrics.Clear();
+        foreach (var lyric in _project.Lyrics)
+            Lyrics.Add(new LyricRow(lyric));
 
-        // Rebuild transition points after overlap changes so that regular control points never fall inside overlapping segments.
-        SegmentLayout.SyncTransitionPoints(_activeTrack);
+        ParameterSets.Clear();
+        foreach (var parameters in _project.ParameterSets)
+            ParameterSets.Add(new ParameterSetRow(parameters));
 
-        Segments.Clear();
-        for (var i = 0; i < _activeTrack.Segments.Count; i++)
-            Segments.Add(new SegmentRow(_activeTrack.Segments[i], i));
+        Singers.Clear();
+        foreach (var singer in _project.Singers)
+            Singers.Add(new SingerRow(singer, ResolveLyricName, ResolveParameterName, RefreshAllDetails));
 
-        RollRevision++;
-        RebuildLyricRows();
+        _selectedSinger = Singers.FirstOrDefault(r => r.Id == singerId) ?? Singers.FirstOrDefault();
+        _selectedLyric = Lyrics.FirstOrDefault(r => r.Id == lyricId)
+            ?? Lyrics.FirstOrDefault(r => r.Id == _selectedSinger?.Model.LyricId)
+            ?? Lyrics.FirstOrDefault();
+        _selectedParameterSet = ParameterSets.FirstOrDefault(r => r.Id == parameterId)
+            ?? ParameterSets.FirstOrDefault(r => r.Id == _selectedSinger?.Model.ParameterSetId)
+            ?? ParameterSets.FirstOrDefault();
 
-        _selectedSegment = selectedIndex is int index && index >= 0 && index < Segments.Count
-            ? Segments[index]
-            : null;
-        OnPropertyChanged(nameof(SelectedSegment));
-        OnPropertyChanged(nameof(HasSelectedSegment));
-        // After dragging a transition handle in the piano roll, the slider on the right must show the new transition length.
-        OnPropertyChanged(nameof(SelectedTransitionBeats));
+        OnPropertyChanged(nameof(SelectedSinger));
+        OnPropertyChanged(nameof(SelectedLyric));
+        OnPropertyChanged(nameof(SelectedParameterSet));
+        OnPropertyChanged(nameof(ActiveLyric));
+        OnPropertyChanged(nameof(ActiveParameterSet));
+        OnPropertyChanged(nameof(SelectedSingerLyric));
+        OnPropertyChanged(nameof(SelectedSingerParameter));
+        OnPropertyChanged(nameof(SelectedSingerVoicebank));
+        OnPropertyChanged(nameof(GraphOwnerText));
+        OnPropertyChanged(nameof(ActiveGraph));
+        OnPropertyChanged(nameof(LibraryRoot));
+
+        RefreshParameterKeys();
+        RefreshSegments();
+        RefreshLyricUnits();
+        ResetNodeSelection();
     }
 
-    private int? IndexOfSegment(SegmentRow row)
+    private string? ResolveLyricName(string? id) => _project.FindLyric(id)?.Name;
+
+    private string? ResolveParameterName(string? id) => _project.FindParameterSet(id)?.Name;
+
+    private void RefreshAllDetails()
     {
-        var index = Segments.IndexOf(row);
-        return index >= 0 ? index : null;
+        foreach (var row in Lyrics)
+            row.Refresh();
+        foreach (var row in ParameterSets)
+            row.Refresh();
+        foreach (var row in Singers)
+            row.Refresh();
     }
-
-    private void ToggleRollMode()
-    {
-        RollMode = RollMode == PianoRollMode.Notes ? PianoRollMode.PitchLine : PianoRollMode.Notes;
-        AddLog("info", RollMode == PianoRollMode.Notes
-            ? "Switched to note mode: left click selects/drags notes, right click adds a note."
-            : "Switched to pitch-line mode: left click selects/drags points, right click adds a point.");
-    }
-
-    /// <summary>Refresh the segment list after piano roll editing (affected labels and indices).</summary>
-    public void RefreshActiveTrack() => RefreshSegments();
 
     // ------------------------------------------------------------------
-    // Undo / Redo / Delete
+    // Undo / redo
     // ------------------------------------------------------------------
-
-    /// <summary>Called before a real modification starts in the piano roll; records an undo snapshot.</summary>
-    public void BeginEdit() => PushUndo();
-
-    /// <summary>
-    /// Record a snapshot of the current project; consecutive operations sharing the same <paramref name="coalesceKey"/>
-    /// are recorded only once (for example, typing a lyric character by character is coalesced into a single undo step).
-    /// </summary>
-    private void PushUndo(string? coalesceKey = null)
+    private void PushUndo()
     {
-        if (coalesceKey is not null && coalesceKey == _undoCoalesceKey)
+        if (!CanEdit)
             return;
-
-        _undoCoalesceKey = coalesceKey;
         _undoStack.Add(_project.Clone());
         if (_undoStack.Count > MaxUndoSteps)
             _undoStack.RemoveAt(0);
         _redoStack.Clear();
-        RaiseEditCommandStates();
+        (UndoCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (RedoCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     private void Undo()
     {
         if (_undoStack.Count == 0)
             return;
-
-        _undoCoalesceKey = null;
         _redoStack.Add(_project.Clone());
-        var snapshot = _undoStack[^1];
+        _project = _undoStack[^1];
         _undoStack.RemoveAt(_undoStack.Count - 1);
-        RestoreProject(snapshot);
-        AddLog("info", "Undid the last edit.");
+        RebuildRows();
+        RefreshLibrary();
+        RaiseAllCommandStates();
+        AddLog("info", "撤销。");
     }
 
     private void Redo()
     {
         if (_redoStack.Count == 0)
             return;
-
-        _undoCoalesceKey = null;
         _undoStack.Add(_project.Clone());
-        var snapshot = _redoStack[^1];
+        _project = _redoStack[^1];
         _redoStack.RemoveAt(_redoStack.Count - 1);
-        RestoreProject(snapshot);
-        AddLog("info", "Redid the last edit.");
+        RebuildRows();
+        RefreshLibrary();
+        RaiseAllCommandStates();
+        AddLog("info", "重做。");
     }
 
-    /// <summary>Replace the current project with a snapshot, preserving the current track and view state where possible.</summary>
-    private void RestoreProject(ProjectDocument project)
+    // ------------------------------------------------------------------
+    // Lyric data-block commands
+    // ------------------------------------------------------------------
+    private void AddLyric()
     {
-        var trackIndex = _selectedTrack is null ? 0 : Tracks.IndexOf(_selectedTrack);
-
-        _project = project;
-        _projectName = project.Name;
-        _bpm = project.Bpm;
-        _beatsPerBar = project.BeatsPerBar;
-        _beatUnit = project.BeatUnit;
-
-        OnPropertyChanged(nameof(ProjectName));
-        OnPropertyChanged(nameof(Bpm));
-        OnPropertyChanged(nameof(BeatsPerBar));
-        OnPropertyChanged(nameof(BeatUnit));
-
-        Tracks.Clear();
-        foreach (var track in project.Tracks)
-            Tracks.Add(new TrackRow(track));
-
-        _trackOutputs.Clear();
-        ClearMergedRender();
-        _bgmMixKey = null;
-        RaiseBgmChanged();
-        trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Tracks.Count - 1));
-        _selectedTrack = Tracks.Count > 0 ? Tracks[trackIndex] : null;
-        OnPropertyChanged(nameof(SelectedTrack));
-
-        RebuildChorusRows();
-        RebuildChorusFormations();
-        _chorusRevision++;
-        OnPropertyChanged(nameof(ChorusRevision));
-        OnPropertyChanged(nameof(Chorus));
-        OnPropertyChanged(nameof(ChorusStageInfo));
-        OnPropertyChanged(nameof(StageWidth));
-        OnPropertyChanged(nameof(StageDepth));
-
-        if (_project.Tracks.Count > 0)
-            ActivateTrack(_project.Tracks[Math.Clamp(trackIndex, 0, _project.Tracks.Count - 1)]);
-
-        (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        RaiseEditCommandStates();
-        StatusText = "就绪";
+        PushUndo();
+        var lyric = ProjectFactory.CreateLyric(
+            ProjectDocument.UniqueName("歌词", _project.Lyrics.Select(l => l.Name)));
+        _project.Lyrics.Add(lyric);
+        RebuildRows();
+        SelectedLyric = Lyrics.FirstOrDefault(r => r.Id == lyric.Id);
+        AddLog("info", $"新建歌词「{lyric.Name}」（孤立数据块，需绑定到歌手）。");
     }
 
-    private void RaiseEditCommandStates()
+    private void RemoveLyric()
     {
-        (UndoCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        (RedoCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        (DeleteSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
-    }
-
-    /// <summary>Delete the selection: Pitch line mode removes a point, note mode removes a segment (together with its points).</summary>
-    private bool CanDeleteSelection =>
-        RollMode == PianoRollMode.PitchLine
-        && SelectedPitchIndex is int pointIndex
-        && pointIndex >= 0 && pointIndex < _activeTrack.PitchLine.Count
-        || SelectedNoteIndex is int noteIndex
-        && noteIndex >= 0 && noteIndex < _activeTrack.Segments.Count;
-
-    private void DeleteSelection()
-    {
-        if (RollMode == PianoRollMode.PitchLine
-            && SelectedPitchIndex is int pointIndex
-            && pointIndex >= 0 && pointIndex < _activeTrack.PitchLine.Count)
+        var row = SelectedLyric;
+        if (row is null)
+            return;
+        var users = _project.LyricUsers(row.Id);
+        if (users > 0)
         {
+            MessageBox.Show($"歌词「{row.Name}」仍被 {users} 个歌手引用。请先解除绑定。", "无法删除",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        PushUndo();
+        _project.Lyrics.Remove(row.Model);
+        RebuildRows();
+        AddLog("info", $"删除歌词「{row.Name}」。");
+    }
+
+    private void DuplicateLyric()
+    {
+        var row = SelectedLyric;
+        if (row is null)
+            return;
+        PushUndo();
+        var copy = row.Model.Clone();
+        copy.Id = Guid.NewGuid().ToString("N");
+        copy.Name = ProjectDocument.UniqueName(row.Name + " 副本", _project.Lyrics.Select(l => l.Name));
+        _project.Lyrics.Add(copy);
+        RebuildRows();
+        SelectedLyric = Lyrics.FirstOrDefault(r => r.Id == copy.Id);
+    }
+
+    private void ToggleLyricFake()
+    {
+        var row = SelectedLyric;
+        if (row is null)
+            return;
+        PushUndo();
+        row.Model.FakeUser = !row.Model.FakeUser;
+        row.Refresh();
+        AddLog("info", $"歌词「{row.Name}」伪用户 = {row.Model.FakeUser}。");
+    }
+
+    private void CommitLyric()
+    {
+        var lyric = ActiveLyric;
+        if (lyric is null || _dictionary is null)
+            return;
+
+        try
+        {
+            var result = LyricPhraseParser.Parse(
+                _dictionary,
+                LyricInput,
+                string.IsNullOrWhiteSpace(_dictionaryPath) ? null : Path.GetDirectoryName(_dictionaryPath),
+                ResolveDictionaryLibraryRoot());
+
             PushUndo();
-            _activeTrack.PitchLine.RemoveAt(pointIndex);
-            SelectedPitchIndex = null;
-            RollRevision++;
-            AddLog("info", "Pitch point deleted.");
-            return;
+            var transition = Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _project.Bpm));
+            var applied = LyricPhraseComposer.Apply(lyric.Phrase, result.Words, lyric,
+                DefaultLyricUnitBeats, transition, LyricBlockPitch);
+            lyric.Name = string.IsNullOrWhiteSpace(lyric.Name) || lyric.Name.StartsWith("歌词", StringComparison.Ordinal)
+                ? LyricInput.Trim()
+                : lyric.Name;
+
+            foreach (var missing in result.MissingAudio)
+                AddLog("warn", "缺少音频：" + missing);
+            foreach (var unmatched in result.Unmatched)
+                AddLog("warn", "字典未收录：" + unmatched);
+
+            if (result.MissingAudio.Count > 0)
+                SetLyricStatus("已应用：复用 {0}，新增 {1}，移除 {2}，缺音频 {3}",
+                    applied.Reused, applied.Added, applied.Removed, result.MissingAudio.Count);
+            else
+                SetLyricStatus("已应用：复用 {0}，新增 {1}，移除 {2}",
+                    applied.Reused, applied.Added, applied.Removed);
+            AddLog("info", LyricStatus);
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
+            RebuildRows();
         }
-
-        if (SelectedNoteIndex is not int index
-            || index < 0 || index >= _activeTrack.Segments.Count)
-            return;
-
-        PushUndo();
-        var segment = _activeTrack.Segments[index];
-        _activeTrack.Segments.RemoveAt(index);
-        _activeTrack.PitchLine.RemoveAll(p => p.SegmentId == segment.Id);
-        SegmentLayout.SyncTransitionPoints(_activeTrack);
-        SelectedNoteIndex = null;
-        RefreshSegments();
-        AddLog("info", $"Segment deleted: {segment.Lyric}");
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
     }
 
-    /// <summary>Right click in note mode: create a segment at the currently selected library audio.</summary>
-    public void AddNoteAt(double beat, int semitone)
+    private void CreateSegmentAt(double beatStart, double beatEnd, int semitone)
     {
-        var entry = SelectedLibraryItem ?? Library.FirstOrDefault();
-        if (entry is null)
-        {
-            AddLog("warn", "Library is empty; refresh the library before adding notes.");
+        var lyric = ActiveLyric;
+        if (lyric is null || !CanEdit)
             return;
+
+        var entry = SelectedLibraryItem ?? Library.FirstOrDefault();
+        var path = entry?.Path;
+        if (path is null)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "为新音符选择音频",
+                Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+            };
+            if (dialog.ShowDialog() != true)
+                return;
+            path = dialog.FileName;
         }
 
         PushUndo();
-        var start = FreeStartAfter(beat, 1.0);
-        var segment = new VoiceSegment
-        {
-            Audio = entry.Path,
-            SrcPitch = VoiceSegment.DefaultSrcPitch,
-            DstPitch = PitchMath.ToPitchName(semitone),
-            BeatStart = start,
-            BeatEnd = start + 1.0,
-            Transition = DefaultTransitionFrames,
-        };
-        _activeTrack.Segments.Add(segment);
-        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
-        _activeTrack.AddPitchNodes(segment, 5);
-        AddLyricWordForSegment(segment);
-        RefreshSegments();
-
-        AddLog("info",
-            $"Note added: {entry.DisplayName} | beat {start:0.##} -> {start + 1:0.##} | {PitchMath.ToPitchName(semitone)}");
-    }
-
-    /// <summary>Pencil drag in the piano roll: create a segment spanning the drawn beat range.</summary>
-    public void AddNoteFromDraw(double beatStart, double beatEnd, int semitone)
-    {
-        var entry = SelectedLibraryItem ?? Library.FirstOrDefault();
-        if (entry is null)
-        {
-            AddLog("warn", "Library is empty; refresh the library before adding notes.");
-            return;
-        }
-
-        PushUndo();
+        // Notes may never overlap: a requested range that hits an existing note slides past it instead.
         var length = Math.Max(0.25, beatEnd - beatStart);
-        var start = FreeStartAfter(beatStart, length);
+        var start = SegmentLayout.FindFreeStart(lyric, beatStart, length);
         var segment = new VoiceSegment
         {
-            Audio = entry.Path,
+            Audio = path,
             SrcPitch = VoiceSegment.DefaultSrcPitch,
             DstPitch = PitchMath.ToPitchName(semitone),
             BeatStart = start,
             BeatEnd = start + length,
-            Transition = DefaultTransitionFrames,
+            Transition = lyric.Segments.Count > 0
+                ? Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _project.Bpm))
+                : 0,
+            Phoneme = entry?.DisplayName ?? Path.GetFileNameWithoutExtension(path),
+            Vowel = GuessVowel(entry?.DisplayName ?? Path.GetFileNameWithoutExtension(path)),
         };
-        _activeTrack.Segments.Add(segment);
-        _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
-        _activeTrack.AddPitchNodes(segment, 5);
-        AddLyricWordForSegment(segment);
+        lyric.Segments.Add(segment);
+        lyric.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
+        lyric.AddPitchNodes(segment, 5);
+        LyricPhraseComposer.SyncWithSegments(lyric.Phrase, lyric);
+
+        _rollRevision++;
+        OnPropertyChanged(nameof(RollRevision));
         RefreshSegments();
-
-        AddLog("info",
-            $"Note drawn: {entry.DisplayName} | beat {start:0.##} -> {start + length:0.##} | {PitchMath.ToPitchName(semitone)}");
+        RefreshLyricUnits();
+        AddLog("info", $"新增发音段：{segment.Phoneme}，{segment.BeatStart:0.##} → {segment.BeatEnd:0.##} 拍"
+            + (Math.Abs(segment.BeatStart - beatStart) > 1e-6 ? "（避开已有音符，已后移）" : string.Empty) + "。");
     }
 
-    /// <summary>Finds the dictionary character whose single-part audio is the given voicebank sample.</summary>
-    private string? FindPlaceholderLyric(string audio)
+    private void DeleteSelection()
     {
-        if (_dictionary is null)
-            return null;
+        if (!CanEdit)
+            return;
 
-        // Voicebank names may or may not carry the leading underscore ("_あ.wav" vs "あ.wav").
-        var name = Path.GetFileNameWithoutExtension(audio).TrimStart('_');
-        var match = _dictionary.Entries.FirstOrDefault(entry =>
-            entry.Parts.Count == 1
-            && Path.GetFileNameWithoutExtension(entry.Parts[0].Audio).TrimStart('_')
-                .Equals(name, StringComparison.OrdinalIgnoreCase));
-        return match?.Text;
-    }
-
-    /// <summary>Starting from <paramref name="desired"/>, find the first free slot that can hold <paramref name="length"/> beats (shifting forward).</summary>
-    private double FreeStartAfter(double desired, double length)
-    {
-        var start = Math.Max(1, desired);
-        length = Math.Max(0.25, length);
-        foreach (var segment in SegmentLayout.Ordered(_activeTrack))
+        if (_selectedSegment is { } segment && ActiveLyric is { } lyric)
         {
-            if (start < segment.BeatEnd - 0.001 && start + length > segment.BeatStart + 0.001)
-                start = segment.BeatEnd;
-        }
-
-        return start;
-    }
-
-    private void AddTrack()
-    {
-        var track = ProjectFactory.CreateTrack(_project.Tracks.Count + 1, EffectiveLibraryRoot);
-        track.Name = MakeUniqueTrackName(track.Name);
-
-        _project.Tracks.Add(track);
-        var row = new TrackRow(track);
-        Tracks.Add(row);
-
-        (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        SelectedTrack = row;
-        AddLog("info", $"Track created: {track.Name} (its own library and parameters)");
-    }
-
-    private void RemoveTrack()
-    {
-        if (_project.Tracks.Count <= 1)
-        {
-            AddLog("warn", "A project must keep at least one track.");
+            PushUndo();
+            lyric.Segments.Remove(segment.Model);
+            lyric.PitchLine.RemoveAll(p => p.SegmentId == segment.Model.Id);
+            foreach (var word in lyric.Phrase.Words)
+            {
+                foreach (var unit in word.Units.Where(u => u.SegmentId == segment.Model.Id))
+                {
+                    unit.IsRest = true;
+                    unit.SegmentId = null;
+                    unit.Audio = string.Empty;
+                    unit.Display = "休止";
+                }
+            }
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
+            RefreshSegments();
+            RefreshLyricUnits();
             return;
         }
 
-        var row = SelectedTrack;
+        if (_selectedUnit is { } unitRow)
+        {
+            PushUndo();
+            unitRow.Model.IsRest = true;
+            unitRow.Model.SegmentId = null;
+            unitRow.Model.Audio = string.Empty;
+            unitRow.Model.Display = "休止";
+            RefreshLyricUnits();
+        }
+    }
+
+    private void RefreshSegments()
+    {
+        _syncingRows = true;
+        var selectedId = _selectedSegment?.Model.Id;
+        Segments.Clear();
+        var lyric = ActiveLyric;
+        if (lyric is not null)
+        {
+            for (var i = 0; i < lyric.Segments.Count; i++)
+                Segments.Add(new SegmentRow(lyric.Segments[i], i));
+        }
+        _selectedSegment = Segments.FirstOrDefault(r => r.Model.Id == selectedId)
+            ?? Segments.FirstOrDefault();
+        _syncingRows = false;
+        OnPropertyChanged(nameof(SelectedSegment));
+        OnPropertyChanged(nameof(HasSelectedSegment));
+        if (_selectedSegment is not null)
+        {
+            _selectedNoteIndex = Segments.IndexOf(_selectedSegment);
+            OnPropertyChanged(nameof(SelectedNoteIndex));
+        }
+    }
+
+    private void RefreshLyricUnits()
+    {
+        _syncingRows = true;
+        var selectedId = _selectedUnit?.Id;
+        LyricUnits.Clear();
+        var lyric = ActiveLyric;
+        if (lyric is not null)
+        {
+            foreach (var unit in lyric.Phrase.Words.SelectMany(w => w.Units))
+                LyricUnits.Add(new LyricUnitRow(unit));
+        }
+        _selectedUnit = LyricUnits.FirstOrDefault(r => r.Id == selectedId)
+            ?? LyricUnits.FirstOrDefault();
+        _syncingRows = false;
+        OnPropertyChanged(nameof(SelectedUnit));
+        // The row list is rebuilt on load/undo, so the editor fields must resync from the new selection.
+        _unitFormantText = _selectedUnit?.Model.FormantHz is { Length: 7 } hz
+            ? string.Join(", ", hz.Select(v => v.ToString("0")))
+            : string.Empty;
+        OnPropertyChanged(nameof(UnitVowel));
+        OnPropertyChanged(nameof(UnitFormantText));
+        OnPropertyChanged(nameof(UnitFormantInfo));
+        OnPropertyChanged(nameof(UnitFormantValues));
+        OnPropertyChanged(nameof(UnitFormantHint));
+        OnPropertyChanged(nameof(UnitUsesAbsoluteAudio));
+    }
+
+    private void ApplyUnitFormants()
+    {
+        if (_selectedUnit is null)
+            return;
+
+        var parts = UnitFormantText.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 7)
+        {
+            ReportError(new StageException(nameof(MainViewModel), "apply-formants",
+                $"需要 7 个共振峰目标，实际 {parts.Length} 个。"));
+            return;
+        }
+
+        var values = new double[7];
+        for (var i = 0; i < 7; i++)
+        {
+            if (!double.TryParse(parts[i], out var value) || !double.IsFinite(value) || value <= 0)
+            {
+                ReportError(new StageException(nameof(MainViewModel), "apply-formants",
+                    $"F{i + 1} 不是有效正数：{parts[i]}"));
+                return;
+            }
+            if (i > 0 && value <= values[i - 1])
+            {
+                ReportError(new StageException(nameof(MainViewModel), "apply-formants",
+                    $"F{i + 1} 必须大于 F{i}。"));
+                return;
+            }
+            values[i] = value;
+        }
+
+        PushUndo();
+        _selectedUnit.Model.FormantHz = values;
+        var segment = ActiveLyric?.Segments.FirstOrDefault(s => s.Id == _selectedUnit.Model.SegmentId);
+        if (segment is not null)
+            segment.FormantHz = values.ToArray();
+        _selectedUnit.Refresh();
+        RefreshSegments();
+        OnPropertyChanged(nameof(UnitFormantInfo));
+        AddLog("info", $"音节「{_selectedUnit.Display}」共振峰目标已设置。");
+    }
+
+    private void ClearUnitFormants()
+    {
+        if (_selectedUnit is null)
+            return;
+        PushUndo();
+        _selectedUnit.Model.FormantHz = null;
+        var segment = ActiveLyric?.Segments.FirstOrDefault(s => s.Id == _selectedUnit.Model.SegmentId);
+        if (segment is not null)
+            segment.FormantHz = null;
+        UnitFormantText = string.Empty;
+        _selectedUnit.Refresh();
+        RefreshSegments();
+        OnPropertyChanged(nameof(UnitFormantInfo));
+        AddLog("info", "已恢复为元音管理器自动控制。");
+    }
+
+    // ------------------------------------------------------------------
+    // Parameter data-block commands
+    // ------------------------------------------------------------------
+    private void AddParameterSet()
+    {
+        PushUndo();
+        var parameters = ProjectFactory.CreateParameterSet(
+            ProjectDocument.UniqueName("参数", _project.ParameterSets.Select(p => p.Name)));
+        _project.ParameterSets.Add(parameters);
+        RebuildRows();
+        SelectedParameterSet = ParameterSets.FirstOrDefault(r => r.Id == parameters.Id);
+        AddLog("info", $"新建参数「{parameters.Name}」。");
+    }
+
+    private void RemoveParameterSet()
+    {
+        var row = SelectedParameterSet;
         if (row is null)
             return;
-
-        var index = Tracks.IndexOf(row);
-        _project.Tracks.Remove(row.Model);
-        _trackOutputs.Remove(row.Model);
-        if (_lastMixTracks?.Contains(row.Model) == true)
-            ClearMergedRender();
-        Tracks.Remove(row);
-
-        // Singers lose their score when the bound track disappears; they stay on stage as unbound.
-        var unbound = 0;
-        foreach (var singer in _project.Chorus.Singers.Where(s => s.TrackId == row.Model.Id))
+        var users = _project.ParameterSetUsers(row.Id);
+        if (users > 0)
         {
-            singer.TrackId = null;
-            unbound++;
+            MessageBox.Show($"参数「{row.Name}」仍被 {users} 个歌手引用。请先解除绑定。", "无法删除",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
         }
-
-        if (unbound > 0)
-            RebuildChorusRows();
-
-        (RemoveTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        SelectedTrack = Tracks[Math.Min(index, Tracks.Count - 1)];
-        AddLog("info", $"Track removed: {row.Name}");
-        if (unbound > 0)
-            AddLog("warn", $"{unbound} chorus singer(s) unbound because track \"{row.Name}\" was removed.");
-    }
-
-    /// <summary>Switch the active track: sync the library, segments, parameters and the last render result.</summary>
-    private void ActivateTrack(TrackDocument track)
-    {
-        StopPlayback();
-        PlayheadBeat = null;
-        _activeTrack = track;
-
-        OnPropertyChanged(nameof(ActiveTrack));
-        OnPropertyChanged(nameof(LibraryRoot));
-        OnPropertyChanged(nameof(BreathyThr));
-        OnPropertyChanged(nameof(ApScale));
-        OnPropertyChanged(nameof(ApMax));
-        OnPropertyChanged(nameof(BitDepth));
-        OnPropertyChanged(nameof(Jitter));
-        OnPropertyChanged(nameof(Shimmer));
-        RefreshParameterRows();
-
-        SelectedSegment = null;
-        SelectedPitchIndex = null;
-        RefreshLibrary();
-        RefreshSegments();
-        DictionaryStartBeat = track.TotalBeats > 0 ? track.TotalBeats : 1.0;
-
-        // The lyric strip shows this track's persisted lyric objects (kept across track switches and restarts).
-        LoadLyricFromTrack();
-
-        if (_lastMixTracks is { } mixTracks && _lastMixPath is { } mixPath
-            && mixTracks.Contains(track) && File.Exists(mixPath))
-        {
-            // Playback of this track replays the merged WAV so every rendered track is heard together.
-            LastRenderPath = mixPath;
-            PreviewInfo = $"{Path.GetFileName(mixPath)} · {_lastMixDurationSeconds:F2}s";
-        }
-        else if (_trackOutputs.TryGetValue(track, out var output) && File.Exists(output.Path))
-        {
-            LastRenderPath = output.Path;
-            PreviewInfo = $"{Path.GetFileName(output.Path)} · {output.DurationSeconds:F2}s";
-        }
-        else
-        {
-            LastRenderPath = null;
-            PreviewInfo = "尚未渲染";
-        }
-    }
-
-    private string MakeUniqueTrackName(string name)
-    {
-        var candidate = name;
-        var suffix = 2;
-        while (_project.Tracks.Any(t => string.Equals(t.Name, candidate, StringComparison.Ordinal)))
-            candidate = $"{name} ({suffix++})";
-        return candidate;
-    }
-
-    // ------------------------------------------------------------------
-    // Stage mode: stage, microphone and singers
-    // ------------------------------------------------------------------
-
-    private void AddChorusSinger()
-    {
         PushUndo();
-
-        var index = _project.Chorus.Singers.Count;
-        var positions = ChorusMath.DefaultPositions(index + 1, Chorus.StageWidth, Chorus.StageDepth);
-
-        // Pick the candidate slot that is farthest from the singers already on stage, so added singers
-        // never start stacked on top of each other.
-        var existing = _project.Chorus.Singers
-            .Select(s => ChorusMath.Evaluate(s.Path, 1))
-            .ToList();
-        var position = positions.Count == 0
-            ? (X: 0.0, Y: Chorus.StageDepth * 0.22)
-            : positions
-                .OrderByDescending(candidate => existing.Count == 0
-                    ? 0
-                    : existing.Min(p => ChorusMath.Distance(candidate.X, candidate.Y, p.X, p.Y)))
-                .First();
-
-        var singer = new ChorusSinger
-        {
-            Name = LanguageService.TranslateFormat("歌手 {0}", index + 1),
-            TrackId = _activeTrack.Id,
-            Path = [new ChorusKeyframe { Beat = 1, X = position.X, Y = position.Y }],
-        };
-        _project.Chorus.Singers.Add(singer);
-        RebuildChorusRows();
-        SelectedChorusSinger = ChorusSingers.FirstOrDefault(r => r.Model.Id == singer.Id);
-        TouchChorus();
-        AddLog("info", $"Chorus singer added: {singer.Name} -> {_activeTrack.Name}.");
+        _project.ParameterSets.Remove(row.Model);
+        RebuildRows();
     }
 
-    private void RemoveChorusSinger()
+    private void DuplicateParameterSet()
     {
-        if (_selectedChorusSinger is null)
+        var row = SelectedParameterSet;
+        if (row is null)
             return;
-
         PushUndo();
-        var singer = _selectedChorusSinger.Model;
-        _project.Chorus.Singers.Remove(singer);
-        RebuildChorusRows();
-        TouchChorus();
-        AddLog("info", $"Chorus singer removed: {singer.Name}.");
+        var copy = row.Model.Clone();
+        copy.Id = Guid.NewGuid().ToString("N");
+        copy.Name = ProjectDocument.UniqueName(row.Name + " 副本", _project.ParameterSets.Select(p => p.Name));
+        _project.ParameterSets.Add(copy);
+        RebuildRows();
+        SelectedParameterSet = ParameterSets.FirstOrDefault(r => r.Id == copy.Id);
     }
 
-    private void JumpToSingerTrack()
+    private void ToggleParameterFake()
     {
-        if (SelectedSingerTrack is not { } track)
+        var row = SelectedParameterSet;
+        if (row is null)
             return;
-
-        SelectedTrack = track;
-        // The score being edited lives in the track editor tab, so bring the user there.
-        MainTabIndex = 0;
+        PushUndo();
+        row.Model.FakeUser = !row.Model.FakeUser;
+        row.Refresh();
     }
 
-    /// <summary>Loads formation presets (name + positions in meters) from one or more JSON files.</summary>
-    private void ImportChorusFormation()
+    private void RefreshParameterKeys()
     {
-        var dialog = new OpenFileDialog
+        _syncingRows = true;
+        var selectedKey = _selectedParameterKey?.Key;
+        ParameterKeyRows.Clear();
+        var outputs = ActiveGraph?.WrittenKeys() ?? [];
+        var definitions = ParameterKeys.All.OrderBy(d => d.IsFormant ? 0 : 1)
+            .ThenBy(d => d.Key.StartsWith("formant.F", StringComparison.Ordinal) ? 0 : 1)
+            .ThenBy(d => d.Key);
+        foreach (var definition in definitions)
         {
-            Title = LanguageService.Translate("导入队形"),
-            Filter = LanguageService.Translate("队形 JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
-            CheckFileExists = true,
-            Multiselect = true,
-        };
-        if (dialog.ShowDialog() != true)
-            return;
-
-        try
-        {
-            var imported = new List<ChorusFormationPreset>();
-            foreach (var path in dialog.FileNames)
-                imported.AddRange(ChorusFormationJson.Parse(File.ReadAllText(path)));
-            if (imported.Count == 0)
-                return;
-
-            PushUndo();
-            foreach (var preset in imported)
-            {
-                preset.Name = MakeUniqueFormationName(preset.Name);
-                _project.Chorus.Formations.Add(preset);
-            }
-
-            RebuildChorusFormations();
-            SelectedChorusFormation = ChorusFormations.FirstOrDefault(f => f.Id == imported[0].Id);
-            AddLog("info", $"Imported {imported.Count} chorus formation(s).");
+            var row = new ParameterKeyRow(definition);
+            row.Refresh(outputs.Contains(definition.Key, StringComparer.Ordinal));
+            ParameterKeyRows.Add(row);
         }
-        catch (Exception ex)
-        {
-            AddLog("warn", "Chorus formation import failed: " + ex.Message);
-            StatusText = "队形导入失败";
-        }
+        _selectedParameterKey = ParameterKeyRows.FirstOrDefault(k => k.Key == selectedKey)
+            ?? ParameterKeyRows.FirstOrDefault();
+        _syncingRows = false;
+        OnPropertyChanged(nameof(SelectedParameterKey));
+        OnPropertyChanged(nameof(BaseValue));
+        OnPropertyChanged(nameof(IsBaseEditable));
     }
 
-    private string MakeUniqueFormationName(string name)
+    /// <summary>Selects the summary node (or the output node) that carries a parameter key.</summary>
+    private void SelectOutputNodeFor(ParameterKeyRow? key)
     {
-        var candidate = string.IsNullOrWhiteSpace(name) ? "导入队形" : name.Trim();
-        var baseName = candidate;
-        var suffix = 2;
-        while (_project.Chorus.Formations.Any(f => string.Equals(f.Name, candidate, StringComparison.Ordinal)))
-            candidate = $"{baseName} ({suffix++})";
-        return candidate;
+        if (key is null || ActiveGraph is not { } graph)
+            return;
+        var node = graph.GroupFor(key.Key) ?? graph.OutputNode();
+        if (node is not null && !ReferenceEquals(node, _selectedNode))
+            SelectedNode = node;
     }
 
-    /// <summary>Applies the selected imported formation at the current playhead beat (undoable).</summary>
-    private void ApplyChorusFormationPreset()
+    private void ResetNodeSelection()
     {
-        var preset = _selectedChorusFormation;
-        if (preset is null || preset.Positions.Count == 0)
+        _syncingRows = true;
+        _selectedNode = null;
+        _selectedNodeRow = null;
+        _syncingRows = false;
+        OnPropertyChanged(nameof(SelectedNode));
+        OnPropertyChanged(nameof(SelectedNodeRow));
+        (RemoveNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        BumpGraph();
+        // A new graph object is about to be shown: fit its nodes instead of reusing the old pan/zoom.
+        FrameGraph();
+    }
+
+    private void BumpGraph()
+    {
+        _graphRevision++;
+        OnPropertyChanged(nameof(GraphRevision));
+    }
+
+    private void OnNodeChanged()
+    {
+        _rollRevision++;
+        OnPropertyChanged(nameof(RollRevision));
+        BumpGraph();
+        RefreshParameterKeys();
+    }
+
+    /// <summary>Ensures the summary node for the selected key is wired into the four-socket output node.</summary>
+    private void AddOutputNode()
+    {
+        if (ActiveGraph is not { } graph || _selectedParameterKey is not { } key)
             return;
 
-        var singers = _project.Chorus.Singers;
-        if (singers.Count == 0)
+        var socket = ParameterNodeGraph.SocketOfKey(key.Key);
+        if (socket < 0)
         {
-            AddLog("warn", "No chorus singer to arrange; add a singer first.");
-            StatusText = "请先添加歌手";
+            AddLog("warn", $"「{key.Definition.Label}」不属于共振峰/气声汇总，继续使用基础值。");
             return;
         }
 
         PushUndo();
-        var beat = ChorusMath.SnapBeat(PlayheadBeat ?? 1);
-        for (var i = 0; i < singers.Count; i++)
+        var output = graph.OutputNode() ?? graph.Add(NodeKind.ParameterOutput, 690, 260);
+        var groupKind = ParameterNodeGraph.GroupKindOfSocket(socket);
+        var group = graph.Nodes.FirstOrDefault(n => n.Kind == groupKind)
+            ?? graph.Add(groupKind, 420, 24 + socket * 230);
+        graph.Connect(group.Id, 0, output.Id, socket);
+        SelectedNode = group;
+        NotifyGraphChanged();
+        AddLog("info", $"节点图：{NodeCatalog.Get(groupKind).Title} 已接到参数输出，"
+            + $"「{key.Definition.Label}」生效。");
+    }
+
+    private void AddNode(NodeKind kind)
+    {
+        if (ActiveGraph is not { } graph)
+            return;
+
+        PushUndo();
+        var anchor = SelectedNode;
+        var node = graph.Add(kind,
+            anchor is null ? 60 : anchor.X + 40,
+            anchor is null ? 60 : anchor.Y + 100);
+
+        switch (kind)
         {
-            var singer = singers[i];
-            var point = preset.Positions[i % preset.Positions.Count];
-            singer.Path.RemoveAll(p => Math.Abs(p.Beat - beat) < 1e-6);
-            singer.Path.Add(new ChorusKeyframe
-            {
-                Beat = beat,
-                X = ChorusMath.ClampX(point.X, Chorus.StageWidth),
-                Y = ChorusMath.ClampY(point.Y, Chorus.StageDepth),
-            });
-            singer.Path.Sort((a, b) => a.Beat.CompareTo(b.Beat));
+            case NodeKind.ParameterInput:
+                node.Text = SuggestedOutputKey() ?? "breathGain";
+                break;
+            case NodeKind.FieldDecompose:
+                // Convenience: a fresh field node reads from the existing voicebank data node.
+                if (graph.Nodes.FirstOrDefault(n => n.Kind == NodeKind.VoicebankData) is { } data)
+                    graph.Connect(data.Id, 0, node.Id, 0);
+                break;
+            case NodeKind.ParameterOutput:
+                // Convenience: connect whichever summary nodes already exist.
+                for (var socket = 0; socket <= ParameterNodeGraph.BreathSocket; socket++)
+                {
+                    var groupKind = ParameterNodeGraph.GroupKindOfSocket(socket);
+                    if (graph.Nodes.FirstOrDefault(n => n.Kind == groupKind) is { } group)
+                        graph.Connect(group.Id, 0, node.Id, socket);
+                }
+                break;
         }
 
-        TouchChorus();
-        AddLog("info", $"Imported formation \"{preset.Name}\" applied to {singers.Count} singer(s) at beat {beat:0.##}.");
+        SelectedNode = node;
+        NotifyGraphChanged();
+        AddLog("info", $"节点图：添加「{NodeCatalog.Get(kind).Title}」节点。");
     }
 
-    /// <summary>Called by the stage editor when a singer is clicked.</summary>
-    public void SelectChorusSinger(ChorusSinger? singer)
+    private void RemoveSelectedNode()
     {
-        SelectedChorusSinger = singer is null
-            ? null
-            : ChorusSingers.FirstOrDefault(r => ReferenceEquals(r.Model, singer));
+        if (ActiveGraph is not { } graph || SelectedNode is not { } node)
+            return;
+        PushUndo();
+        graph.RemoveNode(node.Id);
+        ResetNodeSelection();
+        RefreshParameterKeys();
     }
 
-    /// <summary>Called by the stage editor before a drag starts; snapshots the project for undo.</summary>
-    public void BeginChorusEdit() => PushUndo();
-
-    /// <summary>Called by the stage editor after a drag; makes the change visible and drops stale renders.</summary>
-    public void CommitChorusEdit() => TouchChorus();
-
-    /// <summary>Bumps the redraw token and, in chorus mode, discards renders that used the old layout.</summary>
-    private void TouchChorus()
+    private void FrameGraph()
     {
-        _chorusRevision++;
-        OnPropertyChanged(nameof(ChorusRevision));
-        OnPropertyChanged(nameof(ChorusStageInfo));
-        OnPropertyChanged(nameof(StageWidth));
-        OnPropertyChanged(nameof(StageDepth));
-        foreach (var row in ChorusSingers)
-            row.Refresh();
-        InvalidateChorusRender();
-    }
-
-    private void RebuildChorusRows()
-    {
-        var selectedId = _selectedChorusSinger?.Model.Id;
-
-        ChorusSingers.Clear();
-        foreach (var singer in _project.Chorus.Singers)
-        {
-            ChorusSingers.Add(new ChorusSingerRow(singer, ResolveTrackName, () =>
-            {
-                _chorusRevision++;
-                OnPropertyChanged(nameof(ChorusRevision));
-            }, TouchChorus));
-        }
-
-        _selectedChorusSinger = selectedId is null
-            ? null
-            : ChorusSingers.FirstOrDefault(r => r.Model.Id == selectedId);
-        _selectedChorusSinger ??= ChorusSingers.FirstOrDefault();
-
-        OnPropertyChanged(nameof(SelectedChorusSinger));
-        OnPropertyChanged(nameof(SelectedChorusSingerModel));
-        OnPropertyChanged(nameof(SelectedSingerTrack));
-        OnPropertyChanged(nameof(SelectedSingerText));
-        OnPropertyChanged(nameof(HasChorusSingers));
-        (RemoveChorusSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        (JumpToChorusTrackCommand as RelayCommand)?.RaiseCanExecuteChanged();
-    }
-
-    private string? ResolveTrackName(string? trackId) => trackId is null
-        ? null
-        : _project.Tracks.FirstOrDefault(t => t.Id == trackId)?.Name;
-
-    private void RebuildChorusFormations()
-    {
-        var selectedId = _selectedChorusFormation?.Id;
-
-        ChorusFormations.Clear();
-        foreach (var formation in _project.Chorus.Formations)
-            ChorusFormations.Add(formation);
-
-        _selectedChorusFormation = selectedId is null
-            ? null
-            : ChorusFormations.FirstOrDefault(f => f.Id == selectedId);
-        _selectedChorusFormation ??= ChorusFormations.FirstOrDefault();
-
-        OnPropertyChanged(nameof(SelectedChorusFormation));
-        OnPropertyChanged(nameof(HasChorusFormations));
-        (ApplyChorusFormationPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
-    }
-
-    /// <summary>Stage edits change the rendered audio; keep stale renders from playing.</summary>
-    private void InvalidateChorusRender()
-    {
-        _trackOutputs.Clear();
-        ClearMergedRender();
-        LastRenderPath = null;
-        PreviewInfo = "舞台设置已修改，需要重新渲染";
+        _frameRevision++;
+        OnPropertyChanged(nameof(FrameRevision));
     }
 
     // ------------------------------------------------------------------
-    // Library
+    // INodeGraphHost — the canvas calls these around every structural edit
     // ------------------------------------------------------------------
-    /// <summary>Rebuild the voicebank choices from voicebank/, keeping an out-of-tree path visible.</summary>
-    private void RefreshVoicebanks()
+    public void PushGraphUndo() => PushUndo();
+
+    public void NotifyGraphChanged()
     {
-        var current = _activeTrack.LibraryRoot;
-        Voicebanks.Clear();
-
-        if (Directory.Exists(VoicebankRoot))
-        {
-            foreach (var directory in Directory.EnumerateDirectories(VoicebankRoot)
-                         .OrderBy(directory => Path.GetFileName(directory) ?? string.Empty, StringComparer.OrdinalIgnoreCase))
-                Voicebanks.Add(new VoicebankOption(Path.GetFileName(directory), directory));
-        }
-
-        if (!string.IsNullOrWhiteSpace(current)
-            && !SamePath(current, VoicebankRoot)
-            && !Voicebanks.Any(option => SamePath(option.Path, current)))
-        {
-            var name = Path.GetFileName(current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            Voicebanks.Add(new VoicebankOption(string.IsNullOrEmpty(name) ? current : name, current));
-        }
-
-        OnPropertyChanged(nameof(SelectedVoicebank));
+        _rollRevision++;
+        OnPropertyChanged(nameof(RollRevision));
+        BumpGraph();
+        RefreshParameterKeys();
+        _selectedNodeRow?.Refresh();
     }
 
-    /// <summary>
-    /// Install a dropped voicebank folder: validate and copy it off the UI thread, then use it on the active track.
-    /// Returns null on success, otherwise the reason the install was rejected.
-    /// </summary>
-    public async Task<string?> InstallVoicebankAsync(string sourceDirectory)
+    public string? SuggestedOutputKey() => _selectedParameterKey?.Key;
+
+    // ------------------------------------------------------------------
+    // Singer data-block commands
+    // ------------------------------------------------------------------
+    private void AddSinger()
     {
-        if (!Directory.Exists(sourceDirectory))
-            return "拖入的内容不是文件夹。";
-
-        var source = Path.GetFullPath(sourceDirectory)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var name = Path.GetFileName(source);
-        if (string.IsNullOrEmpty(name) || SamePath(source, VoicebankRoot))
-            return "请拖入声库文件夹本身，而不是 voicebank 目录。";
-
-        var target = Path.Combine(VoicebankRoot, name);
-        if (Directory.Exists(target))
-            return $"voicebank 中已存在同名声库：{name}";
-
-        string? error;
-        try
-        {
-            // Large folders would freeze the window if scanned on the UI thread.
-            error = await Task.Run(() =>
-            {
-                if (!Directory.EnumerateFiles(source, "*.wav", SearchOption.AllDirectories).Any())
-                    return "声库格式错误：没有 wav 音频文件。";
-
-                Directory.CreateDirectory(VoicebankRoot);
-                CopyDirectory(source, target);
-                return null;
-            });
-        }
-        catch (Exception ex)
-        {
-            if (Directory.Exists(target))
-            {
-                try { Directory.Delete(target, recursive: true); } catch { /* best effort rollback */ }
-            }
-            AddLog("error", "Voicebank install failed: " + ex.Message);
-            return "安装失败：" + ex.Message;
-        }
-
-        if (error is not null)
-            return error;
-
-        var previousRoot = EffectiveLibraryRoot;
-        LibraryRoot = target;
-        var missing = RetargetSegments(previousRoot, target);
-        InvalidateRender();
-        RefreshSegments();
-        RefreshLibrary();
-        AddLog("info", $"Voicebank installed: {target}");
-        StatusText = missing > 0
-            ? $"已安装声库：{name}（{missing} 个音符无同名采样）"
-            : $"已安装声库：{name}";
-        return null;
+        PushUndo();
+        var singer = ProjectFactory.AddSingerBundle(
+            _project,
+            ProjectDocument.UniqueName("歌手", _project.Singers.Select(s => s.Name)),
+            SelectedLibraryItem?.Path ?? _services.Options.LibraryRoot);
+        RebuildRows();
+        SelectedSinger = Singers.FirstOrDefault(r => r.Id == singer.Id);
+        AddLog("info", $"新建歌手「{singer.Name}」，已自动创建并绑定独立歌词与参数。");
     }
 
-    private static void CopyDirectory(string source, string target)
+    private void RemoveSinger()
     {
-        Directory.CreateDirectory(target);
-        foreach (var file in Directory.EnumerateFiles(source))
-            File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
-        foreach (var directory in Directory.EnumerateDirectories(source))
-            CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory)));
+        var row = SelectedSinger;
+        if (row is null)
+            return;
+        PushUndo();
+        _project.Singers.Remove(row.Model);
+        var lyric = _project.FindLyric(row.Model.LyricId);
+        if (lyric is not null && _project.LyricUsers(lyric.Id) == 0 && !lyric.FakeUser)
+            _project.Lyrics.Remove(lyric);
+        if (_project.FindParameterSet(row.Model.ParameterSetId) is { } parameters
+            && _project.ParameterSetUsers(parameters.Id) == 0 && !parameters.FakeUser)
+            _project.ParameterSets.Remove(parameters);
+        RebuildRows();
+        AddLog("info", $"删除歌手「{row.Name}」及其孤立歌词。");
     }
 
-    /// <summary>Compares two paths loosely: ignores a trailing separator and letter case.</summary>
-    private static bool SamePath(string? left, string? right)
+    private void DuplicateSinger()
     {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-            return false;
-        return string.Equals(
-            left.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            right.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            StringComparison.OrdinalIgnoreCase);
+        var row = SelectedSinger;
+        if (row is null)
+            return;
+        PushUndo();
+        var lyric = row.Model.LyricId is { } lyricId ? _project.FindLyric(lyricId)?.Clone() : ProjectFactory.CreateLyric("歌词");
+        if (lyric is null)
+            lyric = ProjectFactory.CreateLyric("歌词");
+        lyric.Id = Guid.NewGuid().ToString("N");
+        lyric.Name = ProjectDocument.UniqueName(row.Name + " - 歌词", _project.Lyrics.Select(l => l.Name));
+        _project.Lyrics.Add(lyric);
+
+        var copy = row.Model.Clone();
+        copy.Id = Guid.NewGuid().ToString("N");
+        copy.Name = ProjectDocument.UniqueName(row.Name + " 副本", _project.Singers.Select(s => s.Name));
+        copy.LyricId = lyric.Id;
+        _project.Singers.Add(copy);
+        RebuildRows();
+        SelectedSinger = Singers.FirstOrDefault(r => r.Id == copy.Id);
+        AddLog("info", $"复制歌手「{row.Name}」：参数共享，歌词独立。");
     }
 
-    /// <summary>
-    /// Repoint the existing notes of the active track to the same-named samples in the new voicebank.
-    /// Notes whose sample name is missing in the new voicebank keep their current audio; that count is returned.
-    /// </summary>
-    private int RetargetSegments(string? previousRoot, string newRoot)
+    private void ToggleSingerFake()
     {
-        if (string.IsNullOrWhiteSpace(previousRoot)
-            || string.IsNullOrWhiteSpace(newRoot)
-            || SamePath(previousRoot, newRoot))
+        var row = SelectedSinger;
+        if (row is null)
+            return;
+        PushUndo();
+        row.Model.FakeUser = !row.Model.FakeUser;
+        row.Refresh();
+    }
+
+    private void PurgeOrphans()
+    {
+        var orphans = _project.FindOrphanNames();
+        if (orphans.Count == 0)
         {
-            return 0;
+            AddLog("info", "没有需要清理的孤立数据块。");
+            return;
         }
-
-        var previousPrefix = Path.GetFullPath(previousRoot)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            + Path.DirectorySeparatorChar;
-
-        var changed = 0;
-        var missing = 0;
-        foreach (var segment in _activeTrack.Segments)
-        {
-            if (string.IsNullOrWhiteSpace(segment.Audio) || !Path.IsPathRooted(segment.Audio))
-                continue;
-
-            var audio = Path.GetFullPath(segment.Audio);
-            if (!audio.StartsWith(previousPrefix, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var candidate = Path.GetFullPath(Path.Combine(newRoot, audio[previousPrefix.Length..]));
-            if (!File.Exists(candidate))
-            {
-                missing++;
-                continue;
-            }
-
-            segment.Audio = candidate;
-            changed++;
-        }
-
-        if (changed > 0)
-            AddLog("info", $"声库切换：{changed} 个音符改用 \"{Path.GetFileName(newRoot)}\" 的采样。");
-        if (missing > 0)
-            AddLog("warn", $"声库切换：{missing} 个音符在新声库中没有同名采样，保留原文件。");
-        return missing;
+        if (MessageBox.Show($"将清理 {orphans.Count} 个孤立数据块：\n{string.Join("\n", orphans)}",
+                "清理孤立数据块", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+            return;
+        PushUndo();
+        var count = _project.PurgeOrphans();
+        RebuildRows();
+        AddLog("info", $"已清理 {count} 个孤立数据块。");
     }
 
+    // ------------------------------------------------------------------
+    // Library / dictionary
+    // ------------------------------------------------------------------
     private void RefreshLibrary()
     {
         Library.Clear();
         RefreshVoicebanks();
-        foreach (var entry in LibraryScanner.Scan(EffectiveLibraryRoot))
+        foreach (var entry in LibraryScanner.Scan(LibraryRoot))
             Library.Add(entry);
         RefreshLibraryIcon();
-        StatusText = $"声库：{Library.Count} 个音频";
-        OnPropertyChanged(nameof(HasVoicebank));
+        OnPropertyChanged(nameof(LibraryRoot));
+        SetStatus("声库：{0} 个音频", Library.Count);
     }
 
-    /// <summary>
-    /// 声库图标：在声库目录中查找任意图片文件；找不到（或都无法解码）时使用 VocalB1 自带图标。
-    /// </summary>
+    private void RefreshVoicebanks()
+    {
+        Voicebanks.Clear();
+        var root = Path.Combine(_services.Options.RepositoryRoot, "voicebank");
+        if (Directory.Exists(root))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(root).OrderBy(d => d))
+                Voicebanks.Add(new VoicebankOption(Path.GetFileName(directory), directory));
+        }
+
+        // The active singer may point at a voicebank outside the repository (for example a temp folder
+        // used by the startup test or a dragged-in bank). Keep it in the list so the two-way ComboBox
+        // does not silently fall back to the first repository bank.
+        var current = LibraryRoot;
+        if (!string.IsNullOrWhiteSpace(current)
+            && !Voicebanks.Any(v => string.Equals(v.Path, current, StringComparison.OrdinalIgnoreCase)))
+        {
+            Voicebanks.Insert(0, new VoicebankOption(
+                Path.GetFileName(current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                current));
+        }
+    }
+
     private void RefreshLibraryIcon()
     {
-        var root = EffectiveLibraryRoot;
+        var root = LibraryRoot;
         string? path = null;
         if (!string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
         {
@@ -2409,11 +1949,7 @@ public sealed class MainViewModel : ObservableObject
                 .FirstOrDefault();
         }
 
-        var icon = LoadLibraryIcon(path) ?? LoadAppIcon();
-        if (ReferenceEquals(icon, _libraryIcon))
-            return;
-
-        _libraryIcon = icon;
+        _libraryIcon = LoadImage(path) ?? LoadAppIcon();
         OnPropertyChanged(nameof(LibraryIcon));
         OnPropertyChanged(nameof(HasLibraryIcon));
     }
@@ -2424,8 +1960,29 @@ public sealed class MainViewModel : ObservableObject
     private static bool IsImageFile(string path) =>
         ImageExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>声库无可用图片时回退到应用自带图标（见 csproj 中的 Assets\VocalB1.ico 资源）。</summary>
-    private static ImageSource? LoadAppIcon()
+    private ImageSource? LoadImage(string? path)
+    {
+        if (path is null)
+            return null;
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+            image.UriSource = new Uri(path);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", "声库图片无法解码：" + ex.Message);
+            return null;
+        }
+    }
+
+    private ImageSource? LoadAppIcon()
     {
         try
         {
@@ -2444,55 +2001,15 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private static ImageSource? LoadLibraryIcon(string? path)
-    {
-        if (path is null)
-            return null;
-
-        try
-        {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
-            image.UriSource = new Uri(path);
-            image.EndInit();
-            image.Freeze();
-            return image;
-        }
-        catch (Exception)
-        {
-            // 声库文件属于外部输入，损坏或无法解码的图片直接忽略，不影响声库列表。
-            return null;
-        }
-    }
-
     private void AddLibraryItem(LibraryEntry? entry)
     {
-        if (entry is null)
+        if (entry is null || ActiveLyric is null)
             return;
-
-        PushUndo();
-        var start = _activeTrack.Segments.Count == 0 ? 1.0 : _activeTrack.Segments.Max(s => s.BeatEnd);
-        var segment = new VoiceSegment
-        {
-            Audio = entry.Path,
-            SrcPitch = VoiceSegment.DefaultSrcPitch,
-            DstPitch = "D4",
-            BeatStart = start,
-            BeatEnd = start + 1.0,
-            Transition = DefaultTransitionFrames,
-        };
-        _activeTrack.Segments.Add(segment);
-        _activeTrack.AddPitchNodes(segment, 5);
-        AddLyricWordForSegment(segment);
-        RefreshSegments();
-        AddLog("info", $"Segment added: {entry.DisplayName} ({_activeTrack.Name}, beat {start:0.##} -> {start + 1:0.##})");
+        var start = ActiveLyric.Segments.Count == 0 ? 1.0 : ActiveLyric.Segments.Max(s => s.BeatEnd);
+        var semitone = 62;
+        CreateSegmentAt(start, start + DefaultLyricUnitBeats, semitone);
     }
 
-    // ------------------------------------------------------------------
-    // User dictionary
-    // ------------------------------------------------------------------
     private void ImportDictionary()
     {
         var dialog = new OpenFileDialog
@@ -2502,366 +2019,392 @@ public sealed class MainViewModel : ObservableObject
         };
         if (dialog.ShowDialog() != true)
             return;
-
         try
         {
             var dictionary = DictionaryJson.Load(dialog.FileName);
             ApplyDictionary(dictionary, dialog.FileName);
-
-            StatusText = $"已导入字典：{dictionary.Name}";
-            AddLog("info", $"User dictionary imported: \"{dictionary.Name}\" ({dictionary.Entries.Count} entries), {dialog.FileName}");
-
+            AddLog("info", $"已导入字典「{dictionary.Name}」（{dictionary.Entries.Count} 条）。");
             foreach (var issue in dictionary.Validate())
-                AddLog("warn", "Dictionary: " + issue);
+                AddLog("warn", "字典：" + issue);
         }
         catch (Exception ex)
         {
-            AddLog("error", "Dictionary import failed: " + ex.Message);
-            StatusText = "导入字典失败";
+            ReportError(ex);
         }
     }
 
-    /// <summary>Loads the built-in dictionary (kana + common kanji) so the panel works without importing a file.</summary>
     private void LoadDefaultDictionary()
     {
         var dictionary = DefaultDictionary.Create();
         ApplyDictionary(dictionary, null);
-        AddLog("info", $"Built-in dictionary loaded: \"{dictionary.Name}\" ({dictionary.Entries.Count} entries).");
+        AddLog("info", LanguageService.TranslateFormat("内置字典已加载（{0} 条）。", dictionary.Entries.Count));
     }
 
-    /// <summary>Points the panel at a dictionary; a null path means the built-in default one.</summary>
     private void ApplyDictionary(UserDictionary dictionary, string? path)
     {
         _dictionary = dictionary;
         _dictionaryPath = path;
-
         DictionaryEntries.Clear();
         foreach (var entry in dictionary.Entries)
             DictionaryEntries.Add(new DictionaryEntryRow(entry));
-
         OnPropertyChanged(nameof(DictionaryName));
         OnPropertyChanged(nameof(DictionaryPathText));
-
         SelectedDictionaryEntry = DictionaryEntries.FirstOrDefault();
-        DictionaryStartBeat = _activeTrack.TotalBeats > 0 ? _activeTrack.TotalBeats : 1.0;
+    }
+
+    private string? ResolveDictionaryLibraryRoot()
+    {
+        if (_dictionary is null || string.IsNullOrWhiteSpace(_dictionary.LibraryRoot))
+            return LibraryRoot;
+        var own = _dictionary.LibraryRoot!;
+        if (Path.IsPathRooted(own))
+            return own;
+        var directory = string.IsNullOrWhiteSpace(_dictionaryPath) ? null : Path.GetDirectoryName(_dictionaryPath);
+        return directory is null ? own : Path.Combine(directory, own);
     }
 
     private void InsertDictionaryEntry()
     {
-        if (_dictionary is null || SelectedDictionaryEntry is null)
+        if (_dictionary is null || SelectedDictionaryEntry is null || ActiveLyric is null)
             return;
-
-        var entry = SelectedDictionaryEntry.Model;
         try
         {
             PushUndo();
-            var startBeat = FreeStartAfter(DictionaryStartBeat, DictionaryBeats > 0 ? DictionaryBeats : 1.0);
+            var entry = SelectedDictionaryEntry.Model;
+            var start = ActiveLyric.Segments.Count == 0 ? DictionaryStartBeat : ActiveLyric.Segments.Max(s => s.BeatEnd);
             var segments = DictionaryResolver.Resolve(
                 entry,
                 string.IsNullOrWhiteSpace(_dictionaryPath) ? null : Path.GetDirectoryName(_dictionaryPath),
                 ResolveDictionaryLibraryRoot(),
-                startBeat,
+                start,
                 DictionaryBeats,
                 DictionaryDstPitch,
                 _dictionary.DefaultSrcPitch);
 
-            _activeTrack.Segments.AddRange(segments);
-            _activeTrack.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
+            ActiveLyric.Segments.AddRange(segments);
+            ActiveLyric.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
             foreach (var segment in segments)
-                _activeTrack.AddPitchNodes(segment, 5);
-            AddLyricWordForSegments(entry.Text, segments);
+            {
+                segment.Phoneme = Path.GetFileNameWithoutExtension(segment.Audio);
+                segment.Vowel = GuessVowel(segment.Phoneme);
+                ActiveLyric.AddPitchNodes(segment, 5);
+            }
+            LyricPhraseComposer.SyncWithSegments(ActiveLyric.Phrase, ActiveLyric);
+            _rollRevision++;
+            OnPropertyChanged(nameof(RollRevision));
             RefreshSegments();
-
-            StatusText = $"已插入字典条目：{entry.Text}";
-            AddLog("info",
-                $"Dictionary entry \"{entry.Text}\" -> {_activeTrack.Name}: {segments.Count} segments (beat {segments[0].BeatStart:0.##} -> {segments[^1].BeatEnd:0.##}, target {segments[0].DstPitch})");
+            RefreshLyricUnits();
+            AddLog("info", $"插入字典条目「{entry.Text}」：{segments.Count} 段。");
         }
         catch (Exception ex)
         {
-            AddLog("error", "Failed to insert dictionary entry: " + ex.Message);
-            StatusText = "插入字典条目失败";
+            ReportError(ex);
         }
     }
 
-    /// <summary>The dictionary's own LibraryRoot (may be relative to the dictionary directory) takes precedence; otherwise the current track's library is used.</summary>
-    private string? ResolveDictionaryLibraryRoot()
-    {
-        if (_dictionary is null || string.IsNullOrWhiteSpace(_dictionary.LibraryRoot))
-            return EffectiveLibraryRoot;
-
-        var own = _dictionary.LibraryRoot!;
-        if (Path.IsPathRooted(own))
-            return own;
-
-        var directory = string.IsNullOrWhiteSpace(_dictionaryPath)
-            ? null
-            : Path.GetDirectoryName(_dictionaryPath);
-        return directory is null ? own : Path.Combine(directory, own);
-    }
-
     // ------------------------------------------------------------------
-    // BGM (backing track)
+    // Asset import / export (external library)
     // ------------------------------------------------------------------
-    /// <summary>Opens a WAV picker and installs it as the project-wide BGM.</summary>
-    private void ImportBgm()
+    private void ExportLyricAsset()
     {
-        var dialog = new OpenFileDialog
+        var row = SelectedLyric;
+        if (row is null)
+            return;
+        var dialog = new SaveFileDialog
         {
-            Title = "导入 BGM 伴奏",
-            Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+            Title = "导出歌词数据块",
+            Filter = "歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json",
+            FileName = SafeFileName(row.Name) + ".vblyric.json",
         };
         if (dialog.ShowDialog() != true)
             return;
-
-        SetBgm(dialog.FileName);
-    }
-
-    /// <summary>
-    /// Sets the project-wide BGM and resets its start to the project start (第 0 小节第 0 音).
-    /// The BGM keeps its original speed and is only used for preview playback.
-    /// </summary>
-    public void SetBgm(string path)
-    {
         try
         {
-            var full = Path.GetFullPath(path);
-            var info = WavReader.ReadInfo(full);
+            File.WriteAllText(dialog.FileName,
+                JsonSerializer.Serialize(row.Model, ProjectJson.WriteOptions));
+            AddLog("info", "歌词数据块已导出：" + dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    private void ImportLyricAsset()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入歌词数据块",
+            Filter = "歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        try
+        {
+            var lyric = JsonSerializer.Deserialize<LyricDocument>(File.ReadAllText(dialog.FileName),
+                ProjectJson.ReadOptions) ?? throw new InvalidDataException("歌词文件为空。");
+            lyric.Id = Guid.NewGuid().ToString("N");
+            lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
             PushUndo();
-            _project.BgmPath = full;
-            _project.BgmStartBeat = 0;
-            _bgmMixKey = null;
-            RaiseBgmChanged();
-            StatusText = $"已导入 BGM：{BgmName}";
-            AddLog("info", $"BGM imported: {full} ({info.SampleRate} Hz, {info.Channels} ch, "
-                + $"{info.BitsPerSample} bit, {info.DurationSeconds:F1}s). It plays at its original speed.");
+            _project.Lyrics.Add(lyric);
+            RebuildRows();
+            AddLog("info", $"歌词数据块已导入：{lyric.Name}");
         }
         catch (Exception ex)
         {
-            AddLog("warn", "BGM import failed: " + ex.Message);
-            StatusText = "导入 BGM 失败";
+            ReportError(ex);
         }
     }
 
-    public void ClearBgm()
+    private void ExportParameterAsset()
     {
-        if (!HasBgm)
+        var row = SelectedParameterSet;
+        if (row is null)
             return;
-
-        PushUndo();
-        _project.BgmPath = null;
-        _project.BgmStartBeat = 0;
-        _bgmMixKey = null;
-        RaiseBgmChanged();
-        StatusText = "已移除 BGM";
-        AddLog("info", "BGM removed.");
-    }
-
-    private void RaiseBgmChanged()
-    {
-        OnPropertyChanged(nameof(BgmPath));
-        OnPropertyChanged(nameof(HasBgm));
-        OnPropertyChanged(nameof(BgmName));
-        OnPropertyChanged(nameof(BgmStartBeat));
-        OnPropertyChanged(nameof(BgmDurationBeats));
-        (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
-    }
-
-    /// <summary>
-    /// Mixes the BGM under the rendered vocal into a cached WAV for playback. The cache key covers the
-    /// vocal file, the BGM file and the start offset, so a re-render or a start change rebuilds it.
-    /// </summary>
-    private string? EnsureBgmMix(string vocalPath)
-    {
-        var bgmPath = _project.BgmPath;
-        if (string.IsNullOrWhiteSpace(bgmPath))
-            return null;
-        if (!File.Exists(bgmPath))
+        var dialog = new SaveFileDialog
         {
-            AddLog("warn", $"BGM file not found: {bgmPath}; playing the vocal track only.");
-            return null;
-        }
-
-        var startSeconds = Math.Max(0, _project.BgmStartBeat) * 60.0 / Math.Max(1, _bpm);
-        var key = $"{vocalPath}|{File.GetLastWriteTimeUtc(vocalPath):O}|"
-            + $"{bgmPath}|{File.GetLastWriteTimeUtc(bgmPath):O}|{startSeconds:R}";
-        if (key == _bgmMixKey && _bgmMixPath is { } cached && File.Exists(cached))
-            return cached;
-
+            Title = "导出参数数据块",
+            Filter = "参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json",
+            FileName = SafeFileName(row.Name) + ".vbparam.json",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
         try
         {
-            StatusText = "BGM 混音中…";
-            var directory = Path.Combine(Path.GetTempPath(), "vocalb1-bgm");
-            Directory.CreateDirectory(directory);
-            var output = Path.Combine(directory, $"mix_{Guid.NewGuid():N}.wav");
-            var started = DateTime.Now;
-            BgmMixer.Mix(vocalPath, bgmPath, startSeconds, output);
-
-            if (_bgmMixPath is { } previous && !string.Equals(previous, output, StringComparison.Ordinal))
-            {
-                try { File.Delete(previous); } catch { /* best effort cleanup */ }
-            }
-
-            _bgmMixPath = output;
-            _bgmMixKey = key;
-            AddLog("info", $"BGM mixed at beat {_project.BgmStartBeat:0.##} ({startSeconds:0.##}s), "
-                + $"{(DateTime.Now - started).TotalSeconds:F1}s elapsed.");
-            return output;
+            File.WriteAllText(dialog.FileName,
+                JsonSerializer.Serialize(row.Model, ProjectJson.WriteOptions));
+            AddLog("info", "参数数据块已导出：" + dialog.FileName);
         }
         catch (Exception ex)
         {
-            _bgmMixKey = null;
-            AddLog("warn", "BGM mixing failed; playing the vocal track only: " + ex.Message);
-            return null;
+            ReportError(ex);
         }
     }
 
-    // ------------------------------------------------------------------
-    // Render / Playback
-    // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Drop the cached render of the active track after a synthesis parameter changed.
-    /// Playback replays the last rendered WAV, so without this a slider change would
-    /// still play the audio produced with the old value and look like it had no effect.
-    /// </summary>
-    private void InvalidateRender()
+    private void ImportParameterAsset()
     {
-        if (!_trackOutputs.Remove(_activeTrack, out var output))
-            return;
-
-        // A merged WAV containing this track is stale as well.
-        if (_lastMixTracks is { } sources && sources.Contains(_activeTrack))
+        var dialog = new OpenFileDialog
         {
-            ClearMergedRender();
+            Title = "导入参数数据块",
+            Filter = "参数数据块 (*.vbparam.json)|*.vbparam.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
             return;
+        try
+        {
+            var parameters = JsonSerializer.Deserialize<ParameterSet>(File.ReadAllText(dialog.FileName),
+                ProjectJson.ReadOptions) ?? throw new InvalidDataException("参数文件为空。");
+            parameters.Id = Guid.NewGuid().ToString("N");
+            parameters.Name = ProjectDocument.UniqueName(parameters.Name, _project.ParameterSets.Select(p => p.Name));
+            PushUndo();
+            _project.ParameterSets.Add(parameters);
+            RebuildRows();
+            AddLog("info", $"参数数据块已导入：{parameters.Name}");
         }
-
-        if (string.Equals(LastRenderPath, output.Path, StringComparison.OrdinalIgnoreCase))
+        catch (Exception ex)
         {
-            LastRenderPath = null;
-            PreviewInfo = "参数已修改，需要重新渲染";
+            ReportError(ex);
         }
     }
 
-    /// <summary>Forget the merged render; it no longer reflects the current project.</summary>
-    private void ClearMergedRender()
+    private void ExportTimbre()
     {
-        if (_lastMixTracks is null && _lastMixPath is null)
+        if (ActiveParameterSet is null)
             return;
-
-        if (_lastMixPath is not null && string.Equals(LastRenderPath, _lastMixPath, StringComparison.OrdinalIgnoreCase))
+        var dialog = new SaveFileDialog
         {
-            LastRenderPath = null;
-            PreviewInfo = "参数已修改，需要重新渲染";
+            Title = "导出音色参数",
+            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json",
+            FileName = SafeFileName(ActiveParameterSet.Name) + TimbreProfile.FileExtension,
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        try
+        {
+            TimbreProfile.From(ActiveParameterSet.Base).Save(dialog.FileName);
+            AddLog("info", "音色参数已导出：" + dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    private void ImportTimbre()
+    {
+        if (ActiveParameterSet is null)
+            return;
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入音色参数",
+            Filter = $"音色参数 (*{TimbreProfile.FileExtension})|*{TimbreProfile.FileExtension}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        try
+        {
+            var profile = TimbreProfile.Load(dialog.FileName);
+            PushUndo();
+            foreach (var item in profile.ApplyTo(ActiveParameterSet.Base))
+                AddLog("warn", "音色导入跳过：" + item);
+            OnPropertyChanged(nameof(BaseValue));
+            AddLog("info", "音色参数已导入。");
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    private async Task AnalyzeVoicebankAsync()
+    {
+        var singer = SelectedSinger?.Model;
+        if (singer is null || string.IsNullOrWhiteSpace(singer.LibraryRoot))
+        {
+            ReportError(new StageException(nameof(MainViewModel), "analyze-voicebank",
+                "请先为歌手选择声库。"));
+            return;
         }
 
-        _lastMixPath = null;
-        _lastMixTracks = null;
-        _lastMixDurationSeconds = 0;
+        var script = Path.Combine(_services.Options.RepositoryRoot, "tools", "analyze_voicebank.py");
+        if (!File.Exists(script))
+        {
+            ReportError(new StageException(nameof(MainViewModel), "analyze-voicebank",
+                "找不到声库分析脚本：" + script));
+            return;
+        }
+
+        IsBusy = true;
+        StatusText = "正在分析声库共振峰…";
+        try
+        {
+            var info = new ProcessStartInfo
+            {
+                FileName = _services.Options.PythonPath,
+                WorkingDirectory = _services.Options.RepositoryRoot,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            info.ArgumentList.Add(script);
+            info.ArgumentList.Add(singer.LibraryRoot);
+
+            using var process = new Process { StartInfo = info };
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    AddLog("info", e.Data);
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    AddLog("warn", e.Data);
+            };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+                throw new StageException("VoicebankAnalyzer", "run",
+                    $"声库分析失败（退出码 {process.ExitCode}），详见日志。");
+
+            // Reload the profile so the next plan/vowel-manager read uses measured formants.
+            OnPropertyChanged(nameof(UnitFormantInfo));
+            OnPropertyChanged(nameof(UnitFormantValues));
+            OnPropertyChanged(nameof(UnitFormantHint));
+            AddLog("info", "声库共振峰分析完成：formants.json 已写入声库目录。");
+            StatusText = "声库共振峰分析完成";
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
+
 
     private async Task RenderAsync()
     {
-        // Rendering is driven by chorus singers: every enabled singer contributes its bound track at its
-        // stage position. A track is never mixed in directly, so no singer means nothing to render.
-        var singers = _project.Chorus.Singers
-            .Where(s => s.Enabled && _project.Tracks.Any(t => t.Id == s.TrackId))
-            .ToList();
-        if (singers.Count == 0)
+        if (IsBusy)
+            return;
+
+        var issues = ProjectValidator.Validate(_project);
+        foreach (var issue in issues)
+            AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
+        if (ProjectValidator.HasError(issues))
         {
-            StatusText = "没有歌手，无法渲染";
-            AddLog("warn", "No enabled chorus singer; rendering is driven by singers, so nothing was rendered.");
+            ReportError(new StageException(nameof(MainViewModel), "validate-render",
+                "工程校验未通过，详见日志。"));
             return;
         }
 
-        var tracks = _project.Tracks
-            .Where(t => singers.Any(s => s.TrackId == t.Id))
-            .ToList();
+        var singers = _project.Singers.Where(s => s.Enabled).ToList();
+        if (singers.Count == 0)
+        {
+            ReportError(new StageException(nameof(MainViewModel), "render", "没有启用的歌手。"));
+            return;
+        }
 
-        IsBusy = true;
-        StatusText = "渲染中…";
         _renderCts = new CancellationTokenSource();
-        var started = DateTime.Now;
+        IsBusy = true;
+        SetStatus("渲染 {0} 个歌手…", singers.Count);
 
         try
         {
-            var blocked = false;
-            foreach (var track in tracks)
+            // The engine is a child Python process; start it on the first render and reuse it afterwards.
+            if (!_services.Engine.IsReady)
             {
-                var issues = ProjectValidator.Validate(track, _project);
-                foreach (var issue in issues)
-                    AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
-                blocked |= ProjectValidator.HasError(issues);
+                StatusText = "正在启动 Python 引擎…";
+                AddLog("info", "正在启动 Python 引擎…");
+                await _services.Engine.InitializeAsync(_renderCts.Token);
+                AddLog("info", "Python 引擎已就绪。");
             }
 
-            if (blocked)
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var folder = Path.Combine(ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot),
+                "singers_" + stamp);
+            Directory.CreateDirectory(folder);
+
+            var outputs = new List<string>();
+            for (var i = 0; i < singers.Count; i++)
             {
-                StatusText = "工程校验未通过";
-                return;
-            }
-
-            var directory = ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot);
-            Directory.CreateDirectory(directory);
-            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-
-            AddLog("info", $"Starting the Python engine to render {tracks.Count} track(s)...");
-            await _services.Engine.InitializeAsync(_renderCts.Token);
-
-            var progress = new Progress<EngineEvent>(OnEngineEvent);
-            var outputs = new List<string>(tracks.Count);
-            for (var i = 0; i < tracks.Count; i++)
-            {
-                var track = tracks[i];
-                var stem = string.Concat(track.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-                var output = Path.Combine(directory, $"render_{i + 1}_{stem}_{timestamp}.wav");
-
-                StatusText = $"渲染中（{i + 1}/{tracks.Count}）：{track.Name}";
-                AddLog("info", $"Rendering track \"{track.Name}\" ({i + 1}/{tracks.Count})...");
-                var result = await _services.Engine.RenderAsync(
-                    new RenderRequest(_project, track, output), progress, _renderCts.Token);
-
-                // The engine output is mono. Every singer bound to this track gets its own
-                // position-dependent version (distance attenuation, HF air absorption, pan) and the
-                // versions are summed; the track itself is never mixed in directly.
-                var chorusSingers = singers.Where(s => s.TrackId == track.Id).ToList();
-                var singerOutputs = new List<string>(chorusSingers.Count);
-                for (var s = 0; s < chorusSingers.Count; s++)
+                var singer = singers[i];
+                var plan = SingerRenderPlan.Build(_project, singer, i, singers.Count);
+                var output = Path.Combine(folder, $"singer_{i + 1:00}.wav");
+                var progress = new Progress<EngineEvent>(e =>
                 {
-                    var singerPath = Path.Combine(
-                        directory, $"render_{i + 1}_{stem}_chorus{s + 1}_{timestamp}.wav");
-                    ChorusProcessor.Process(
-                        result.OutputPath, singerPath, _project.Chorus, [chorusSingers[s]], _bpm,
-                        track.Settings.BitDepth);
-                    singerOutputs.Add(singerPath);
-                }
-
-                var chorusPath = Path.Combine(directory, $"render_{i + 1}_{stem}_chorus_{timestamp}.wav");
-                TrackMixer.Mix(singerOutputs, chorusPath, track.Settings.BitDepth);
-                _trackOutputs[track] = new RenderedTrack(chorusPath, result.DurationSeconds);
-                outputs.Add(chorusPath);
-                AddLog("info",
-                    $"Chorus processing: {chorusSingers.Count} singer(s) on track \"{track.Name}\".");
+                    if (e.Kind == EngineEventKind.Warning)
+                        AddLog("warn", $"[{singer.Name}] {e.Message}");
+                    else
+                        AddLog("info", $"[{singer.Name}] {e.Message}");
+                });
+                var result = await _services.Engine.RenderAsync(
+                    new RenderRequest(_project, plan, output), progress, _renderCts.Token);
+                outputs.Add(result.OutputPath);
+                AddLog("info", LanguageService.TranslateFormat("歌手「{0}」完成：{1:0.0}s。", singer.Name, result.DurationSeconds));
             }
 
-            // All selected tracks were rendered to one shared timeline; sum them into a single WAV.
-            StatusText = "合并音轨…";
-            var mixPath = Path.Combine(directory, $"render_mix_{timestamp}.wav");
-            var mixBitDepth = tracks.Count == 0 ? 16 : tracks.Max(t => t.Settings.BitDepth);
-            TrackMixer.Mix(outputs, mixPath, mixBitDepth);
-            var mixInfo = WavReader.ReadInfo(mixPath);
+            var mixPath = Path.Combine(ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot),
+                $"render_{stamp}.wav");
+            TrackMixer.Mix(outputs, mixPath, _project.Singers[0].ParameterSetId is { } id
+                ? _project.FindParameterSet(id)?.Base.BitDepth ?? 16
+                : 16);
 
-            _lastMixPath = mixPath;
-            _lastMixTracks = tracks.ToList();
-            _lastMixDurationSeconds = mixInfo.DurationSeconds;
-            LastRenderPath = mixPath;
-            PreviewInfo = $"{Path.GetFileName(mixPath)} · {mixInfo.DurationSeconds:F2}s";
-            StatusText = $"渲染完成（{(DateTime.Now - started).TotalSeconds:F1}s）";
-            AddLog("info", $"{tracks.Count} track(s) merged into: {mixPath}");
+            _lastMixPath = EnsureBgmMix(mixPath) ?? mixPath;
+            SetPreviewInfo("{0} 个歌手 · {1}", singers.Count, DateTime.Now.ToString("HH:mm:ss"));
+            SetStatus("渲染完成：{0}", Path.GetFileName(_lastMixPath));
+            AddLog("info", LanguageService.TranslateFormat("渲染完成：{0}", _lastMixPath));
         }
         catch (OperationCanceledException)
         {
+            AddLog("warn", "渲染已取消。");
             StatusText = "渲染已取消";
-            AddLog("warn", "Render canceled (the Python process was terminated).");
         }
         catch (Exception ex)
         {
@@ -2875,19 +2418,6 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void OnEngineEvent(EngineEvent e)
-    {
-        if (e.Kind == EngineEventKind.Log || e.Kind == EngineEventKind.Warning)
-        {
-            AddLog(e.Kind == EngineEventKind.Warning ? "warn" : "info", e.Message);
-            StatusText = e.Message;
-        }
-        else if (e.Kind == EngineEventKind.Progress && e.Progress is not null)
-        {
-            StatusText = $"{e.Message} {e.Progress:P0}".Trim();
-        }
-    }
-
     private void TogglePlay()
     {
         if (IsPlaying)
@@ -2896,165 +2426,301 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var path = LastRenderPath;
-        var playbackTrack = _activeTrack;
-
-        // Solo affects preview playback only: with a soloed track, play that track's rendered result.
-        if (_project.Tracks.FirstOrDefault(t => t.Solo) is { } soloTrack)
+        if (string.IsNullOrWhiteSpace(_lastMixPath) || !File.Exists(_lastMixPath))
         {
-            playbackTrack = soloTrack;
-            path = _trackOutputs.TryGetValue(soloTrack, out var soloOutput) && File.Exists(soloOutput.Path)
-                ? soloOutput.Path
-                : null;
-            if (path is null)
-            {
-                AddLog("warn", $"Solo track \"{soloTrack.Name}\" has not been rendered yet; render it first.");
-                return;
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            AddLog("warn", "Nothing to play; render the track first.");
+            AddLog("warn", "尚未渲染，无法播放。");
             return;
         }
 
-        // The project-wide BGM is mixed under the rendered vocal right before playback, so a start
-        // time change takes effect without re-rendering.
-        var playbackPath = EnsureBgmMix(path) ?? path;
-
-        // Start from the current playhead position; when there is no playhead yet, or playback already reached the end, restart from beat 1.
-        var endBeat = PlaybackEndBeat(playbackTrack);
-        if (_lastMixPath is not null && _lastMixDurationSeconds > 0.01
-            && string.Equals(path, _lastMixPath, StringComparison.OrdinalIgnoreCase))
-        {
-            // The merged WAV may outlast the active track, so clamp against its own length.
-            endBeat = 1 + _lastMixDurationSeconds * Math.Max(1, Bpm) / 60;
-        }
-        var startBeat = Math.Clamp(PlayheadBeat ?? 1, 1, endBeat);
-        if (endBeat - startBeat < 0.05)
-            startBeat = 1;
-
-        var start = TimeSpan.FromSeconds(Math.Max(0, (startBeat - 1) * 60 / Math.Max(1, Bpm)));
-
-        try
-        {
-            PlayheadBeat = startBeat;
-            _services.Playback.Play(playbackPath, start);
-            IsPlaying = true;
-            _playheadTimer.Start();
-            StatusText = $"播放中：{Path.GetFileName(playbackPath)}（第 {startBeat:0.##} 拍起）";
-        }
-        catch (Exception ex)
-        {
-            IsPlaying = false;
-            ReportError(ex);
-        }
+        var startBeat = PlayheadBeat ?? 1.0;
+        var seconds = Math.Max(0, (startBeat - 1) * 60.0 / Math.Max(1, _project.Bpm));
+        _services.Playback.Play(_lastMixPath, TimeSpan.FromSeconds(seconds));
+        IsPlaying = true;
+        _playheadTimer.Start();
     }
 
-    /// <summary>Stop playback; the playhead stays at the current position so playback can resume from there.</summary>
     private void StopPlayback()
     {
-        if (!IsPlaying)
-        {
-            _playheadTimer.Stop();
-            return;
-        }
-
-        SyncPlayheadFromPlayback();
         _services.Playback.Stop();
         _playheadTimer.Stop();
         IsPlaying = false;
     }
 
-    /// <summary>Called when the playhead drag starts: pause playback and keep the playhead position.</summary>
-    public void PauseForPlayheadDrag()
-    {
-        StopPlayback();
-        PlayheadBeat ??= 1;
-    }
-
-    /// <summary>Convert the player's current time to a 1-based beat position (audio second 0 = beat 1).</summary>
     private void SyncPlayheadFromPlayback()
     {
-        // End playback when the end is reached (or the player stops unexpectedly); the playhead stays where it is.
-        if (!_services.Playback.IsPlaying)
+        if (!IsPlaying)
+            return;
+        var seconds = _services.Playback.Position.TotalSeconds;
+        PlayheadBeat = 1.0 + seconds * _project.Bpm / 60.0;
+    }
+
+    private string? EnsureBgmMix(string vocalPath)
+    {
+        var bgmPath = _project.BgmPath;
+        if (string.IsNullOrWhiteSpace(bgmPath) || !File.Exists(bgmPath))
+            return null;
+
+        var key = $"{vocalPath}|{bgmPath}|{_project.BgmStartBeat}|{_project.Bpm}";
+        if (_bgmMixPath is not null && _bgmMixKey == key && File.Exists(_bgmMixPath))
+            return _bgmMixPath;
+
+        try
         {
-            _playheadTimer.Stop();
-            IsPlaying = false;
+            var directory = Path.Combine(Path.GetDirectoryName(vocalPath) ?? ".", "bgm");
+            Directory.CreateDirectory(directory);
+            var output = Path.Combine(directory, Path.GetFileNameWithoutExtension(vocalPath) + "_bgm.wav");
+            var seconds = _project.BgmStartBeat * 60.0 / Math.Max(1, _project.Bpm);
+            BgmMixer.Mix(vocalPath, bgmPath, seconds, output);
+            _bgmMixPath = output;
+            _bgmMixKey = key;
+            return output;
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", "BGM 混合失败：" + ex.Message);
+            return null;
+        }
+    }
+
+    private void ImportBgm()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入 BGM 伴奏",
+            Filter = "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        SetBgm(dialog.FileName);
+    }
+
+    public void SetBgm(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            var info = WavReader.ReadInfo(full);
+            PushUndo();
+            _project.BgmPath = full;
+            _project.BgmStartBeat = 0;
+            _bgmMixKey = null;
+            OnPropertyChanged(nameof(HasBgm));
+            OnPropertyChanged(nameof(BgmName));
+            OnPropertyChanged(nameof(BgmStartBeat));
+            OnPropertyChanged(nameof(BgmDurationBeats));
+            (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            SetStatus("已导入 BGM：{0}", BgmName);
+            AddLog("info", $"BGM 已导入：{full}（{info.SampleRate} Hz，{info.DurationSeconds:F1}s）。");
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    public void ClearBgm()
+    {
+        if (!HasBgm)
+            return;
+        PushUndo();
+        _project.BgmPath = null;
+        _project.BgmStartBeat = 0;
+        _bgmMixKey = null;
+        OnPropertyChanged(nameof(HasBgm));
+        OnPropertyChanged(nameof(BgmName));
+        OnPropertyChanged(nameof(BgmStartBeat));
+        OnPropertyChanged(nameof(BgmDurationBeats));
+        (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        StatusText = "已移除 BGM";
+    }
+
+    // ------------------------------------------------------------------
+    // Misc UI
+    // ------------------------------------------------------------------
+    private void ToggleRollMode() =>
+        RollMode = RollMode == PianoRollMode.Notes ? PianoRollMode.PitchLine : PianoRollMode.Notes;
+
+    private void ToggleTheme()
+    {
+        _isLightTheme = !_isLightTheme;
+        ThemeManager.Apply(_isLightTheme);
+        OnPropertyChanged(nameof(ThemeToggleText));
+    }
+
+    private void RebuildLanguages()
+    {
+        var ready = _languageReady;
+        _languageReady = false;
+        Languages.Clear();
+        foreach (var pack in LanguageService.Available)
+            Languages.Add(new LanguageRow(pack));
+        _selectedLanguage = Languages.FirstOrDefault(r => r.Pack.Code == LanguageService.Current.Code)
+            ?? Languages.FirstOrDefault();
+        OnPropertyChanged(nameof(SelectedLanguage));
+        _languageReady = ready;
+    }
+
+    private void ImportLanguagePack()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入语言包",
+            Filter = "JSON 语言包 (*.json)|*.json|所有文件 (*.*)|*.*",
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+        var pack = LanguageService.Import(dialog.FileName, out var error);
+        if (pack is null)
+        {
+            AddLog("error", "语言包导入失败：" + error);
             return;
         }
+        RebuildLanguages();
+        RefreshLanguageText();
+        AddLog("info", $"语言包已导入：{pack.Name}（{pack.Code}）");
+    }
 
-        var position = _services.Playback.Position;
+    public void RefreshLanguageText()
+    {
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(PreviewInfo));
+        OnPropertyChanged(nameof(RollModeText));
+        OnPropertyChanged(nameof(ThemeToggleText));
+        OnPropertyChanged(nameof(ProjectPathText));
+        OnPropertyChanged(nameof(DictionaryName));
+        OnPropertyChanged(nameof(DictionaryPathText));
+        OnPropertyChanged(nameof(LyricStatus));
+        OnPropertyChanged(nameof(GraphOwnerText));
+        OnPropertyChanged(nameof(BgmName));
+        OnPropertyChanged(nameof(UnitFormantInfo));
+        OnPropertyChanged(nameof(UnitFormantHint));
+        foreach (var row in Singers)
+            row.Refresh();
+        foreach (var row in Lyrics)
+            row.Refresh();
+        foreach (var row in ParameterSets)
+            row.Refresh();
+        foreach (var row in Segments)
+            row.Refresh();
+        foreach (var row in LyricUnits)
+            row.Refresh();
+        foreach (var row in ParameterKeyRows)
+            row.RefreshText();
+        foreach (var row in DictionaryEntries)
+            row.Refresh();
+    }
 
-        // The position may still be 0 right after a seek takes effect; do not pull the playhead back to beat 1 in that case.
-        if (position <= TimeSpan.Zero && PlayheadBeat is double current && current > 1.001)
+    private void OpenHelp()
+    {
+        var root = _services.Options.RepositoryRoot;
+        var fileName = LanguageService.Current.Code.ToLowerInvariant() switch
+        {
+            "ja" => "README.ja.md",
+            "zh" => "README.zh-CN.md",
+            _ => "README.md",
+        };
+        var path = Path.Combine(root, fileName);
+        if (!File.Exists(path))
+            path = Path.Combine(root, "README.md");
+        if (!File.Exists(path))
+        {
+            AddLog("warn", "未找到帮助文件：" + fileName);
             return;
-
-        PlayheadBeat = Math.Max(1, 1 + position.TotalSeconds * Math.Max(1, Bpm) / 60);
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
     }
 
-    /// <summary>End beat of the current track's audio (used to clamp the playhead and start time).</summary>
-    private double PlaybackEndBeat(TrackDocument track)
-    {
-        if (_trackOutputs.TryGetValue(track, out var output) && output.DurationSeconds > 0.01)
-            return 1 + output.DurationSeconds * Math.Max(1, Bpm) / 60;
-
-        return Math.Max(1, track.TotalBeats);
-    }
-
-    private void ReportError(Exception ex)
-    {
-        AddLog("error", ex.Message);
-        StatusText = "发生错误";
-        MessageBox.Show(ex.Message, "VocalB1", MessageBoxButton.OK, MessageBoxImage.Error);
-    }
-
-    // ------------------------------------------------------------------
-    // Log
-    // ------------------------------------------------------------------
     private void AddLog(string kind, string message)
     {
-        Logs.Add(new LogEntry(DateTime.Now, kind, message));
+        Logs.Insert(0, new LogEntry(DateTime.Now, kind, LanguageService.Translate(message)));
         while (Logs.Count > MaxLogEntries)
-            Logs.RemoveAt(0);
-        LogAppended?.Invoke(this, EventArgs.Empty);
+            Logs.RemoveAt(Logs.Count - 1);
     }
 
-    /// <summary>Lets the view automatically scroll to the newest log entry.</summary>
-    public event EventHandler? LogAppended;
-
-    /// <summary>Last render result of a single track.</summary>
-    private sealed record RenderedTrack(string Path, double DurationSeconds);
-
-    /// <summary>Rebuild both per-band slider collections from the current track's synthesis parameters.</summary>
-    private void RefreshParameterRows()
+    /// <summary>
+    /// Unified error surface: a <see cref="StageException"/> already carries "Class @ Stage"; anything else
+    /// is wrapped with the ViewModel + stage that produced it so no failure is silently dropped.
+    /// </summary>
+    private void ReportError(Exception ex)
     {
-        FollowRatioRows.Clear();
-        var follow = _activeTrack.Settings.FollowRatio;
-        for (var i = 0; i < follow.Length; i++)
-        {
-            var index = i;
-            FollowRatioRows.Add(new ParameterRow(LanguageService.Translate($"频段 {i + 1}"), 0, 1, 0.01, follow[i],
-                value => follow[index] = value));
-        }
-
-        BandRatioRows.Clear();
-        var bands = _activeTrack.Settings.BandRatios;
-        for (var i = 0; i < bands.Length; i++)
-        {
-            var index = i;
-            BandRatioRows.Add(new ParameterRow(LanguageService.Translate($"频段 {i + 1}"), 0, 3, 0.05, bands[i],
-                value => bands[index] = value));
-        }
+        var error = ex as StageException
+            ?? new StageException(nameof(MainViewModel), "command", ex.Message, ex);
+        AddLog("error", error.Message);
+        SetStatus("出错：{0} @ {1}", error.ClassName, error.Stage);
+        MessageBox.Show(error.Message, "VocalB1 错误", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
-    private static void Dispatch(Action action)
+    private static string SafeFileName(string name)
     {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null)
-            action();
-        else
+        foreach (var c in Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return string.IsNullOrWhiteSpace(name) ? "untitled" : name;
+    }
+
+    private void Dispatch(Action action)
+    {
+        if (Application.Current is { Dispatcher: { } dispatcher } && !dispatcher.CheckAccess())
             dispatcher.Invoke(action);
+        else
+            action();
+    }
+
+    private void RaiseSelectionCommands()
+    {
+        (RemoveSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (DuplicateSingerCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ToggleSingerFakeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (RemoveLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (DuplicateLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ToggleLyricFakeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (RemoveParameterSetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (DuplicateParameterSetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ToggleParameterFakeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ExportLyricAssetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ExportParameterAssetCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ExportTimbreCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ImportTimbreCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    private void RaiseAllCommandStates()
+    {
+        RaiseSelectionCommands();
+        (UndoCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (RedoCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (CommitLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (AddOutputNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (AddNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (RemoveNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
+    }
+
+    private static string GuessVowel(string? phoneme)
+    {
+        if (string.IsNullOrWhiteSpace(phoneme))
+            return "a";
+        var text = phoneme.Trim().TrimStart('_', '-').ToLowerInvariant();
+        foreach (var ch in text)
+        {
+            var vowel = ch switch
+            {
+                'あ' or 'か' or 'さ' or 'た' or 'な' or 'は' or 'ま' or 'や' or 'ら' or 'わ' or 'が' or 'ざ' or 'だ' or 'ば' or 'ぱ' => "a",
+                'い' or 'き' or 'し' or 'ち' or 'に' or 'ひ' or 'み' or 'り' or 'ぎ' or 'じ' or 'ぢ' or 'び' or 'ぴ' => "i",
+                'う' or 'く' or 'す' or 'つ' or 'ぬ' or 'ふ' or 'む' or 'ゆ' or 'る' or 'ぐ' or 'ず' or 'づ' or 'ぶ' or 'ぷ' => "u",
+                'え' or 'け' or 'せ' or 'て' or 'ね' or 'へ' or 'め' or 'れ' or 'げ' or 'ぜ' or 'で' or 'べ' or 'ぺ' => "e",
+                'お' or 'こ' or 'そ' or 'と' or 'の' or 'ほ' or 'も' or 'よ' or 'ろ' or 'を' or 'ご' or 'ぞ' or 'ど' or 'ぼ' or 'ぽ' => "o",
+                'ん' => "n",
+                _ => string.Empty,
+            };
+            if (vowel.Length > 0)
+                return vowel;
+        }
+        return text.Length > 0 && "aiueon".Contains(text[^1]) ? text[^1].ToString() : "a";
     }
 }

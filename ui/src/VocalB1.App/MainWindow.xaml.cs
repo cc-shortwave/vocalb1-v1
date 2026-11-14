@@ -2,9 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Threading;
 using VocalB1.App.Controls;
 using VocalB1.App.Services;
 using VocalB1.App.ViewModels;
@@ -20,7 +18,6 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContextChanged += (_, _) => AttachViewModel();
-        // After the first layout pass, sync the language combo box and replace static UI text with the previously selected language.
         Loaded += (_, _) =>
         {
             _viewModel?.BeginLanguageSelection();
@@ -32,43 +29,27 @@ public partial class MainWindow : Window
     private void AttachViewModel()
     {
         if (_viewModel is not null)
-            _viewModel.LogAppended -= OnLogAppended;
+            _viewModel.Logs.CollectionChanged -= OnLogsChanged;
 
         _viewModel = DataContext as MainViewModel;
 
         if (_viewModel is not null)
-            _viewModel.LogAppended += OnLogAppended;
+            _viewModel.Logs.CollectionChanged += OnLogsChanged;
     }
 
-    private void OnLogAppended(object? sender, EventArgs e)
+    private void OnLogsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
-        if (LogList.Items.Count > 0)
-            LogList.ScrollIntoView(LogList.Items[LogList.Items.Count - 1]);
+        // Scroll after the ItemsControl finishes its own collection-changed pass; scrolling synchronously
+        // here makes the item-container generator observe a half-applied collection and throw.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (LogList.Items.Count > 0)
+                LogList.ScrollIntoView(LogList.Items[0]);
+        }), System.Windows.Threading.DispatcherPriority.Background);
     }
 
-    /// <summary>The track tab strip stays on a single row: the wheel scrolls horizontally, and tabs never wrap no matter how many there are.</summary>
-    private void OnTrackTabsPreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        TrackTabs.ApplyTemplate();
-        if (TrackTabs.Template.FindName("TabScroller", TrackTabs) is not ScrollViewer scroller)
-            return;
+    private void OnRollEditCommitted(object? sender, EventArgs e) => _viewModel?.OnRollEdited();
 
-        scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta);
-        e.Handled = true;
-    }
-
-    private void OnRollEditStarted(object? sender, EventArgs e) => _viewModel?.BeginEdit();
-
-    private void OnRollEditCommitted(object? sender, EventArgs e) => _viewModel?.RefreshActiveTrack();
-
-    private void OnChorusEditStarted(object? sender, EventArgs e) => _viewModel?.BeginChorusEdit();
-
-    private void OnChorusEditCommitted(object? sender, EventArgs e) => _viewModel?.CommitChorusEdit();
-
-    private void OnChorusSingerSelected(object? sender, ChorusSingerEventArgs e) =>
-        _viewModel?.SelectChorusSinger(e.Singer);
-
-    /// <summary>Enter or focus loss decomposes the top lyric bar into minimal units and generates D4 blocks.</summary>
     private void OnLyricInputKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter)
@@ -76,7 +57,7 @@ public partial class MainWindow : Window
 
         if (sender is TextBox box)
             box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
-        _viewModel?.CommitLyricInput();
+        _viewModel?.CommitLyricCommand.Execute(null);
         e.Handled = true;
     }
 
@@ -84,54 +65,21 @@ public partial class MainWindow : Window
     {
         if (sender is TextBox box)
             box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
-        _viewModel?.CommitLyricInput();
+        _viewModel?.CommitLyricCommand.Execute(null);
     }
-
-    /// <summary>
-    /// Backspace/Delete on committed lyrics: the first deletion turns the word's pronunciation units into
-    /// rests of the same length (spaces in the box); deleting a space then removes that rest and pulls the
-    /// following units together. The view model mutates the lyric objects directly, so no re-commit is needed.
-    /// </summary>
-    private void OnLyricInputPreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key is not (Key.Back or Key.Delete)
-            || sender is not TextBox box
-            || _viewModel is null
-            || Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-            return;
-
-        var edit = _viewModel.TryBuildLyricDeletion(
-            box.Text, box.CaretIndex, box.SelectionLength, e.Key == Key.Back);
-        if (edit is null)
-            return;
-
-        e.Handled = true;
-        box.Text = edit.Text;
-        box.CaretIndex = Math.Clamp(edit.Caret, 0, edit.Text.Length);
-        box.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
-    }
-
-    /// <summary>Dragging the vertical line at a unit's right edge changes its beat length.</summary>
-    private void OnLyricUnitThumbDragDelta(object sender, DragDeltaEventArgs e)
-    {
-        if (sender is Thumb { DataContext: LyricUnitRow row })
-            _viewModel?.ResizeLyricUnit(row, e.HorizontalChange / LyricUnitRow.PixelsPerBeat);
-    }
-
-    /// <summary>After the drag, rebuild the segment list so the right panel shows the new beat ranges.</summary>
-    private void OnLyricUnitThumbDragCompleted(object sender, DragCompletedEventArgs e) =>
-        _viewModel?.RefreshActiveTrack();
 
     private void OnRollNoteAddRequested(object? sender, NoteAddEventArgs e) =>
         _viewModel?.AddNoteAt(e.Beat, e.Semitone);
 
     private void OnRollNoteDrawRequested(object? sender, NoteDrawEventArgs e) =>
-        _viewModel?.AddNoteFromDraw(e.BeatStart, e.BeatEnd, e.Semitone);
+        _viewModel?.DrawNoteAt(e.BeatStart, e.BeatEnd, e.Semitone);
 
-    private void OnRollPlayheadGrabbed(object? sender, EventArgs e) =>
-        _viewModel?.PauseForPlayheadDrag();
+    private void OnRollPlayheadGrabbed(object? sender, EventArgs e)
+    {
+        if (sender is PianoRollView { PlayheadBeat: { } beat })
+            _viewModel?.SeekToBeat(beat);
+    }
 
-    /// <summary>Accept files dropped anywhere on the window (voicebank folders and project files).</summary>
     private void OnWindowDragOver(object sender, DragEventArgs e)
     {
         e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
@@ -140,7 +88,6 @@ public partial class MainWindow : Window
 
     private void OnWindowDrop(object sender, DragEventArgs e)
     {
-        // Release the drag source (Explorer waits for this handler) before any blocking work or dialog.
         e.Handled = true;
         if (!e.Data.GetDataPresent(DataFormats.FileDrop))
             return;
@@ -148,23 +95,8 @@ public partial class MainWindow : Window
             return;
 
         var path = paths[0];
-        Dispatcher.BeginInvoke(new Action(() => _ = HandleDroppedPathAsync(path)), DispatcherPriority.Background);
-    }
-
-    private async Task HandleDroppedPathAsync(string path)
-    {
-        if (_viewModel is not { } viewModel)
-            return;
-
-        if (Directory.Exists(path))
-        {
-            if (await viewModel.InstallVoicebankAsync(path) is { } error)
-                MessageBox.Show(error, "安装声库", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        else if (File.Exists(path) && path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
-        {
-            viewModel.OpenProjectFromPath(path);
-        }
+        if (File.Exists(path) && path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
+            Dispatcher.BeginInvoke(new Action(() => _viewModel?.OpenProjectFromPath(path)));
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)

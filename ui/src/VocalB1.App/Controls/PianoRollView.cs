@@ -36,7 +36,7 @@ public sealed record RestRegion(double BeatStart, double BeatEnd, int Semitone);
 /// <summary>
 /// Editable piano roll: horizontal axis is beats, vertical axis is pitch.
 /// Left button selects and drags a note / pitch point; right button adds a note or pitch point at the mouse position according to the current mode.
-/// Edits write directly back to <see cref="Track"/>; external subscribers refresh the list and persist the state.
+/// Edits write directly back to <see cref="Lyric"/>; external subscribers refresh the list and persist the state.
 /// </summary>
 public sealed class PianoRollView : FrameworkElement
 {
@@ -99,6 +99,13 @@ public sealed class PianoRollView : FrameworkElement
 
     /// <summary>Vertical scroll in pitch rows (positive = look at higher pitches).</summary>
     private int _pitchScroll;
+
+    /// <summary>Middle-button pan state: the press point is stored as a ratio of the plot area, so the
+    /// gesture behaves the same on any screen size, DPI or window size.</summary>
+    private bool _panning;
+    private Point _panStartRatio;
+    private double _panStartViewBeat;
+    private double _panStartPitchScroll;
 
     /// <summary>Vertical zoom: 1 shows exactly the row span used by the notes, smaller values show more rows.</summary>
     private double _pitchZoom = 1;
@@ -183,8 +190,8 @@ public sealed class PianoRollView : FrameworkElement
     // ------------------------------------------------------------------
     // Dependency properties
     // ------------------------------------------------------------------
-    public static readonly DependencyProperty TrackProperty = DependencyProperty.Register(
-        nameof(Track), typeof(TrackDocument), typeof(PianoRollView),
+    public static readonly DependencyProperty LyricProperty = DependencyProperty.Register(
+        nameof(Lyric), typeof(LyricDocument), typeof(PianoRollView),
         new FrameworkPropertyMetadata(
             null,
             FrameworkPropertyMetadataOptions.AffectsRender,
@@ -268,10 +275,10 @@ public sealed class PianoRollView : FrameworkElement
             FrameworkPropertyMetadataOptions.AffectsRender | FrameworkPropertyMetadataOptions.BindsTwoWayByDefault,
             OnPlayheadChanged));
 
-    public TrackDocument? Track
+    public LyricDocument? Lyric
     {
-        get => (TrackDocument?)GetValue(TrackProperty);
-        set => SetValue(TrackProperty, value);
+        get => (LyricDocument?)GetValue(LyricProperty);
+        set => SetValue(LyricProperty, value);
     }
 
     public int BeatsPerBar
@@ -390,8 +397,7 @@ public sealed class PianoRollView : FrameworkElement
     private void CenterViewOnPlayhead(double beat)
     {
         var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
-        var pxPerBeat = Math.Max(MinPxPerBeat, plotWidth / Math.Max(1, TotalBeats()));
-        _viewStartBeat = Math.Max(1, beat - plotWidth / pxPerBeat / 2);
+        _viewStartBeat = Math.Max(1, beat - plotWidth / PxPerBeatFor(plotWidth) / 2);
         InvalidateVisual();
     }
 
@@ -420,7 +426,7 @@ public sealed class PianoRollView : FrameworkElement
         dc.DrawRoundedRectangle(_panelFill, _borderPen, new Rect(size), 6, 6);
         dc.PushClip(new RectangleGeometry(new Rect(0, 0, size.Width, size.Height)));
 
-        var track = Track;
+        var track = Lyric;
         var segments = track?.Segments ?? [];
         var points = track?.PitchLine ?? [];
         // Curve drawing uses the same compiled sequence that is sent to the engine,
@@ -465,7 +471,7 @@ public sealed class PianoRollView : FrameworkElement
         var bgmLane = laneHeight > 0
             ? new Rect(plot.Left, plot.Bottom, plot.Width, laneHeight)
             : Rect.Empty;
-        var pxPerBeat = Math.Max(4, Math.Max(MinPxPerBeat, plot.Width / Math.Max(1, totalBeats)) * _beatZoom);
+        var pxPerBeat = PxPerBeatFor(plot.Width);
 
         return new RollLayout(
             plot, bgmLane, low, high, high - low + 1, totalBeats, beatsPerBar, segments, points,
@@ -492,9 +498,9 @@ public sealed class PianoRollView : FrameworkElement
     private double TotalBeats()
     {
         var total = 4.0;
-        foreach (var segment in Track?.Segments ?? [])
+        foreach (var segment in Lyric?.Segments ?? [])
             total = Math.Max(total, Math.Max(segment.BeatStart, segment.BeatEnd));
-        foreach (var point in Track?.PitchLine ?? [])
+        foreach (var point in Lyric?.PitchLine ?? [])
             total = Math.Max(total, point.Beat);
         foreach (var rest in RestRegions ?? [])
             total = Math.Max(total, Math.Max(rest.BeatStart, rest.BeatEnd));
@@ -647,7 +653,13 @@ public sealed class PianoRollView : FrameworkElement
         if (_drag is not { Kind: DragKind.Pencil } drag)
             return;
 
-        var box = layout.NoteBox(drag.OriginalBeat, drag.DrawEndBeat, drag.OriginalSemitone);
+        // The ghost sits where the note will actually land: notes never overlap, so the range slides past blockers.
+        var start = drag.OriginalBeat;
+        var end = drag.DrawEndBeat;
+        if (Lyric is { } track && end > start)
+            start = SegmentLayout.FindFreeStart(track, start, end - start);
+
+        var box = layout.NoteBox(start, start + (end - drag.OriginalBeat), drag.OriginalSemitone);
         if (box.IsEmpty)
             return;
 
@@ -900,7 +912,7 @@ public sealed class PianoRollView : FrameworkElement
     /// <summary>Drag the gradient handle: adjust the gradient length (0-4 beats) by horizontal mouse movement, writing back to the model and redrawing live.</summary>
     private void UpdateGradientDrag(DragState drag, RollLayout layout, Point position)
     {
-        var track = Track;
+        var track = Lyric;
         if (track is null || drag.Index < 0 || drag.Index >= track.Segments.Count)
             return;
 
@@ -987,7 +999,7 @@ public sealed class PianoRollView : FrameworkElement
         // Control-point handles still come from the stored line (their indices are what editing uses);
         // the curve itself is drawn from the compiled sequence passed in, which is the same list
         // the engine receives.  They only differ by the hidden edge anchors.
-        var source = Track?.PitchLine ?? [];
+        var source = Lyric?.PitchLine ?? [];
         var indexOf = new Dictionary<PitchPoint, int>(ReferenceEqualityComparer.Instance);
         for (var i = 0; i < source.Count; i++)
             indexOf[source[i]] = i;
@@ -1208,9 +1220,81 @@ public sealed class PianoRollView : FrameworkElement
     // ------------------------------------------------------------------
     // Mouse interaction
     // ------------------------------------------------------------------
+    protected override void OnMouseDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseDown(e);
+
+        if (e.ChangedButton != MouseButton.Middle)
+            return;
+
+        var layout = Layout();
+        if (layout is null)
+            return;
+
+        Focus();
+        _panning = true;
+        _panStartRatio = RatioInPlot(layout, e.GetPosition(this));
+        _panStartViewBeat = _viewStartBeat;
+        _panStartPitchScroll = _pitchScroll;
+        CaptureMouse();
+        Cursor = Cursors.ScrollAll;
+        e.Handled = true;
+    }
+
+    protected override void OnMouseUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.ChangedButton != MouseButton.Middle || !_panning)
+            return;
+
+        EndPan();
+        e.Handled = true;
+    }
+
+    /// <summary>Stops the middle-button pan; called on release and whenever the capture is lost.</summary>
+    private void EndPan()
+    {
+        _panning = false;
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+        Cursor = Cursors.Arrow;
+        InvalidateVisual();
+    }
+
+    /// <summary>Point expressed as a fraction of the plot area (0..1), independent of DPI and control size.</summary>
+    private static Point RatioInPlot(RollLayout layout, Point position) => new(
+        (position.X - layout.Plot.Left) / Math.Max(1, layout.Plot.Width),
+        (position.Y - layout.Plot.Top) / Math.Max(1, layout.Plot.Height));
+
+    /// <summary>Middle-button pan: the drag distance is a ratio of the plot, so the content follows the mouse on any display.</summary>
+    private void PanTo(Point position)
+    {
+        var layout = Layout();
+        if (layout is null)
+            return;
+
+        var ratio = RatioInPlot(layout, position);
+        var rows = Math.Max(1, layout.High - layout.Low + 1);
+
+        // Dragging right moves the content right, i.e. reveals earlier beats; dragging down reveals higher pitches.
+        _viewStartBeat = Math.Max(1, _panStartViewBeat - (ratio.X - _panStartRatio.X) * layout.VisibleBeats);
+        _pitchScroll = Math.Clamp(
+            (int)Math.Round(_panStartPitchScroll + (ratio.Y - _panStartRatio.Y) * rows),
+            -MaxPitchScroll, MaxPitchScroll);
+        InvalidateVisual();
+    }
+
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
+
+        // A middle-button pan owns the mouse until it is released.
+        if (_panning)
+        {
+            e.Handled = true;
+            return;
+        }
+
         Focus();
 
         var layout = Layout();
@@ -1218,6 +1302,21 @@ public sealed class PianoRollView : FrameworkElement
             return;
 
         var position = e.GetPosition(this);
+
+        // The playhead has hit priority: press and drag to move the playback position to any beat.
+        // It must stay before the pencil branch, otherwise pencil mode swallows the press and the
+        // playhead cannot be dragged at all.
+        var headBeat = PlayheadDisplayBeat;
+        if (Math.Abs(position.X - layout.X(headBeat)) <= PlayheadHitRadius
+            && position.Y >= 0 && position.Y <= layout.Plot.Bottom)
+        {
+            _drag = new DragState(DragKind.Playhead, -1, position, headBeat, 0, 0);
+            CaptureMouse();
+            Cursor = Cursors.SizeWE;
+            PlayheadGrabbed?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
 
         // Pencil: dragging inside the plot draws a new note; the press point is the start, the release point the end.
         if (IsPencil && Mode == PianoRollMode.Notes
@@ -1237,19 +1336,6 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
-        // The playhead has hit priority: press and drag to move the playback position to any beat.
-        var headBeat = PlayheadDisplayBeat;
-        if (Math.Abs(position.X - layout.X(headBeat)) <= PlayheadHitRadius
-            && position.Y >= 0 && position.Y <= layout.Plot.Bottom)
-        {
-            _drag = new DragState(DragKind.Playhead, -1, position, headBeat, 0, 0);
-            CaptureMouse();
-            Cursor = Cursors.SizeWE;
-            PlayheadGrabbed?.Invoke(this, EventArgs.Empty);
-            e.Handled = true;
-            return;
-        }
-
         // BGM block in the bottom lane: horizontal move only (no pitch change, no resize).
         if (HitBgmBlock(layout, position))
         {
@@ -1263,7 +1349,7 @@ public sealed class PianoRollView : FrameworkElement
         // Gradient handle: dragging only adjusts the transition length between adjacent segments, not note positions.
         if (HitGradientHandle(layout, position) is { } handle)
         {
-            var segment = Track!.Segments[handle.SegmentIndex];
+            var segment = Lyric!.Segments[handle.SegmentIndex];
             _drag = new DragState(DragKind.Gradient, handle.SegmentIndex, position,
                 layout.BeatAt(position.X), SegmentGradientBeats(segment), 0);
             CaptureMouse();
@@ -1278,7 +1364,7 @@ public sealed class PianoRollView : FrameworkElement
 
             if (index >= 0)
             {
-                var segment = Track!.Segments[index];
+                var segment = Lyric!.Segments[index];
                 var box = layout.NoteBox(segment.BeatStart, segment.BeatEnd, SemitoneOf(segment.DstPitch));
                 var kind = DragKindAt(box, position);
 
@@ -1294,7 +1380,7 @@ public sealed class PianoRollView : FrameworkElement
                     SetSingleNoteSelection(index);
                     _drag = new DragState(kind, index, position,
                         segment.BeatStart, segment.BeatEnd, SemitoneOf(segment.DstPitch));
-                    UpdateDragPreview(Track!, _drag);
+                    UpdateDragPreview(Lyric!, _drag);
                     CaptureMouse();
                     Cursor = kind == DragKind.Note ? Cursors.SizeAll : Cursors.SizeWE;
                 }
@@ -1319,7 +1405,7 @@ public sealed class PianoRollView : FrameworkElement
         {
             SetSinglePointSelection(pointIndex);
             _drag = new DragState(DragKind.Point, pointIndex, position,
-                Track!.PitchLine[pointIndex].Beat, 0, SemitoneOf(Track.PitchLine[pointIndex].Pitch, 0));
+                Lyric!.PitchLine[pointIndex].Beat, 0, SemitoneOf(Lyric.PitchLine[pointIndex].Pitch, 0));
             CaptureMouse();
             Cursor = Cursors.SizeAll;
         }
@@ -1340,7 +1426,7 @@ public sealed class PianoRollView : FrameworkElement
     {
         _selectedSegmentIds.Clear();
         _selectedPoints.Clear();
-        if (Track is { } track && index >= 0 && index < track.Segments.Count)
+        if (Lyric is { } track && index >= 0 && index < track.Segments.Count)
             _selectedSegmentIds.Add(track.Segments[index].Id);
         SelectedNoteIndex = index;
     }
@@ -1350,7 +1436,7 @@ public sealed class PianoRollView : FrameworkElement
     {
         _selectedSegmentIds.Clear();
         _selectedPoints.Clear();
-        if (Track is { } track && index >= 0 && index < track.PitchLine.Count)
+        if (Lyric is { } track && index >= 0 && index < track.PitchLine.Count)
             _selectedPoints.Add(track.PitchLine[index]);
         SelectedPitchIndex = index;
     }
@@ -1366,7 +1452,7 @@ public sealed class PianoRollView : FrameworkElement
     /// <summary>Start a group move using an already-selected note as the handle.</summary>
     private void StartMultiDrag(int index, Point position)
     {
-        var track = Track!;
+        var track = Lyric!;
         var segment = track.Segments[index];
         _drag = new DragState(DragKind.Note, index, position,
             segment.BeatStart, segment.BeatEnd, SemitoneOf(segment.DstPitch));
@@ -1377,7 +1463,7 @@ public sealed class PianoRollView : FrameworkElement
         Cursor = Cursors.SizeAll;
     }
 
-    private List<int> SelectedSegmentIndices(TrackDocument track)
+    private List<int> SelectedSegmentIndices(LyricDocument track)
     {
         var result = new List<int>(_selectedSegmentIds.Count);
         for (var i = 0; i < track.Segments.Count; i++)
@@ -1452,6 +1538,13 @@ public sealed class PianoRollView : FrameworkElement
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+
+        if (_panning)
+        {
+            PanTo(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
 
         if (_drag is null)
         {
@@ -1542,7 +1635,7 @@ public sealed class PianoRollView : FrameworkElement
         }
 
         // Dragging either end only resizes the length, not the pitch.
-        UpdateDragPreview(Track!, _drag);
+        UpdateDragPreview(Lyric!, _drag);
 
         InvalidateVisual();
         e.Handled = true;
@@ -1552,7 +1645,7 @@ public sealed class PianoRollView : FrameworkElement
     /// Compute the preview range for this drag and the shifts for subsequent notes:
     /// moving left does not cross the previous note (overlap is forbidden); moving right past the next note shifts it and all following notes.
     /// </summary>
-    private static void UpdateDragPreview(TrackDocument track, DragState drag)
+    private static void UpdateDragPreview(LyricDocument track, DragState drag)
     {
         drag.Shifts.Clear();
         drag.Previews.Clear();
@@ -1634,7 +1727,7 @@ public sealed class PianoRollView : FrameworkElement
     /// Multi-move preview: all selected notes move together keeping their relative positions; moving left does not cross preceding unselected notes,
     /// and moving right into an unselected note shifts it and everything after it while preserving the original spacing.
     /// </summary>
-    private static void UpdateMultiPreview(TrackDocument track, DragState drag)
+    private static void UpdateMultiPreview(LyricDocument track, DragState drag)
     {
         var selectedIds = new HashSet<string>();
         foreach (var index in drag.MultiIndices)
@@ -1764,17 +1857,15 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
-        var wasPlayhead = _drag.Kind == DragKind.Playhead;
-        var originalPlayhead = _drag.OriginalBeat;
         CommitDrag(_drag);
         _drag = null;
         ReleaseMouseCapture();
         Cursor = Cursors.Arrow;
 
-        // After release the playhead returns to the plot center and the track shifts accordingly; a click without dragging keeps the viewport fixed.
-        if (wasPlayhead && PlayheadBeat is double beat && Math.Abs(beat - originalPlayhead) > 0.001)
-            CenterViewOnPlayhead(beat);
-
+        // The playhead stays where the mouse released it. Re-centering the viewport here scrolls the
+        // content under the cursor, which makes the line jump back to the middle and reads as a
+        // rejected drag. The viewport still follows the playhead while it is driven by playback,
+        // through OnPlayheadChanged.
         InvalidateVisual();
         e.Handled = true;
     }
@@ -1782,8 +1873,15 @@ public sealed class PianoRollView : FrameworkElement
     protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
-        if (_drag is null)
+        if (_drag is null && !_panning)
             Cursor = Cursors.Arrow;
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (_panning)
+            EndPan();
     }
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
@@ -1822,7 +1920,7 @@ public sealed class PianoRollView : FrameworkElement
         if (drag.Kind == DragKind.Playhead)
             return;
 
-        var track = Track;
+        var track = Lyric;
         if (track is null)
             return;
 
@@ -1886,14 +1984,15 @@ public sealed class PianoRollView : FrameworkElement
             MovePitchPoints(track, other.Id, delta, 0);
         }
 
-        // Rebuild transition nodes after overlap changes and push regular control points out of overlap regions.
+        // Overlaps are never allowed to survive an edit: resolve them before transitions are rebuilt.
+        SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
 
         EditCommitted?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Commit a multi-move: selected notes shift together, independently box-selected points move too, and collided notes are pushed back.</summary>
-    private void CommitMultiDrag(TrackDocument track, DragState drag)
+    private void CommitMultiDrag(LyricDocument track, DragState drag)
     {
         var selectedIds = new HashSet<string>();
         foreach (var index in drag.MultiIndices)
@@ -1945,6 +2044,7 @@ public sealed class PianoRollView : FrameworkElement
             MovePitchPoints(track, other.Id, shift, 0);
         }
 
+        SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
         EditCommitted?.Invoke(this, EventArgs.Empty);
     }
@@ -1973,7 +2073,7 @@ public sealed class PianoRollView : FrameworkElement
     /// <summary>Ctrl+A: select every note and every visible pitch control point of the track.</summary>
     private void SelectAll()
     {
-        var track = Track;
+        var track = Lyric;
         if (track is null)
             return;
 
@@ -2072,7 +2172,7 @@ public sealed class PianoRollView : FrameworkElement
             return;
         _pitchZoom = zoom;
 
-        var (autoLow, autoHigh) = PitchRange(Track?.Segments ?? [], Track?.PitchLine ?? [], RestRegions);
+        var (autoLow, autoHigh) = PitchRange(Lyric?.Segments ?? [], Lyric?.PitchLine ?? [], RestRegions);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
         var desiredLow = semitone - fraction * (rows - 1);
@@ -2083,7 +2183,7 @@ public sealed class PianoRollView : FrameworkElement
 
     private void DeleteSelection()
     {
-        var track = Track;
+        var track = Lyric;
         if (track is null)
             return;
 
@@ -2110,7 +2210,7 @@ public sealed class PianoRollView : FrameworkElement
 
     /// <summary>After resizing a note, its Pitch nodes are mapped proportionally into the new beat range.</summary>
     private static void ScalePitchPoints(
-        TrackDocument track, string segmentId,
+        LyricDocument track, string segmentId,
         double originalStart, double originalEnd, double start, double end)
     {
         var originalLength = originalEnd - originalStart;
@@ -2136,7 +2236,7 @@ public sealed class PianoRollView : FrameworkElement
 
     /// <summary>Points owned by the given note move with it (beat and pitch together).</summary>
     private static void MovePitchPoints(
-        TrackDocument track, string segmentId, double beatDelta, int semitoneDelta)
+        LyricDocument track, string segmentId, double beatDelta, int semitoneDelta)
     {
         if (Math.Abs(beatDelta) < 1e-9 && semitoneDelta == 0)
             return;
@@ -2159,7 +2259,7 @@ public sealed class PianoRollView : FrameworkElement
 
     private void AddPitchPoint(double beat, int semitone)
     {
-        var track = Track;
+        var track = Lyric;
         if (track is null)
             return;
 
@@ -2298,7 +2398,7 @@ public sealed class PianoRollView : FrameworkElement
 
     private int SegmentIndexOf(string segmentId)
     {
-        var segments = Track?.Segments;
+        var segments = Lyric?.Segments;
         if (segments is null)
             return -1;
 
@@ -2316,7 +2416,7 @@ public sealed class PianoRollView : FrameworkElement
         if (ActualWidth <= 8 || ActualHeight <= 8)
             return null;
 
-        var track = Track;
+        var track = Lyric;
         return BuildLayout(
             new Size(ActualWidth, ActualHeight),
             track?.Segments ?? [],
@@ -2390,7 +2490,20 @@ public sealed class PianoRollView : FrameworkElement
     }
 
     /// <summary>The playhead is clamped between beat 1 and the end of the track.</summary>
-    private double ClampBeat(double beat) => Math.Clamp(beat, 1, Math.Max(1, TotalBeats()));
+    /// <summary>
+    /// Clamps a beat to the timeline. The upper bound is the visible end rather than the last note,
+    /// so the playhead can still be scrubbed through rests and empty space after the song ends.
+    /// </summary>
+    private double ClampBeat(double beat)
+    {
+        var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
+        var visibleEnd = _viewStartBeat + plotWidth / PxPerBeatFor(plotWidth);
+        return Math.Clamp(beat, 1, Math.Max(Math.Max(1, TotalBeats()), visibleEnd));
+    }
+
+    /// <summary>Pixels per beat at the current horizontal zoom: the single source of truth for the layout, clamping and centering.</summary>
+    private double PxPerBeatFor(double plotWidth) =>
+        Math.Max(4, Math.Max(MinPxPerBeat, plotWidth / Math.Max(1, TotalBeats())) * _beatZoom);
 
     /// <summary>Hit test for the BGM block: the whole fixed lane row is grabbable where the block is visible.</summary>
     private bool HitBgmBlock(RollLayout layout, Point position)

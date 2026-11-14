@@ -1,5 +1,4 @@
 using VocalB1.Core.Abstractions;
-using VocalB1.Core.Chorus;
 using VocalB1.Core.Configuration;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Models;
@@ -30,10 +29,10 @@ internal static class Program
 
         TestPitchMath();
         TestProjectJson();
+        TestNodeGraph();
         TestDictionary();
         TestLyricPhrase();
         TestWaveform();
-        TestChorus();
         TestSegmentLayout();
         await TestEngineHandshakeAsync(runRender);
         await TestRenderAsync(runRender);
@@ -69,7 +68,7 @@ internal static class Program
     }
 
     // ------------------------------------------------------------------
-    // 2. Project JSON round-trip (multiple tracks, independent parameters)
+    // 2. Project JSON round-trip (three data-block libraries)
     // ------------------------------------------------------------------
     private static void TestProjectJson()
     {
@@ -79,59 +78,93 @@ internal static class Program
             Bpm = 100,
             BeatsPerBar = 4,
             BeatUnit = 4,
-            Tracks =
+        };
+
+        var leadLyric = new LyricDocument
+        {
+            Name = "主唱歌词",
+            Segments =
             [
-                new TrackDocument
-                {
-                    Name = "主唱",
-                    LibraryRoot = @"voicebank\lead",
-                    Segments =
-                    [
-                        new VoiceSegment { Audio = @"voicebank\_で.wav", SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2 },
-                        new VoiceSegment { Audio = @"voicebank\_い.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 3.5 },
-                    ],
-                    PitchLine =
-                    [
-                        new PitchPoint { Beat = 1, Pitch = "G4" },
-                        new PitchPoint { Beat = 3.5, Pitch = null },
-                    ],
-                },
-                new TrackDocument
-                {
-                    Name = "和声",
-                    LibraryRoot = @"voicebank\harmony",
-                    Segments =
-                    [
-                        new VoiceSegment { Audio = @"voicebank\_あ.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 1, BeatEnd = 4 },
-                    ],
-                },
+                new VoiceSegment { Audio = @"voicebank\_で.wav", SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2, Vowel = "e" },
+                new VoiceSegment { Audio = @"voicebank\_い.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 3.5, Vowel = "i" },
+            ],
+            PitchLine =
+            [
+                new PitchPoint { Beat = 1, Pitch = "G4" },
+                new PitchPoint { Beat = 3.5, Pitch = null },
             ],
         };
-        project.Tracks[0].Settings.ApScale = 0.42;
-        project.Tracks[1].Settings.ApScale = 0.11;
-        project.Tracks[1].Settings.BandRatios = [1, 2, 3, 4, 5, 6, 7, 8];
+        var harmonyLyric = new LyricDocument
+        {
+            Name = "和声歌词",
+            Segments =
+            [
+                new VoiceSegment { Audio = @"voicebank\_あ.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 1, BeatEnd = 4, Vowel = "a" },
+            ],
+        };
+        var leadParameters = new ParameterSet { Name = "主唱参数" };
+        leadParameters.Base.ApScale = 0.42;
+        var harmonyParameters = new ParameterSet { Name = "和声参数" };
+        harmonyParameters.Base.ApScale = 0.11;
+        harmonyParameters.Base.BandRatios = [1, 2, 3, 4, 5, 6, 7, 8];
+        var harmonyVowel = harmonyParameters.Graph.Add(NodeKind.VowelManager, 30, 24);
+        harmonyVowel.FormantIndex = 1;
+        var harmonyPosition = harmonyParameters.Graph.Add(NodeKind.FormantPosition, 300, 24);
+        var harmonyOutput = harmonyParameters.Graph.Add(NodeKind.ParameterOutput, 560, 24);
+        harmonyParameters.Graph.Connect(harmonyVowel.Id, 0, harmonyPosition.Id, 1);
+        harmonyParameters.Graph.Connect(harmonyPosition.Id, 0, harmonyOutput.Id,
+            ParameterNodeGraph.PositionSocket);
+
+        project.Lyrics.AddRange([leadLyric, harmonyLyric]);
+        project.ParameterSets.AddRange([leadParameters, harmonyParameters]);
+        project.Singers.Add(new SingerDocument
+        {
+            Name = "主唱",
+            LibraryRoot = @"voicebank\lead",
+            LyricId = leadLyric.Id,
+            ParameterSetId = leadParameters.Id,
+        });
+        project.Singers.Add(new SingerDocument
+        {
+            Name = "和声",
+            LibraryRoot = @"voicebank\harmony",
+            LyricId = harmonyLyric.Id,
+            ParameterSetId = harmonyParameters.Id,
+        });
 
         var json = ProjectJson.Serialize(project);
         var back = ProjectJson.Deserialize(json);
 
         Check("JSON 往返：名称", back.Name == "自检工程");
-        Check("JSON 往返：音轨数", back.Tracks.Count == 2);
-        Check("JSON 往返：音轨名与声库独立",
-            back.Tracks[0].Name == "主唱" && back.Tracks[1].Name == "和声"
-            && back.Tracks[0].LibraryRoot == @"voicebank\lead"
-            && back.Tracks[1].LibraryRoot == @"voicebank\harmony");
-        Check("JSON 往返：各轨段数", back.Tracks[0].Segments.Count == 2 && back.Tracks[1].Segments.Count == 1);
-        Check("JSON 往返：参数按轨独立",
-            Math.Abs(back.Tracks[0].Settings.ApScale - 0.42) < 1e-9
-            && Math.Abs(back.Tracks[1].Settings.ApScale - 0.11) < 1e-9);
-        Check("JSON 往返：频段增益按轨保留",
-            back.Tracks[1].Settings.BandRatios is [1, 2, 3, 4, 5, 6, 7, 8]);
-        Check("JSON 往返：音高线端点", back.Tracks[0].PitchLine.Count == 2 && back.Tracks[0].PitchLine[0].Pitch == "G4");
-        Check("JSON 往返：无声端点保持 null", back.Tracks[0].PitchLine[1].Pitch is null);
-        Check("JSON 使用 camelCase", json.Contains("\"beatStart\"") && json.Contains("\"pitchLine\"") && json.Contains("\"tracks\""));
+        Check("JSON 往返：三类数据块数量",
+            back.Lyrics.Count == 2 && back.ParameterSets.Count == 2 && back.Singers.Count == 2);
+        Check("JSON 往返：歌手的声库与绑定独立",
+            back.Singers[0].LibraryRoot == @"voicebank\lead"
+            && back.Singers[1].LibraryRoot == @"voicebank\harmony"
+            && back.Singers[0].LyricId == back.Lyrics[0].Id
+            && back.Singers[1].ParameterSetId == back.ParameterSets[1].Id);
+        Check("JSON 往返：歌词段数与元音",
+            back.Lyrics[0].Segments.Count == 2 && back.Lyrics[1].Segments.Count == 1
+            && back.Lyrics[0].Segments[0].Vowel == "e");
+        Check("JSON 往返：参数按数据块独立",
+            Math.Abs(back.ParameterSets[0].Base.ApScale - 0.42) < 1e-9
+            && Math.Abs(back.ParameterSets[1].Base.ApScale - 0.11) < 1e-9);
+        Check("JSON 往返：频段增益保留",
+            back.ParameterSets[1].Base.BandRatios is [1, 2, 3, 4, 5, 6, 7, 8]);
+        Check("JSON 往返：节点图保留",
+            back.ParameterSets[1].Graph.GroupFor("formant.F2") is not null
+            && back.ParameterSets[1].Graph.Nodes.Count(n => n.Kind == NodeKind.ParameterOutput) == 1
+            && back.ParameterSets[1].Graph.Nodes.Any(n => n.Kind == NodeKind.VowelManager)
+            && back.ParameterSets[1].Graph.Links.Count == 2);
+        Check("JSON 往返：音高线端点", back.Lyrics[0].PitchLine.Count == 2 && back.Lyrics[0].PitchLine[0].Pitch == "G4");
+        Check("JSON 往返：无声端点保持 null", back.Lyrics[0].PitchLine[1].Pitch is null);
+        Check("JSON 使用 camelCase",
+            json.Contains("\"beatStart\"") && json.Contains("\"pitchLine\"")
+            && json.Contains("\"lyrics\"") && json.Contains("\"parameterSets\"") && json.Contains("\"singers\""));
+        Check("v3 工程不是只读", !back.IsLegacyReadOnly);
 
-        var issues = ProjectValidator.Validate(project.Tracks[0], project, checkAudioFiles: false);
-        Check("校验器接受合法音轨", !ProjectValidator.HasError(issues),
+        var issues = ProjectValidator.Validate(project, checkAudioFiles: false);
+        Check("校验器接受合法工程", !ProjectValidator.HasError(issues),
             string.Join("; ", issues.Select(i => i.Message)));
 
         const string legacyJson = """
@@ -146,10 +179,209 @@ internal static class Program
             }
             """;
         var legacy = ProjectJson.Deserialize(legacyJson);
-        Check("旧格式工程迁移为单音轨",
-            legacy.Tracks.Count == 1 && legacy.Tracks[0].Segments.Count == 1
-            && Math.Abs(legacy.Tracks[0].Settings.ApScale - 0.33) < 1e-9);
+        Check("旧格式工程转换为 v3 只读对象",
+            legacy.IsLegacyReadOnly && legacy.Singers.Count == 1 && legacy.Lyrics.Count == 1
+            && legacy.Lyrics[0].Segments.Count == 1
+            && Math.Abs(legacy.ParameterSets[0].Base.ApScale - 0.33) < 1e-9);
     }
+
+    // ------------------------------------------------------------------
+    // 2b. Node graph evaluation
+    // ------------------------------------------------------------------
+    private static void TestNodeGraph()
+    {
+        var profile = VoicebankFormantProfile.Load(null);
+
+        Check("节点目录：包含时间输入、数学与声库/汇总节点",
+            NodeCatalog.All.Count >= 26
+            && NodeCatalog.All.Any(d => d.Kind == NodeKind.TimeInput)
+            && NodeCatalog.All.Any(d => d.Kind == NodeKind.VoicebankData)
+            && NodeCatalog.All.Any(d => d.Kind == NodeKind.FieldDecompose)
+            && NodeCatalog.All.Count(d => d.Category == NodeCatalog.CategoryMath) >= 10
+            && NodeCatalog.All.Count(d => d.Category == NodeCatalog.CategorySummary) == 4);
+
+        // Four arithmetic nodes fill the four breath inputs of the summary node.
+        var arithmetic = new ParameterNodeGraph();
+        var breath = arithmetic.Add(NodeKind.BreathParameters, 300, 0);
+        var outNode = arithmetic.Add(NodeKind.ParameterOutput, 600, 0);
+        arithmetic.Connect(breath.Id, 0, outNode.Id, ParameterNodeGraph.BreathSocket);
+        foreach (var (kind, first, second, index) in new[]
+                 {
+                     (NodeKind.Add, 1.0, 2.0, 0),
+                     (NodeKind.Subtract, 5.0, 2.0, 1),
+                     (NodeKind.Multiply, 3.0, 4.0, 2),
+                     (NodeKind.Divide, 8.0, 2.0, 3),
+                 })
+        {
+            var left = arithmetic.Add(NodeKind.Number, 0, 0);
+            left.Value = first;
+            var right = arithmetic.Add(NodeKind.Number, 0, 100);
+            right.Value = second;
+            var op = arithmetic.Add(kind, 200, 0);
+            arithmetic.Connect(left.Id, 0, op.Id, 0);
+            arithmetic.Connect(right.Id, 0, op.Id, 1);
+            arithmetic.Connect(op.Id, 0, breath.Id, index);
+        }
+
+        var arithmeticValues = new NodeGraphEvaluator(arithmetic, Globals(), profile, key => 0)
+            .EvaluateOutputs();
+        Check("节点图：加减乘除写入气声汇总",
+            Math.Abs(arithmeticValues["breathyThr"] - 3) < 1e-9
+            && Math.Abs(arithmeticValues["apScale"] - 3) < 1e-9
+            && Math.Abs(arithmeticValues["apMax"] - 12) < 1e-9
+            && Math.Abs(arithmeticValues["breathGain"] - 4) < 1e-9);
+
+        var zero = new ParameterNodeGraph();
+        var zeroLeft = zero.Add(NodeKind.Number, 0, 0);
+        zeroLeft.Value = 7;
+        var zeroRight = zero.Add(NodeKind.Number, 0, 100);
+        zeroRight.Value = 0;
+        var zeroDivide = zero.Add(NodeKind.Divide, 200, 0);
+        var zeroBreath = zero.Add(NodeKind.BreathParameters, 400, 0);
+        var zeroOutput = zero.Add(NodeKind.ParameterOutput, 600, 0);
+        zero.Connect(zeroLeft.Id, 0, zeroDivide.Id, 0);
+        zero.Connect(zeroRight.Id, 0, zeroDivide.Id, 1);
+        zero.Connect(zeroDivide.Id, 0, zeroBreath.Id, 3);
+        zero.Connect(zeroBreath.Id, 0, zeroOutput.Id, ParameterNodeGraph.BreathSocket);
+        var zeroValues = new NodeGraphEvaluator(zero, Globals(), profile, key => 0).EvaluateOutputs();
+        Check("节点图：除零返回被除数",
+            zeroValues.TryGetValue("breathGain", out var divided) && Math.Abs(divided - 7) < 1e-9);
+
+        var graph = new ParameterNodeGraph();
+        var number = graph.Add(NodeKind.Number, 0, 0);
+        number.Value = 3;
+        var graphBreath = graph.Add(NodeKind.BreathParameters, 300, 0);
+        var output = graph.Add(NodeKind.ParameterOutput, 600, 0);
+        graph.Connect(number.Id, 0, graphBreath.Id, 3);
+        graph.Connect(graphBreath.Id, 0, output.Id, ParameterNodeGraph.BreathSocket);
+
+        var values = new NodeGraphEvaluator(graph, Globals(), profile, key => 1.0).EvaluateOutputs();
+        Check("节点图：数值节点写入气声汇总",
+            values.TryGetValue("breathGain", out var written) && Math.Abs(written - 3) < 1e-9,
+            values.TryGetValue("breathGain", out var v) ? v.ToString("F3") : "缺少输出");
+
+        var remap = new ParameterNodeGraph();
+        var source = remap.Add(NodeKind.Number, 0, 0);
+        source.Value = 5;
+        var map = remap.Add(NodeKind.MapRange, 200, 0);
+        map.SetInputDefault(1, 0);
+        map.SetInputDefault(2, 10);
+        map.SetInputDefault(3, 0);
+        map.SetInputDefault(4, 1);
+        var remapBreath = remap.Add(NodeKind.BreathParameters, 400, 0);
+        var remapOutput = remap.Add(NodeKind.ParameterOutput, 600, 0);
+        remap.Connect(source.Id, 0, map.Id, 0);
+        remap.Connect(map.Id, 0, remapBreath.Id, 1);
+        remap.Connect(remapBreath.Id, 0, remapOutput.Id, ParameterNodeGraph.BreathSocket);
+        var mapped = new NodeGraphEvaluator(remap, Globals(), profile, key => 1.0).EvaluateOutputs();
+        Check("节点图：范围映射钳制并重映射",
+            mapped.TryGetValue("apScale", out var ap) && Math.Abs(ap - 0.5) < 1e-9);
+
+        var cycle = new ParameterNodeGraph();
+        var a = cycle.Add(NodeKind.MathUnary, 0, 0);
+        var b = cycle.Add(NodeKind.MathUnary, 200, 0);
+        var cycleBreath = cycle.Add(NodeKind.BreathParameters, 400, 0);
+        var cycleOutput = cycle.Add(NodeKind.ParameterOutput, 600, 0);
+        cycle.Connect(a.Id, 0, b.Id, 0);
+        cycle.Connect(b.Id, 0, a.Id, 0);
+        cycle.Connect(b.Id, 0, cycleBreath.Id, 3);
+        cycle.Connect(cycleBreath.Id, 0, cycleOutput.Id, ParameterNodeGraph.BreathSocket);
+        var cycleDetected = false;
+        try
+        {
+            new NodeGraphEvaluator(cycle, Globals(), profile, key => 1.0).EvaluateOutputs();
+        }
+        catch (VocalB1.Core.Diagnostics.StageException)
+        {
+            cycleDetected = true;
+        }
+        Check("节点图：循环连接抛出结构化错误", cycleDetected);
+
+        var defaultGraph = ParameterNodeGraph.CreateFormantDefault();
+        var defaultValues = new NodeGraphEvaluator(defaultGraph, Globals("i"), profile,
+            key => ParameterKeys.Get(key).Default).EvaluateOutputs();
+        Check("节点图：默认图含四个汇总节点与一个输出节点",
+            defaultGraph.Nodes.Count(n => n.Kind == NodeKind.ParameterOutput) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.VoicebankData) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantPosition) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantGain) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantBandwidth) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.BreathParameters) == 1);
+        Check("节点图：默认图接通四路输出",
+            defaultGraph.WrittenKeys().Contains("formant.F1")
+            && defaultGraph.WrittenKeys().Contains("formant.BW7")
+            && defaultGraph.WrittenKeys().Contains("breathGain")
+            && Enumerable.Range(1, 7).All(i =>
+                defaultValues.ContainsKey($"{ParameterKeys.FormantPrefix}{i}")));
+
+        // An unwired summary input keeps the baseline value of its key (voicebank / lyric / settings).
+        var fallbackGraph = new ParameterNodeGraph();
+        var fallbackGroup = fallbackGraph.Add(NodeKind.FormantPosition, 0, 0);
+        var fallbackOutput = fallbackGraph.Add(NodeKind.ParameterOutput, 300, 0);
+        fallbackGraph.Connect(fallbackGroup.Id, 0, fallbackOutput.Id, ParameterNodeGraph.PositionSocket);
+        var fallbackValues = new NodeGraphEvaluator(fallbackGraph, Globals(), profile, key => 1234)
+            .EvaluateOutputs();
+        Check("节点图：汇总未连线输入使用默认值",
+            Math.Abs(fallbackValues["formant.F3"] - 1234) < 1e-9);
+
+        // Field decompose reads the selected field from the voicebank bundle.
+        var fieldGraph = new ParameterNodeGraph();
+        var data = fieldGraph.Add(NodeKind.VoicebankData, 0, 0);
+        var decompose = fieldGraph.Add(NodeKind.FieldDecompose, 200, 0);
+        decompose.Field = "formant.F2";
+        var fieldBreath = fieldGraph.Add(NodeKind.BreathParameters, 400, 0);
+        var fieldOutput = fieldGraph.Add(NodeKind.ParameterOutput, 600, 0);
+        fieldGraph.Connect(data.Id, 0, decompose.Id, 0);
+        fieldGraph.Connect(decompose.Id, 0, fieldBreath.Id, 3);
+        fieldGraph.Connect(fieldBreath.Id, 0, fieldOutput.Id, ParameterNodeGraph.BreathSocket);
+        var fieldValues = new NodeGraphEvaluator(fieldGraph, Globals("i"), profile, key => 1.0)
+            .EvaluateOutputs();
+        Check("节点图：字段分解输出声库字段",
+            Math.Abs(fieldValues["breathGain"] - profile.Resolve("i", string.Empty)[1]) < 1e-9,
+            fieldValues["breathGain"].ToString("F1"));
+
+        // Bundle sockets only accept a matching bundle; scalars cannot be plugged into the output.
+        var typed = new ParameterNodeGraph();
+        var typedNumber = typed.Add(NodeKind.Number, 0, 0);
+        var typedOutput = typed.Add(NodeKind.ParameterOutput, 300, 0);
+        var typedData = typed.Add(NodeKind.VoicebankData, 0, 200);
+        Check("节点图：插口类型不匹配时拒绝连线",
+            !typed.Connect(typedNumber.Id, 0, typedOutput.Id, ParameterNodeGraph.BreathSocket)
+            && !typed.Connect(typedData.Id, 0, typedOutput.Id, ParameterNodeGraph.PositionSocket));
+
+        // Legacy graphs used one output node per key; migration folds them into the summary sockets.
+        var legacyGraph = new ParameterNodeGraph();
+        var legacyVowel = legacyGraph.Add(NodeKind.VowelManager, 0, 0);
+        legacyVowel.FormantIndex = 1;
+        var legacyOutput = legacyGraph.Add(NodeKind.ParameterOutput, 300, 0);
+        legacyOutput.Text = "formant.F2";
+        legacyGraph.Links.Add(new NodeLink
+        {
+            FromNode = legacyVowel.Id, FromSocket = 0, ToNode = legacyOutput.Id, ToSocket = 0,
+        });
+        var migrated = legacyGraph.MigrateLegacyOutputs();
+        Check("节点图：旧单键输出迁移为汇总节点",
+            migrated && legacyGraph.OutputNode() is not null
+            && legacyGraph.GroupFor("formant.F2") is not null
+            && legacyGraph.Nodes.Count(n => n.Kind == NodeKind.ParameterOutput) == 1
+            && Math.Abs(new NodeGraphEvaluator(legacyGraph, Globals(), profile,
+                key => ParameterKeys.Get(key).Default).EvaluateOutputs()["formant.F2"]
+                - ParameterKeys.Get("formant.F2").Default) < 1e-9);
+
+        var overlay = new ParameterNodeGraph();
+        var overlayOutput = overlay.Add(NodeKind.ParameterOutput, 0, 0);
+        var overlayBreath = overlay.Add(NodeKind.BreathParameters, 0, 200);
+        overlay.Connect(overlayBreath.Id, 0, overlayOutput.Id, ParameterNodeGraph.BreathSocket);
+        var shared = new Dictionary<string, double>(StringComparer.Ordinal) { ["breathGain"] = 2.0 };
+        var overlayValues = new NodeGraphEvaluator(overlay, Globals(), profile,
+            key => 1.0, key => shared.TryGetValue(key, out var value) ? value : 1.0)
+            .EvaluateOutputs();
+        Check("节点图：歌手叠加图未连线时继承共享值",
+            overlayValues.TryGetValue("breathGain", out var inherited) && Math.Abs(inherited - 2.0) < 1e-9);
+    }
+
+    private static FrameGlobals Globals(string vowel = "a") =>
+        new(0, 1, 0, 440, 9, vowel, string.Empty, 0, 1, 0);
 
     // ------------------------------------------------------------------
     // 3. User dictionary
@@ -299,29 +531,29 @@ internal static class Program
         Check("歌词解析：空白成为休止词",
             parsed.Words[1].IsRest && parsed.Words[1].Projection == " ");
 
-        var track = new TrackDocument();
-        var phrase = track.LyricPhrase;
+        var lyric = new LyricDocument();
+        var phrase = lyric.Phrase;
         var applied = LyricPhraseComposer.Apply(
-            phrase, parsed.Words, track, 1.0, 0, "D4");
+            phrase, parsed.Words, lyric, 1.0, 0, "D4");
         Check("歌词应用：每个发音单位生成一个音块",
-            track.Segments.Count == 3 && applied.Added == 3 && applied.Reused == 0,
-            $"{track.Segments.Count} 段 / 新增 {applied.Added}");
+            lyric.Segments.Count == 3 && applied.Added == 3 && applied.Reused == 0,
+            $"{lyric.Segments.Count} 段 / 新增 {applied.Added}");
         Check("歌词应用：拍位按单位依次排开（休止也占拍）",
-            Math.Abs(track.Segments[0].BeatStart - 1) < 1e-9
-            && Math.Abs(track.Segments[1].BeatStart - 2) < 1e-9
-            && Math.Abs(track.Segments[2].BeatStart - 4) < 1e-9
+            Math.Abs(lyric.Segments[0].BeatStart - 1) < 1e-9
+            && Math.Abs(lyric.Segments[1].BeatStart - 2) < 1e-9
+            && Math.Abs(lyric.Segments[2].BeatStart - 4) < 1e-9
             && Math.Abs(phrase.Words[1].BeatStart - 3) < 1e-9,
-            string.Join(", ", track.Segments.Select(s => s.BeatStart)));
+            string.Join(", ", lyric.Segments.Select(s => s.BeatStart)));
         Check("文本投影：原歌词", phrase.Text == "きゃ あ", phrase.Text);
         Check("对象真值：单位已绑定音块",
             phrase.Words[0].Units.All(u => u.SegmentId is not null)
-            && phrase.Words[2].Units[0].SegmentId == track.Segments[2].Id);
+            && phrase.Words[2].Units[0].SegmentId == lyric.Segments[2].Id);
 
         var firstUnitSegment = phrase.Words[0].Units[0].SegmentId;
 
         // Full re-parse + object diff: "あ" is replaced by "い" while "きゃ" and the space keep their melody.
         var reparsed = LyricPhraseParser.Parse(dictionary, "きゃ い", dir, null);
-        var diff = LyricPhraseComposer.Apply(phrase, reparsed.Words, track, 1.0, 0, "D4");
+        var diff = LyricPhraseComposer.Apply(phrase, reparsed.Words, lyric, 1.0, 0, "D4");
         Check("歌词 diff：相同词复用旋律",
             phrase.Words[0].Units[0].SegmentId == firstUnitSegment
             && Math.Abs(phrase.Words[0].BeatStart - 1) < 1e-9);
@@ -333,13 +565,13 @@ internal static class Program
             && Math.Abs(phrase.Words[2].BeatStart - 4) < 1e-9
             && Math.Abs(phrase.Words[2].BeatEnd - 5) < 1e-9,
             $"{phrase.Text} / {phrase.Words[2].BeatStart}-{phrase.Words[2].BeatEnd}");
-        Check("歌词 diff：旧词音块已移除", track.Segments.Count == 3);
+        Check("歌词 diff：旧词音块已移除", lyric.Segments.Count == 3);
 
         // Deleting a rest word pulls the following words left.
         var restWord = phrase.Words[1];
         var restLength = restWord.BeatEnd - restWord.BeatStart;
         var followingStart = phrase.Words[2].BeatStart;
-        LyricPhraseComposer.RemoveWord(phrase, restWord, track, pullFollowing: true);
+        LyricPhraseComposer.RemoveWord(phrase, restWord, lyric, pullFollowing: true);
         Check("删除休止：后续单位前移",
             phrase.Text == "きゃい"
             && Math.Abs(phrase.Words[1].BeatStart - (followingStart - restLength)) < 1e-9,
@@ -349,13 +581,13 @@ internal static class Program
         var wordToMute = phrase.Words[0];
         var muteStart = wordToMute.BeatStart;
         var muteEnd = wordToMute.BeatEnd;
-        LyricPhraseComposer.MuteWord(phrase, wordToMute, track);
+        LyricPhraseComposer.MuteWord(phrase, wordToMute, lyric);
         Check("删除歌词：整词发音单位变为同长休止",
             wordToMute.IsRest && wordToMute.Units.Count == 2
             && Math.Abs(wordToMute.BeatStart - muteStart) < 1e-9
             && Math.Abs(wordToMute.BeatEnd - muteEnd) < 1e-9);
         Check("删除歌词：音块移除，文本投影为空格",
-            track.Segments.Count == 1
+            lyric.Segments.Count == 1
             && phrase.Text == "  " + phrase.Words[1].Surface,
             phrase.Text);
         Check("删除歌词：原字符仍保留在单位上",
@@ -375,21 +607,21 @@ internal static class Program
                 },
                 "x", dir, null).MissingAudio.Count == 1);
 
-        // Persistence: the phrase is part of the track and survives save/load, segment ids included.
-        var project = new ProjectDocument { Name = "歌词持久化", Tracks = [track] };
+        // Persistence: the phrase is part of the lyric data-block and survives save/load, segment ids included.
+        var project = new ProjectDocument { Name = "歌词持久化", Lyrics = [lyric] };
         var json = ProjectJson.Serialize(project);
         var loaded = ProjectJson.Deserialize(json);
         Check("歌词持久化：JSON 往返保留词与单位",
-            loaded.Tracks[0].LyricPhrase.Words.Count == phrase.Words.Count
-            && loaded.Tracks[0].LyricPhrase.Text == phrase.Text,
-            loaded.Tracks[0].LyricPhrase.Text);
+            loaded.Lyrics[0].Phrase.Words.Count == phrase.Words.Count
+            && loaded.Lyrics[0].Phrase.Text == phrase.Text,
+            loaded.Lyrics[0].Phrase.Text);
         Check("歌词持久化：休止与音块身份保留",
-            loaded.Tracks[0].LyricPhrase.Words[0].IsRest
-            && loaded.Tracks[0].LyricPhrase.Words[0].Units[0].Text == "きゃ"
-            && loaded.Tracks[0].LyricPhrase.Words[1].Units[0].SegmentId == phrase.Words[1].Units[0].SegmentId);
+            loaded.Lyrics[0].Phrase.Words[0].IsRest
+            && loaded.Lyrics[0].Phrase.Words[0].Units[0].Text == "きゃ"
+            && loaded.Lyrics[0].Phrase.Words[1].Units[0].SegmentId == phrase.Words[1].Units[0].SegmentId);
 
-        // Old projects without a lyric phrase rebuild it from their segments.
-        var legacyTrack = new TrackDocument
+        // Old data without a lyric phrase rebuilds it from the score segments.
+        var legacyLyric = new LyricDocument
         {
             Segments =
             [
@@ -398,12 +630,28 @@ internal static class Program
             ],
         };
         var legacy = ProjectJson.Deserialize(
-            ProjectJson.Serialize(new ProjectDocument { Tracks = [legacyTrack] }).Replace(
-                "\"lyricPhrase\": {", "\"lyricPhraseDisabled\": {", StringComparison.Ordinal));
-        Check("旧工程：无歌词对象时按段重建",
-            legacy.Tracks[0].LyricPhrase.Words.Count == 2
-            && legacy.Tracks[0].LyricPhrase.Text == "あい",
-            legacy.Tracks[0].LyricPhrase.Text);
+            ProjectJson.Serialize(new ProjectDocument { Lyrics = [legacyLyric] }).Replace(
+                "\"phrase\": {", "\"phraseDisabled\": {", StringComparison.Ordinal));
+        Check("旧数据：无歌词对象时按段重建",
+            legacy.Lyrics[0].Phrase.Words.Count == 2
+            && legacy.Lyrics[0].Phrase.Text == "あい",
+            legacy.Lyrics[0].Phrase.Text);
+
+        // Legacy projects may contain stacked segments; loading must push them apart (no overlaps allowed).
+        var stackedLyric = new LyricDocument
+        {
+            Segments =
+            [
+                new VoiceSegment { Audio = "x.wav", BeatStart = 1, BeatEnd = 3 },
+                new VoiceSegment { Audio = "y.wav", BeatStart = 2, BeatEnd = 4 },
+            ],
+        };
+        var normalized = ProjectJson.Deserialize(
+            ProjectJson.Serialize(new ProjectDocument { Lyrics = [stackedLyric] })).Lyrics[0];
+        Check("旧数据：载入时消除重叠发音段",
+            SegmentLayout.Overlaps(normalized).Count == 0
+            && Math.Abs(normalized.Segments[1].BeatStart - 3) < 1e-9,
+            string.Join("; ", normalized.Segments.Select(s => $"{s.BeatStart:0.##}-{s.BeatEnd:0.##}")));
     }
 
     // ------------------------------------------------------------------
@@ -444,142 +692,6 @@ internal static class Program
         Check("音轨合并：输出为立体声", mixedInfo.Channels == 2);
         Check("音轨合并：振幅按帧相加", Math.Abs(WavReader.ReadPeaks(mixed, 256).PeakAmplitude - 0.7) < 0.02,
             WavReader.ReadPeaks(mixed, 256).PeakAmplitude.ToString("F3"));
-    }
-
-    // ------------------------------------------------------------------
-    // 5b. Chorus mode (stage math, persistence repair, processor output depth)
-    // ------------------------------------------------------------------
-    private static void TestChorus()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest");
-        Directory.CreateDirectory(dir);
-
-        Check("合唱：拍位吸附到 0.25 拍", Math.Abs(ChorusMath.SnapBeat(2.37) - 2.25) < 1e-9,
-            ChorusMath.SnapBeat(2.37).ToString("F3"));
-        var (leftGain, rightGain) = ChorusMath.PanGains(-5, 10);
-        Check("合唱：舞台最左侧不消失", leftGain > rightGain && leftGain > 0.1,
-            $"L={leftGain:F3} R={rightGain:F3}");
-
-        var path = new List<ChorusKeyframe>
-        {
-            new() { Beat = 1, X = -3, Y = 1 },
-            new() { Beat = 5, X = 3, Y = 2 },
-        };
-        var middle = ChorusMath.Evaluate(path, 3);
-        Check("合唱：两点路径中点线性", Math.Abs(middle.X) < 1e-6 && Math.Abs(middle.Y - 1.5) < 1e-6,
-            $"{middle.X:F3},{middle.Y:F3}");
-
-        var unsorted = new List<ChorusKeyframe>
-        {
-            new() { Beat = 5, X = 3, Y = 2 },
-            new() { Beat = 1, X = -3, Y = 1 },
-        };
-        var unsortedMiddle = ChorusMath.Evaluate(unsorted, 3);
-        Check("合唱：乱序关键帧仍按拍位插值", Math.Abs(unsortedMiddle.X) < 1e-6,
-            unsortedMiddle.X.ToString("F3"));
-
-        var project = new ProjectDocument
-        {
-            Chorus = new ChorusDocument
-            {
-                StageWidth = 12,
-                MicY = -1.5,
-                Singers =
-                [
-                    new ChorusSinger
-                    {
-                        Name = "S1",
-                        Path = [new ChorusKeyframe { Beat = 2, X = 1, Y = 2 }],
-                    },
-                ],
-                Formations =
-                [
-                    new ChorusFormationPreset
-                    {
-                        Name = "队形",
-                        Positions = [new ChorusFormationPoint { X = 1, Y = 2 }],
-                    },
-                ],
-            },
-        };
-        var loaded = ProjectJson.Deserialize(ProjectJson.Serialize(project));
-        Check("合唱：工程往返保留舞台与歌手",
-            Math.Abs(loaded.Chorus.StageWidth - 12) < 1e-9
-            && loaded.Chorus.Singers.Count == 1
-            && Math.Abs(loaded.Chorus.Singers[0].Path[0].Y - 2) < 1e-9);
-        Check("合唱：工程往返保留导入队形",
-            loaded.Chorus.Formations.Count == 1 && loaded.Chorus.Formations[0].Positions.Count == 1);
-
-        // Non-finite values are repaired on load instead of reaching the STFT and silencing the audio.
-        var repaired = ProjectJson.Deserialize(
-            """
-            {
-              "chorus": {
-                "stageWidth": "NaN",
-                "micY": "NaN",
-                "singers": [ { "trackId": "t1", "enabled": true,
-                  "path": [ { "beat": 1, "x": "NaN", "y": 1 } ] } ]
-              }
-            }
-            """);
-        Check("合唱：加载时修复无效舞台参数",
-            double.IsFinite(repaired.Chorus.StageWidth) && double.IsFinite(repaired.Chorus.MicY),
-            $"{repaired.Chorus.StageWidth}/{repaired.Chorus.MicY}");
-        Check("合唱：加载时剔除无效关键帧并回退中心",
-            repaired.Chorus.Singers[0].Path.Count == 1 && repaired.Chorus.Singers[0].Path[0].X == 0);
-
-        var invalid = new ProjectDocument
-        {
-            Chorus = new ChorusDocument
-            {
-                StageWidth = -1,
-                Singers = [new ChorusSinger { Name = "坏歌手", Enabled = true }],
-            },
-        };
-        var track = new TrackDocument();
-        invalid.Tracks.Add(track);
-        var issues = ProjectValidator.Validate(track, invalid, checkAudioFiles: false);
-        Check("合唱：校验报告舞台尺寸非法",
-            issues.Any(i => i.Severity == ProjectIssueSeverity.Error && i.Message.Contains("舞台")),
-            string.Join(" | ", issues.Select(i => i.Message)));
-        Check("合唱：校验报告歌手未绑定音轨",
-            issues.Any(i => i.Message.Contains("未绑定音轨")));
-
-        var mono = Path.Combine(dir, "chorus_src.wav");
-        WriteMonoSineWav(mono, 44100, 0.5, 440, 0.5);
-        var chorus = new ChorusDocument
-        {
-            StageWidth = 10,
-            MicY = -2,
-            Singers = [new ChorusSinger { TrackId = "t", Path = [new ChorusKeyframe { Beat = 1, X = -4, Y = 1 }] }],
-        };
-        var output16 = Path.Combine(dir, "chorus16.wav");
-        ChorusProcessor.Process(mono, output16, chorus, chorus.Singers, 120);
-        var info16 = WavReader.ReadInfo(output16);
-        Check("合唱：默认输出 16-bit 立体声", info16.Channels == 2 && ReadBitDepth(output16) == 16,
-            $"channels={info16.Channels} bits={ReadBitDepth(output16)}");
-        Check("合唱：输出时长与输入一致", Math.Abs(info16.DurationSeconds - 0.5) < 0.02,
-            info16.DurationSeconds.ToString("F3"));
-        var (levelLeft, levelRight) = ReadChannelLevels(output16);
-        Check("合唱：左侧歌手左声道更响", levelLeft > levelRight * 1.5,
-            $"L={levelLeft:F3} R={levelRight:F3}");
-
-        var output24 = Path.Combine(dir, "chorus24.wav");
-        ChorusProcessor.Process(mono, output24, chorus, chorus.Singers, 120, 24);
-        Check("合唱：按工程位深输出 24-bit", ReadBitDepth(output24) == 24, ReadBitDepth(output24).ToString());
-        var (level24Left, _) = ReadChannelLevels(output24);
-        Check("合唱：24-bit 输出不是静音", level24Left > 0, level24Left.ToString("F4"));
-        Check("合唱：24-bit 输出可读取波形", WavReader.ReadPeaks(output24, 256).PeakAmplitude > 0,
-            WavReader.ReadPeaks(output24, 256).PeakAmplitude.ToString("F4"));
-
-        // Undo snapshots must not share the synthesis parameter arrays with the live settings.
-        var settings = new SynthesisSettings();
-        var snapshot = settings.Clone();
-        settings.FollowRatio[0] = 0.99;
-        settings.BandRatios[0] = 0.99;
-        Check("撤销快照：合成参数数组深拷贝",
-            snapshot.FollowRatio[0] != 0.99 && snapshot.BandRatios[0] != 0.99,
-            $"{snapshot.FollowRatio[0]}/{snapshot.BandRatios[0]}");
     }
 
     private static int ReadBitDepth(string path) => BitConverter.ToInt16(File.ReadAllBytes(path), 34);
@@ -684,7 +796,7 @@ internal static class Program
         var second = new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 4 };
         var third = new VoiceSegment { Audio = "c.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 4, BeatEnd = 5 };
 
-        var track = new TrackDocument
+        var track = new LyricDocument
         {
             Segments = [first, second, third],
             PitchLine =
@@ -724,8 +836,41 @@ internal static class Program
         SegmentLayout.SyncTransitionPoints(track);
         Check("布局：重叠消失后渐变节点被清理", !track.PitchLine.Any(p => p.IsTransition));
         Check("布局：克隆保留渐变标记",
-            new TrackDocument { PitchLine = [new PitchPoint { Beat = 1, Pitch = "G4", IsTransition = true }] }
+            new LyricDocument { PitchLine = [new PitchPoint { Beat = 1, Pitch = "G4", IsTransition = true }] }
                 .Clone().PitchLine[0].IsTransition);
+
+        var a = new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 4 };
+        var b = new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 2, BeatEnd = 3.5 };
+        var c = new VoiceSegment { Audio = "c.wav", SrcPitch = "D4", DstPitch = "C4", BeatStart = 3, BeatEnd = 5 };
+        var stacked = new LyricDocument
+        {
+            Segments = [a, b, c],
+            PitchLine =
+            [
+                new PitchPoint { SegmentId = b.Id, Beat = 2.5, Pitch = "E4" },
+                new PitchPoint { SegmentId = c.Id, Beat = 4, Pitch = "C4" },
+            ],
+        };
+        Check("布局：强制消除重叠", SegmentLayout.RemoveOverlaps(stacked)
+            && SegmentLayout.Overlaps(stacked).Count == 0
+            && Math.Abs(b.BeatStart - 4) < 1e-9 && Math.Abs(c.BeatStart - 5.5) < 1e-9
+            && Math.Abs(c.BeatEnd - 7.5) < 1e-9,
+            $"{a.BeatStart:0.##}-{a.BeatEnd:0.##} / {b.BeatStart:0.##}-{b.BeatEnd:0.##} / {c.BeatStart:0.##}-{c.BeatEnd:0.##}");
+        Check("布局：被消除重叠的节点同步平移",
+            Math.Abs(stacked.PitchLine.First(p => p.SegmentId == b.Id).Beat - 4.5) < 1e-9);
+
+        var roomy = new LyricDocument
+        {
+            Segments =
+            [
+                new VoiceSegment { Audio = "a.wav", BeatStart = 1, BeatEnd = 3 },
+                new VoiceSegment { Audio = "b.wav", BeatStart = 4, BeatEnd = 6 },
+            ],
+        };
+        Check("布局：新音符插入空档保持原位", Math.Abs(SegmentLayout.FindFreeStart(roomy, 3, 0.5) - 3) < 1e-9);
+        Check("布局：新音符压住旧音符时后移",
+            Math.Abs(SegmentLayout.FindFreeStart(roomy, 2.5, 1) - 3) < 1e-9
+            && Math.Abs(SegmentLayout.FindFreeStart(roomy, 3, 2) - 6) < 1e-9);
     }
 
     // ------------------------------------------------------------------
@@ -788,29 +933,35 @@ internal static class Program
             return;
         }
 
-        var project = new ProjectDocument
+        var project = new ProjectDocument { Name = "自检渲染" };
+        var lyric = new LyricDocument
         {
-            Name = "自检渲染",
-            Tracks =
+            Name = "主旋律",
+            Segments =
             [
-                new TrackDocument
-                {
-                    Name = "主旋律",
-                    Segments =
-                    [
-                        new VoiceSegment { Audio = files[0], SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2, KeepUnvoicedHead = true },
-                        new VoiceSegment { Audio = files[1], SrcPitch = "D4", DstPitch = "G4", BeatStart = 2, BeatEnd = 3 },
-                    ],
-                    PitchLine =
-                    [
-                        new PitchPoint { Beat = 1, Pitch = "G4" },
-                        new PitchPoint { Beat = 3, Pitch = "G4" },
-                    ],
-                },
+                new VoiceSegment { Audio = files[0], SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2, KeepUnvoicedHead = true, Vowel = "e" },
+                new VoiceSegment { Audio = files[1], SrcPitch = "D4", DstPitch = "G4", BeatStart = 2, BeatEnd = 3, Vowel = "i" },
+            ],
+            PitchLine =
+            [
+                new PitchPoint { Beat = 1, Pitch = "G4" },
+                new PitchPoint { Beat = 3, Pitch = "G4" },
             ],
         };
-        project.Tracks[0].Settings.AddBreath = true;
-        project.Tracks[0].Settings.BitDepth = 24;
+        lyric.Phrase = LyricPhrase.FromSegments(lyric.Segments);
+        var parameters = new ParameterSet { Name = "主旋律参数" };
+        parameters.Base.AddBreath = true;
+        parameters.Base.BitDepth = 24;
+        var singer = new SingerDocument
+        {
+            Name = "主旋律",
+            LibraryRoot = library,
+            LyricId = lyric.Id,
+            ParameterSetId = parameters.Id,
+        };
+        project.Lyrics.Add(lyric);
+        project.ParameterSets.Add(parameters);
+        project.Singers.Add(singer);
 
         var output = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "render.wav");
         if (File.Exists(output))
@@ -826,8 +977,9 @@ internal static class Program
                     Console.WriteLine("    [engine] " + e.Message);
             });
 
+            var plan = SingerRenderPlan.Build(project, singer, 0, 1);
             var result = await engine.RenderAsync(
-                new RenderRequest(project, project.Tracks[0], output), progress);
+                new RenderRequest(project, plan, output), progress);
             Check("端到端渲染产出文件", File.Exists(result.OutputPath) && new FileInfo(result.OutputPath).Length > 44);
             Check("端到端渲染时长 > 0", result.DurationSeconds > 0.05, result.DurationSeconds.ToString("F2"));
         }

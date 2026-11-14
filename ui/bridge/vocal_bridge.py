@@ -102,7 +102,7 @@ def _pick(d, *names, default=None):
 # ----------------------------------------------------------------------
 # Project -> synthesize() arguments
 # ----------------------------------------------------------------------
-def _segment_to_dict(seg, fallback_ratios):
+def _segment_to_dict(seg, fallback_ratios, has_curves=False):
     out = {
         "audio": _pick(seg, "audio", "audioPath", "audio_path", default=""),
         "src_pitch": _pick(seg, "srcPitch", "src_pitch", default="D4"),
@@ -121,19 +121,19 @@ def _segment_to_dict(seg, fallback_ratios):
     ratios = _pick(seg, "followRatio", "follow_ratio")
     if ratios is not None:
         out["follow_ratio"] = tuple(float(v) for v in ratios)
-    else:
+    elif not has_curves:
         out["follow_ratio"] = fallback_ratios[0]
 
     bands = _pick(seg, "bandRatios", "band_ratios")
     if bands is not None:
         out["band_ratios"] = [float(v) for v in bands]
-    else:
+    elif not has_curves:
         out["band_ratios"] = fallback_ratios[1]
 
     thr = _pick(seg, "breathyThr", "breathy_thr")
     if thr is not None:
         out["breathy_thr"] = float(thr)
-    else:
+    elif not has_curves:
         out["breathy_thr"] = fallback_ratios[2]
 
     return out
@@ -221,7 +221,12 @@ def _build_kwargs(project):
     thr = settings.get("breathyThr")
     fallback = (tuple(follow), list(bands), thr)
 
-    segments = [_segment_to_dict(s, fallback) for s in (project.get("segments") or [])]
+    segments = [_segment_to_dict(s, fallback, has_curves=bool(project.get("curves")))
+                for s in (project.get("segments") or [])]
+
+    frames = project.get("frames") or {}
+    curves = project.get("curves")
+    formant_targets = project.get("formantTargets") or project.get("formant_targets")
 
     kwargs = {
         "pitch_line": _pitch_line(project.get("pitchLine") or project.get("pitch_line")),
@@ -230,6 +235,16 @@ def _build_kwargs(project):
             int(project.get("beatsPerBar") or 3),
             int(project.get("beatUnit") or 4),
         ),
+        # v3 lyric-driven per-frame data
+        "frame_curves": curves,
+        "formant_targets": formant_targets,
+        "frames_per_beat": (
+            float(frames.get("framesPerBeat") or frames.get("frames_per_beat"))
+            if frames and (frames.get("framesPerBeat") or frames.get("frames_per_beat"))
+            else None
+        ),
+        # v3 singer mix gain (applied by the synthesizer before saving)
+        "mix_gain": float((project.get("singer") or {}).get("mixGain", 1.0) or 1.0),
         # Logs are forwarded to the UI by default; a project may opt out with "verbose": false
         "verbose": bool(settings.get("verbose", True)),
     }
@@ -326,6 +341,9 @@ def cmd_render(req, req_id):
                "durationSec": round(_wav_duration(output), 3)})
     except Exception as exc:
         _emit({"id": req_id, "type": "error",
+               "errorType": type(exc).__name__,
+               "className": type(exc).__module__.split(".")[-1] + "." + type(exc).__name__,
+               "stage": getattr(exc, "stage", "render"),
                "message": f"{type(exc).__name__}: {exc}",
                "traceback": traceback.format_exc(),
                "elapsedSec": round(time.time() - started, 3)})
