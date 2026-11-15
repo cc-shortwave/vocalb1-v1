@@ -172,6 +172,13 @@ internal static class Program
             json.Contains("\"beatStart\"") && json.Contains("\"pitchLine\"")
             && json.Contains("\"lyrics\"") && json.Contains("\"parameterSets\"") && json.Contains("\"singers\""));
         Check("v3 工程不是只读", !back.IsLegacyReadOnly);
+        Check("工程带格式标识与版本号",
+            back.Format == ProjectDocument.FormatName && back.FormatVersion == "4.0");
+        Check("工程扩展名识别：.vbp 与旧 .vbproj.json",
+            ProjectJson.IsProjectFile("song.vbp")
+            && ProjectJson.IsProjectFile("song.vbproj.json")
+            && ProjectJson.IsProjectFile("SONG.VBP")
+            && !ProjectJson.IsProjectFile("song.json"));
 
         var issues = ProjectValidator.Validate(project, checkAudioFiles: false);
         Check("校验器接受合法工程", !ProjectValidator.HasError(issues),
@@ -1238,7 +1245,8 @@ internal static class Program
         var project = ProjectFactory.CreateEmpty();
         Check("工厂：空工程各有一个歌手/歌词/参数组",
             project.Singers.Count == 1 && project.Lyrics.Count == 1 && project.ParameterSets.Count == 1);
-        Check("工厂：新工程格式版本为 3.0", project.FormatVersion == "3.0");
+        Check("工厂：新工程格式版本为 4.0",
+            project.Format == ProjectDocument.FormatName && project.FormatVersion == "4.0");
 
         var singer = project.Singers[0];
         var lyric = project.FindLyric(singer.LyricId);

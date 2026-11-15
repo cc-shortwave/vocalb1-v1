@@ -7,15 +7,20 @@ using VocalB1.Core.Models;
 namespace VocalB1.Core.Serialization;
 
 /// <summary>
-/// Project file I/O (*.vbproj.json). v3 stores three data-block libraries (lyrics / parameter sets /
-/// singers). v2 projects are converted in memory for read-only inspection and rendering; they are never
-/// written back, and every conversion failure is reported with class + stage.
+/// Project file I/O (*.vbp). v4 keeps the v3 object-library schema (lyrics / parameter sets / singers)
+/// and writes a <c>format</c> signature plus a format version into the JSON envelope. Legacy
+/// *.vbproj.json files are still loaded, and v2 projects are converted in memory for read-only
+/// inspection and rendering; they are never written back, and every conversion failure is reported
+/// with class + stage.
 /// </summary>
 public static class ProjectJson
 {
-    public const string FileExtension = ".vbproj.json";
+    public const string FileExtension = ".vbp";
 
-    public const string CurrentFormatVersion = "3.0";
+    /// <summary>Old project extension, still accepted when opening.</summary>
+    public const string LegacyFileExtension = ".vbproj.json";
+
+    public const string CurrentFormatVersion = ProjectDocument.CurrentFormatVersion;
 
     public static readonly JsonSerializerOptions ReadOptions = new()
     {
@@ -45,6 +50,15 @@ public static class ProjectJson
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
+            var format = root.TryGetProperty("format", out var formatElement)
+                ? formatElement.GetString()
+                : null;
+            if (!string.IsNullOrWhiteSpace(format)
+                && !string.Equals(format, ProjectDocument.FormatName, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"不是 VocalB1 工程文件（format：{format}）。");
+            }
+
             var version = root.TryGetProperty("formatVersion", out var versionElement)
                 ? versionElement.GetString() ?? string.Empty
                 : string.Empty;
@@ -52,11 +66,17 @@ public static class ProjectJson
                 && tracksElement.ValueKind == JsonValueKind.Array
                 && tracksElement.GetArrayLength() > 0;
 
+            var isCurrent = (version.StartsWith("3", StringComparison.Ordinal)
+                             || version.StartsWith("4", StringComparison.Ordinal))
+                            && !hasTracks;
+
             ProjectDocument project;
-            if (version.StartsWith("3", StringComparison.Ordinal) && !hasTracks)
+            if (isCurrent)
             {
                 project = JsonSerializer.Deserialize<ProjectDocument>(json, ReadOptions)
                     ?? throw new InvalidDataException("工程 JSON 为空或无法解析。");
+                project.Format = ProjectDocument.FormatName;
+                project.FormatVersion = CurrentFormatVersion;
                 project.IsLegacyReadOnly = false;
             }
             else
@@ -328,6 +348,16 @@ public static class ProjectJson
     public static ProjectDocument Load(string path, string? baseDirectory = null) =>
         StageGuard.Run(nameof(ProjectJson), "load",
             () => Deserialize(File.ReadAllText(path), baseDirectory));
+
+    /// <summary>True when the path uses the current .vbp extension or the legacy .vbproj.json one.</summary>
+    public static bool IsProjectFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        return path.EndsWith(FileExtension, StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(LegacyFileExtension, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static ProjectDocument ToPortable(ProjectDocument project, string? baseDirectory)
     {

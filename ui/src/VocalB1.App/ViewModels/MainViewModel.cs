@@ -1100,8 +1100,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             Title = "打开工程",
             Filter = LanguageService.TranslateFormat(
-                "VocalB1 工程 (*{0})|*{0}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
-                ProjectJson.FileExtension),
+                "VocalB1 工程 (*{0};*{1})|*{0};*{1}|JSON (*.json)|*.json|所有文件 (*.*)|*.*",
+                ProjectJson.FileExtension, ProjectJson.LegacyFileExtension),
         };
         if (dialog.ShowDialog() != true)
             return;
@@ -1132,7 +1132,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         }
 
         var path = _projectPath;
-        if (string.IsNullOrWhiteSpace(path))
+        // Old .vbproj.json projects keep loading, but their first save moves them to the .vbp format.
+        if (string.IsNullOrWhiteSpace(path)
+            || !path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
         {
             var dialog = new SaveFileDialog
             {
@@ -1141,6 +1143,12 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                     "VocalB1 工程 (*{0})|*{0}", ProjectJson.FileExtension),
                 FileName = _project.Name + ProjectJson.FileExtension,
             };
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(directory))
+                    dialog.InitialDirectory = directory;
+            }
             if (dialog.ShowDialog() != true)
                 return;
             path = dialog.FileName;

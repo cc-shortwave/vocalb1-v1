@@ -614,6 +614,7 @@
     "音色参数 (*{0})|*{0}|JSON (*.json)|*.json|所有文件 (*.*)|*.*": "Timbre parameters (*{0})|*{0}|JSON (*.json)|*.json|All files (*.*)|*.*",
     "VocalB1 工程 (*{0})|*{0}|JSON (*.json)|*.json|所有文件 (*.*)|*.*": "VocalB1 project (*{0})|*{0}|JSON (*.json)|*.json|All files (*.*)|*.*",
     "VocalB1 工程 (*{0})|*{0}": "VocalB1 project (*{0})|*{0}",
+    "VocalB1 工程 (*{0};*{1})|*{0};*{1}|JSON (*.json)|*.json|所有文件 (*.*)|*.*": "VocalB1 project (*{0};*{1})|*{0};*{1}|JSON (*.json)|*.json|All files (*.*)|*.*",
     "导出歌词数据块": "Export lyric data-block",
     "导入歌词数据块": "Import lyric data-block",
     "导出参数数据块": "Export parameter data-block",

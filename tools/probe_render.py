@@ -1,7 +1,7 @@
 """Offline reproduction + parameter audit for the VocalB1 synthesis pipeline.
 
 Usage:
-    python tools/probe_render.py <project.vbproj.json> [--wav path.wav]
+    python tools/probe_render.py <project.vbp> [--wav path.wav]
 
 It renders the first track of a project with the same bridge mapping the UI uses
 (ui/bridge/vocal_bridge._build_kwargs), keeps the intermediate frame dump

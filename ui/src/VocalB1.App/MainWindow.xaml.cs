@@ -95,7 +95,7 @@ public partial class MainWindow : Window
             return;
 
         var path = paths[0];
-        if (File.Exists(path) && path.EndsWith(ProjectJson.FileExtension, StringComparison.OrdinalIgnoreCase))
+        if (File.Exists(path) && ProjectJson.IsProjectFile(path))
             Dispatcher.BeginInvoke(new Action(() => _viewModel?.OpenProjectFromPath(path)));
     }
 

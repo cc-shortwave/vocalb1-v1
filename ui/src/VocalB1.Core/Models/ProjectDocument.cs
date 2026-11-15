@@ -3,14 +3,23 @@ using System.Text.Json.Serialization;
 namespace VocalB1.Core.Models;
 
 /// <summary>
-/// Project data-block container (v3). A project owns three libraries — lyrics, parameter sets and singers —
+/// Project data-block container (v3/v4). A project owns three libraries — lyrics, parameter sets and singers —
 /// and nothing else: there are no tracks and no stage. Singers are the render units; each references one
 /// lyric (one-to-one) and one shared parameter set (many-to-one).
 /// </summary>
 public sealed class ProjectDocument
 {
-    /// <summary>Format version, used for migration. v3 is the object-library format.</summary>
-    public string FormatVersion { get; set; } = "3.0";
+    /// <summary>Signature written into every .vbp file so a foreign JSON is rejected early.</summary>
+    public const string FormatName = "VocalB1";
+
+    /// <summary>Current project format version. v4 keeps the v3 object-library schema with a versioned .vbp envelope.</summary>
+    public const string CurrentFormatVersion = "4.0";
+
+    /// <summary>Format signature, used to tell a VocalB1 project apart from arbitrary JSON.</summary>
+    public string Format { get; set; } = FormatName;
+
+    /// <summary>Format version, used for migration. v3/v4 share the object-library schema.</summary>
+    public string FormatVersion { get; set; } = CurrentFormatVersion;
 
     public string Name { get; set; } = "未命名工程";
 
@@ -113,6 +122,7 @@ public sealed class ProjectDocument
 
     public ProjectDocument Clone() => new()
     {
+        Format = Format,
         FormatVersion = FormatVersion,
         Name = Name,
         ProjectDirectory = ProjectDirectory,
