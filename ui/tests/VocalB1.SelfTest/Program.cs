@@ -1309,8 +1309,9 @@ internal static class Program
             langs[code] = map;
         }
 
-        Check("三语：三份字典都能解析且条目完整",
-            langs.Count == 3 && langs.Values.All(m => m.Count > 400),
+        // 中文是源语言：键本身就是中文原文，所以 zh.json 的 entries 允许为空；
+        // en/ja 才是译文表，两者的键集合必须与中文键完全一致。
+        Check("三语：字典文件都能解析", langs.Count == 3,
             string.Join("/", langs.Select(kv => $"{kv.Key}={kv.Value.Count}")));
 
         if (langs.Count != 3)
@@ -1319,19 +1320,31 @@ internal static class Program
         var zh = langs["zh"];
         var en = langs["en"];
         var ja = langs["ja"];
-        Check("三语：键集合完全一致",
-            zh.Keys.ToHashSet().SetEquals(en.Keys) && zh.Keys.ToHashSet().SetEquals(ja.Keys),
+
+        Check("三语：英日译文条目数一致且完整",
+            en.Count > 400 && ja.Count == en.Count,
             $"zh={zh.Count}/en={en.Count}/ja={ja.Count}");
 
-        var empty = langs.SelectMany(kv => kv.Value
+        Check("三语：英文与日文键集合完全一致",
+            en.Keys.ToHashSet().SetEquals(ja.Keys),
+            $"en={en.Count}/ja={ja.Count}");
+
+        Check("三语：中文词条为空或与译文键集合一致",
+            zh.Count == 0 || zh.Keys.ToHashSet().SetEquals(en.Keys),
+            $"zh={zh.Count}");
+
+        var empty = langs
+            .Where(kv => kv.Key != "zh")
+            .SelectMany(kv => kv.Value
                 .Where(p => string.IsNullOrWhiteSpace(p.Value))
                 .Select(p => $"{kv.Key}:{p.Key}"))
             .ToList();
-        Check("三语：没有空词条", empty.Count == 0, string.Join(",", empty.Take(5)));
+        Check("三语：译文没有空词条", empty.Count == 0, string.Join(",", empty.Take(5)));
 
-        var cjk = new System.Text.RegularExpressions.Regex(@"[\u3040-\u30ff\u4e00-\u9fff]");
-        var leaked = en.Where(p => cjk.IsMatch(p.Value)).Select(p => p.Key).ToList();
-        Check("三语：英文词典里没有中文字符", leaked.Count == 0, string.Join(",", leaked.Take(5)));
+        // 只查汉字：英文条目里出现「例如：こんにちは」这种假名示例是正常的
+        var han = new System.Text.RegularExpressions.Regex(@"[\u4e00-\u9fff]");
+        var leaked = en.Where(p => han.IsMatch(p.Value)).Select(p => p.Key).ToList();
+        Check("三语：英文译文里没有汉字", leaked.Count == 0, string.Join(",", leaked.Take(5)));
     }
 
     private static void Check(string name, bool ok, string? detail = null)
