@@ -52,6 +52,8 @@ public static class ProjectValidator
                 issues.Add(new ProjectIssue(ProjectIssueSeverity.Error, $"歌手「{name}」未绑定参数，无法渲染。"));
 
             ValidateLyric(lyric, name, issues, checkAudioFiles);
+            if (checkAudioFiles)
+                issues.AddRange(ValidateVoicebank(lyric, singer));
         }
 
         if (project.FindOrphanNames() is { Count: > 0 } orphans)
@@ -130,6 +132,63 @@ public static class ProjectValidator
 
         foreach (var unit in lyric.Phrase.Words.SelectMany(w => w.Units))
             ValidateFormants(unit.FormantHz, $"歌词「{lyric.Name}」音节「{unit.Text}」共振峰", issues, null);
+    }
+
+    /// <summary>
+    /// Checks that every lyric segment without manual formants has measured voicebank data. Segments
+    /// are never classified from their lyric characters, so a bank that has not been decomposed yet or
+    /// a phoneme the engine could not measure is a render-blocking error.
+    /// </summary>
+    public static IReadOnlyList<ProjectIssue> ValidateVoicebank(LyricDocument lyric, SingerDocument singer)
+    {
+        var issues = new List<ProjectIssue>();
+        if (string.IsNullOrWhiteSpace(singer.LibraryRoot) || !Directory.Exists(singer.LibraryRoot))
+            return issues;
+
+        // A manual target can live on the segment or on its linked unit (the unit wins when both exist).
+        var manualUnits = lyric.Phrase.Words
+            .SelectMany(word => word.Units)
+            .Where(unit => unit.FormantHz is { Length: 7 } && unit.SegmentId is not null)
+            .Select(unit => unit.SegmentId!)
+            .ToHashSet(StringComparer.Ordinal);
+        var segments = lyric.Segments
+            .Where(s => s.FormantHz is not { Length: 7 } && !manualUnits.Contains(s.Id))
+            .ToList();
+        if (segments.Count == 0)
+            return issues;
+
+        var profile = VoicebankFormantProfile.Load(singer.LibraryRoot);
+
+        if (!profile.IsMeasured)
+        {
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error,
+                $"歌手「{singer.Name}」的声库尚未完成分解分析；请在绑定声库后等待后台分析，或点击「分析声库」。"));
+            return issues;
+        }
+
+        if (profile.FailedSamples.Count > 0)
+        {
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Warning,
+                $"歌手「{singer.Name}」的声库有 {profile.FailedSamples.Count} 个样本未能分解（如「{profile.FailedSamples[0]}」），" +
+                "这些音节不会被渲染。"));
+        }
+
+        var missing = segments
+            .Select(s => s.PhonemeLabel)
+            .Where(phoneme => !string.IsNullOrWhiteSpace(phoneme))
+            .Where(phoneme => !profile.TryGetMeasured(phoneme, out _))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (missing.Count > 0)
+        {
+            var preview = string.Join("、", missing.Take(8)) + (missing.Count > 8 ? "…" : string.Empty);
+            issues.Add(new ProjectIssue(ProjectIssueSeverity.Error,
+                $"歌手「{singer.Name}」的声库缺少这些音节的实测共振峰：{preview}；" +
+                "分解失败的样本会被跳过，也可手动为该音节设置共振峰。"));
+        }
+
+        return issues;
     }
 
     private static void ValidateFormants(double[]? formants, string label,

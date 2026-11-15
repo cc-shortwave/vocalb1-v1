@@ -76,7 +76,6 @@ public static class UstLyricImporter
                 continue;
             }
 
-            var vowel = LyricVowel.Guess(note.Lyric);
             var segment = new VoiceSegment
             {
                 Audio = string.Empty,
@@ -87,7 +86,6 @@ public static class UstLyricImporter
                 Transition = lyric.Segments.Count > 0 ? transitionFrames : 0,
                 LyricOverride = note.Lyric,
                 Phoneme = note.Lyric,
-                Vowel = vowel,
             };
             lyric.Segments.Add(segment);
             lyric.AddPitchAnchor(segment);
@@ -108,7 +106,6 @@ public static class UstLyricImporter
                         BeatStart = cursor,
                         Length = length,
                         Phoneme = note.Lyric,
-                        Vowel = vowel,
                     },
                 ],
             });

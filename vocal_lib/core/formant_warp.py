@@ -7,10 +7,13 @@ measured formants land on those targets, using a piecewise-linear frequency mapp
 domain (the same interpolation domain the existing spectral warp uses).
 
 The source formants are measured on the pyworld envelope of the *same* frames that are warped
-(:func:`envelope_formants`), so source and targets share the 5 ms synthesis grid and pair
-index-for-index. The voicebank's older formant list is deliberately not used as the source: it is
-computed on an 11.6 ms STFT grid and keeps the lowest five spectral peaks, which for a voiced vowel are
-harmonics rather than vocal-tract resonances, so pairing it by index transposed the timbre.
+(:func:`envelope_formants`), so source and targets share the 5 ms synthesis grid frame for frame.
+Within a frame the peaks are paired by frequency (never by index): the two lists may describe a
+different number of peaks, and a spurious low-frequency peak would otherwise shift every later pair
+by one slot. Peaks at or below the frame's f0 are discarded because a vocal-tract resonance cannot
+sit below the fundamental. The voicebank's older formant list is deliberately not used as the source:
+it is computed on an 11.6 ms STFT grid and keeps the lowest five spectral peaks, which for a voiced
+vowel are harmonics rather than vocal-tract resonances, so pairing it by index transposed the timbre.
 
 Errors carry the class and stage explicitly: ``[FormantWarp @ ...]``. Frames whose measured or target
 formants are structurally unusable (e.g. silence) are documented in the returned diagnostics.
@@ -56,8 +59,13 @@ def _valid_formants(values) -> np.ndarray:
     return np.asarray(out, dtype=np.float64)
 
 
-def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7):
+def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7,
+                      min_hz=None):
     """Measures F1~F7 as the strongest peaks of the pyworld spectral envelope.
+
+    ``min_hz`` is the lowest admissible formant: a resonance cannot sit below the fundamental, so
+    callers pass the frame's f0 (scalar or per-frame array). Peaks at or below that floor are never
+    reported, which keeps the low-frequency plateau of the envelope from occupying the F1 slot.
 
     Returns an ``(n_frames, max_formants)`` array on the same 5 ms grid as ``sp``; frames without
     usable peaks are filled with NaN so the caller can skip them explicitly.
@@ -76,9 +84,19 @@ def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7):
     freqs = np.arange(n_bins, dtype=np.float64) * bin_hz
     nyquist = sample_rate / 2.0
 
-    low = max(1, int(np.searchsorted(freqs, _MIN_HZ)))
+    floors = None
+    if min_hz is not None:
+        floors = np.asarray(min_hz, dtype=np.float64)
+        if floors.ndim == 0:
+            floors = np.full(n_frames, float(floors))
+        elif floors.size < n_frames:
+            floors = np.pad(floors, (0, n_frames - floors.size), mode="edge")
+        else:
+            floors = floors[:n_frames]
+        floors = np.maximum(np.where(np.isfinite(floors), floors, _MIN_HZ), _MIN_HZ)
+
     high = min(n_bins - 2, int(np.searchsorted(freqs, min(_MAX_HZ, nyquist))))
-    if high <= low:
+    if high <= 1:
         return out
 
     log_env = np.log(np.maximum(sp, 1e-12))
@@ -91,6 +109,11 @@ def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7):
         if not np.isfinite(log_env[i]).any():
             continue
         if 10.0 * np.log10(max(float(np.max(sp[i])), 1e-20)) < _FLOOR_DB:
+            continue
+
+        low = _MIN_HZ if floors is None else max(_MIN_HZ, float(floors[i]))
+        low = max(1, int(np.searchsorted(freqs, low)))
+        if high <= low:
             continue
 
         smooth = np.convolve(log_env[i], kernel, mode="same")
@@ -122,8 +145,12 @@ def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7):
     return out
 
 
+_PAIR_TOLERANCE_HZ = 250.0
+_PAIR_TOLERANCE_RATIO = 0.2
+
+
 def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
-                    frame_period: float = 5.0):
+                    frame_period: float = 5.0, f0=None):
     """Warps ``sp`` so its measured formants move onto ``target_hz``.
 
     Parameters
@@ -136,6 +163,9 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
         untouched.
     frame_period : float
         Only used for diagnostics.
+    f0 : array-like, optional
+        Per-frame fundamental in Hz. Formants at or below it are physically impossible, so it is
+        used as the per-frame floor for both the measured source peaks and the targets.
 
     Returns
     -------
@@ -158,8 +188,21 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
                                f"formantTargets 必须是 (帧数, 7)，实际 {targets.shape}。")
 
     n_frames, n_bins = sp.shape
-    # Source and targets are both measured on this frame grid, so pairing is index-for-index.
-    sources = envelope_formants(sp, sample_rate, targets.shape[1])
+    count = min(n_frames, targets.shape[0])
+
+    floors = None
+    if f0 is not None:
+        values = np.asarray(f0, dtype=np.float64).reshape(-1)
+        if values.size:
+            if values.size < n_frames:
+                values = np.pad(values, (0, n_frames - values.size), mode="edge")
+            else:
+                values = values[:n_frames]
+            # A formant never sits below the fundamental; unvoiced frames keep the 200 Hz floor.
+            floors = np.where(values > 0, np.maximum(values, _MIN_HZ), _MIN_HZ)
+
+    # Source and target rows share the frame grid; the peaks inside a frame are matched by frequency.
+    sources = envelope_formants(sp, sample_rate, targets.shape[1], min_hz=floors)
 
     fft_size = 2 * (n_bins - 1)
     freqs = np.arange(n_bins, dtype=np.float64) * sample_rate / fft_size
@@ -171,24 +214,47 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
     warped = 0
     skipped = 0
 
-    count = min(n_frames, targets.shape[0])
     for i in range(count):
         src = _valid_formants(sources[i])
         tgt = _valid_formants(targets[i])
+        if floors is not None:
+            src = src[src > floors[i]]
+            tgt = tgt[tgt > floors[i]]
 
-        # Two formants on both sides are the minimum for a stable piecewise-linear mapping.
-        pairs = min(len(src), len(tgt))
-        if pairs < 2:
+        # Peaks are matched by frequency, not by index: the measured lists and the target lists do
+        # not have to describe the same number of peaks, and a plateau artefact would otherwise
+        # shift every later pair by one slot.
+        src_pairs: list[float] = []
+        tgt_pairs: list[float] = []
+        cursor = 0
+        for target in tgt:
+            tolerance = max(_PAIR_TOLERANCE_HZ, _PAIR_TOLERANCE_RATIO * float(target))
+            best = -1
+            best_distance = None
+            for index in range(cursor, src.size):
+                distance = abs(float(src[index]) - float(target))
+                if best_distance is None or distance < best_distance:
+                    best, best_distance = index, distance
+                if src[index] > target + tolerance:
+                    break
+            if best < 0 or best_distance is None or best_distance > tolerance:
+                continue
+            src_pairs.append(float(src[best]))
+            tgt_pairs.append(float(target))
+            cursor = best + 1
+
+        # Two matched pairs are the minimum for a stable piecewise-linear mapping.
+        if len(src_pairs) < 2:
             skipped += 1
             continue
 
-        src = src[:pairs]
-        tgt = tgt[:pairs]
-
-        # Anchors: DC, formants, Nyquist. Target anchors must stay below Nyquist.
-        src_anchor = np.concatenate(([0.0], src, [nyquist]))
-        tgt_anchor = np.concatenate(([0.0], np.minimum(tgt, nyquist * 0.98), [nyquist]))
+        # Anchors: DC, matched formants, Nyquist. Target anchors must stay below Nyquist.
+        src_anchor = np.concatenate(([0.0], np.asarray(src_pairs), [nyquist]))
+        tgt_anchor = np.concatenate(([0.0], np.minimum(np.asarray(tgt_pairs), nyquist * 0.98), [nyquist]))
         tgt_anchor = np.maximum.accumulate(tgt_anchor)
+        keep = np.concatenate(([True], np.diff(tgt_anchor) > 0))
+        src_anchor = src_anchor[keep]
+        tgt_anchor = tgt_anchor[keep]
 
         # For each output frequency, read the source frequency whose formants were at that position.
         source_freq = np.interp(freqs, tgt_anchor, src_anchor)

@@ -205,11 +205,11 @@ public sealed class SegmentRow(VoiceSegment model, int index) : ObservableObject
 
     public string PitchText { get; } = $"{model.SrcPitch} → {model.DstPitch}";
 
-    public string Vowel => Model.Vowel;
+    public string Vowel => string.IsNullOrWhiteSpace(Model.Vowel) ? "—" : Model.Vowel;
 
     public string FormantText => Model.FormantHz is { Length: 7 } hz
         ? string.Join(" / ", hz.Select(v => v.ToString("0")))
-        : LanguageService.Translate("自动（元音管理器）");
+        : LanguageService.Translate("声库实测");
 
     public void Refresh()
     {
@@ -234,7 +234,7 @@ public sealed class LyricUnitRow(LyricUnit model) : ObservableObject
 
     public string Display => Model.Display;
 
-    public string Vowel => Model.Vowel;
+    public string Vowel => string.IsNullOrWhiteSpace(Model.Vowel) ? "—" : Model.Vowel;
 
     public double Length => Model.Length;
 
@@ -253,7 +253,7 @@ public sealed class LyricUnitRow(LyricUnit model) : ObservableObject
 
     public string FormantText => Model.FormantHz is { Length: 7 } hz
         ? string.Join(" / ", hz.Select(v => v.ToString("0")))
-        : LanguageService.Translate("自动");
+        : LanguageService.Translate("声库实测");
 
     public string Detail => IsRest
         ? LanguageService.TranslateFormat("歌词：{0}（休止） · {1}",

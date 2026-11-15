@@ -82,11 +82,16 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     private string _previewInfo = "尚未渲染";
     private string? _previewFormat;
     private object?[]? _previewArgs;
+    private double _playbackSeconds;
     private string _lyricInput = string.Empty;
     private string _lyricStatus = "输入歌词后按回车，按字典分解为最小声库单位";
     private string? _lyricStatusFormat;
     private object?[]? _lyricStatusArgs;
     private string _unitFormantText = string.Empty;
+
+    // Voicebank decomposition: one in-flight task per bank, deduplicated so a rebind never re-analyzes.
+    private readonly object _analysisSync = new();
+    private readonly Dictionary<string, Task<bool>> _analysisTasks = new(StringComparer.OrdinalIgnoreCase);
 
     private UserDictionary? _dictionary;
     private string? _dictionaryPath;
@@ -169,6 +174,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             _playheadTimer.Stop();
             IsPlaying = false;
+            _playbackSeconds = 0;
         });
 
         LoadProject(_project, null);
@@ -550,6 +556,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             _selectedSinger.Refresh();
             RefreshLibrary();
             OnPropertyChanged(nameof(SelectedSingerVoicebank));
+            if (_project.FindLyric(_selectedSinger.Model.LyricId) is { } lyric)
+                _ = AnalyzeVoicebankThenReportAsync(_selectedSinger.Model, lyric);
         }
     }
 
@@ -573,6 +581,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             OnPropertyChanged(nameof(SelectedLyric));
             RefreshSegments();
             RefreshLyricUnits();
+            _ = AnalyzeVoicebankThenReportAsync(_selectedSinger.Model, value.Model);
         }
     }
 
@@ -760,15 +769,24 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             if (_selectedUnit is null)
                 return LanguageService.Translate("选择一个音节查看共振峰。");
-            var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
-            var values = _selectedUnit.Model.FormantHz is { Length: 7 } manual
-                ? manual
-                : profile.Resolve(_selectedUnit.Model.Vowel, _selectedUnit.Model.Phoneme);
-            var source = _selectedUnit.Model.FormantHz is { Length: 7 }
-                ? LanguageService.Translate("手动目标")
-                : LanguageService.Translate("元音管理器（自动）");
-            return LanguageService.TranslateFormat("{0}：{1} Hz", source,
-                string.Join(" / ", values.Select(v => v.ToString("0"))));
+
+            if (_selectedUnit.Model.FormantHz is { Length: 7 } manual)
+            {
+                return LanguageService.TranslateFormat("{0}：{1} Hz", LanguageService.Translate("手动目标"),
+                    string.Join(" / ", manual.Select(v => v.ToString("0"))));
+            }
+
+            try
+            {
+                var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
+                var values = profile.Resolve(string.Empty, _selectedUnit.Model.PhonemeLabel);
+                return LanguageService.TranslateFormat("{0}：{1} Hz", LanguageService.Translate("声库实测"),
+                    string.Join(" / ", values.Select(v => v.ToString("0"))));
+            }
+            catch (StageException ex)
+            {
+                return ex.Message;
+            }
         }
     }
 
@@ -781,8 +799,16 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 return [];
             if (_selectedUnit.Model.FormantHz is { Length: 7 } manual)
                 return manual;
-            var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
-            return profile.Resolve(_selectedUnit.Model.Vowel, _selectedUnit.Model.Phoneme);
+
+            try
+            {
+                var profile = VoicebankFormantProfile.Load(_selectedSinger?.Model.LibraryRoot);
+                return profile.Resolve(string.Empty, _selectedUnit.Model.PhonemeLabel);
+            }
+            catch (StageException)
+            {
+                return [];
+            }
         }
     }
 
@@ -790,7 +816,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         ? LanguageService.Translate("手动目标")
         : _selectedUnit is null
             ? LanguageService.Translate("未选择音节")
-            : LanguageService.Translate("自动（元音管理器）");
+            : LanguageService.Translate("声库实测（自动）");
 
     public PianoRollMode RollMode
     {
@@ -1298,6 +1324,115 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
     private string? ResolveParameterName(string? id) => _project.FindParameterSet(id)?.Name;
 
+    /// <summary>Surfaces missing voicebank measurements once the bank has been decomposed.</summary>
+    private void ReportVoicebankIssues(LyricDocument lyric, SingerDocument singer)
+    {
+        foreach (var issue in ProjectValidator.ValidateVoicebank(lyric, singer))
+            AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
+    }
+
+    /// <summary>Decomposes the bank, then reports what the lyric still misses.</summary>
+    private async Task AnalyzeVoicebankThenReportAsync(SingerDocument singer, LyricDocument lyric)
+    {
+        await EnsureVoicebankAnalysisAsync(singer).ConfigureAwait(true);
+        ReportVoicebankIssues(lyric, singer);
+    }
+
+    /// <summary>
+    /// Decomposes the singer's bank in the background (once per session per bank) and caches the result
+    /// in memory. Returns false when the bank could not be measured; the log holds the reason.
+    /// </summary>
+    private async Task<bool> EnsureVoicebankAnalysisAsync(SingerDocument singer,
+        CancellationToken cancellationToken = default, bool force = false)
+    {
+        var root = singer.LibraryRoot;
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            return false;
+
+        if (!force && VoicebankAnalysisCache.TryGet(root, out _))
+            return true;
+
+        var key = VoicebankAnalysisCache.NormalizeRoot(root);
+        Task<bool> task;
+        lock (_analysisSync)
+        {
+            if (!_analysisTasks.TryGetValue(key, out task!))
+            {
+                task = RunVoicebankAnalysisAsync(root, cancellationToken);
+                _analysisTasks[key] = task;
+            }
+        }
+
+        var measured = await task.ConfigureAwait(true);
+        lock (_analysisSync)
+        {
+            if (_analysisTasks.TryGetValue(key, out var current) && ReferenceEquals(current, task))
+                _analysisTasks.Remove(key);
+        }
+
+        return measured;
+    }
+
+    private async Task<bool> RunVoicebankAnalysisAsync(string root, CancellationToken cancellationToken)
+    {
+        var name = Path.GetFileName(root.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        AddLog("info", LanguageService.TranslateFormat("开始分解声库「{0}」…", name));
+
+        var progress = new Progress<EngineEvent>(e =>
+        {
+            switch (e.Kind)
+            {
+                case EngineEventKind.Progress:
+                    SetStatus("正在分解声库「{0}」{1:0}% {2}", name, (e.Progress ?? 0) * 100, e.Message);
+                    break;
+                case EngineEventKind.Warning:
+                    AddLog("warn", e.Message);
+                    break;
+                case EngineEventKind.Log:
+                    AddLog("info", e.Message);
+                    break;
+            }
+        });
+
+        try
+        {
+            if (!_services.Engine.IsReady)
+                await _services.Engine.InitializeAsync(cancellationToken).ConfigureAwait(true);
+
+            var analysis = await _services.Engine
+                .AnalyzeVoicebankAsync(root, progress, cancellationToken)
+                .ConfigureAwait(true);
+            VoicebankAnalysisCache.Set(root, analysis);
+
+            AddLog("info", LanguageService.TranslateFormat("声库分解完成：{0} 个音节，{1} 个样本失败。",
+                analysis.Phonemes.Count, analysis.Failed.Count));
+            foreach (var failed in analysis.Failed.Take(20))
+                AddLog("warn", LanguageService.TranslateFormat("样本分解失败：{0}", failed));
+
+            RefreshFormantInfo();
+            SetStatus("声库「{0}」分解完成", name);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            AddLog("warn", LanguageService.TranslateFormat("声库「{0}」分解已取消。", name));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AddLog("error", LanguageService.TranslateFormat("声库「{0}」分解失败：{1}", name, ex.Message));
+            return false;
+        }
+    }
+
+    private void RefreshFormantInfo()
+    {
+        OnPropertyChanged(nameof(UnitFormantInfo));
+        OnPropertyChanged(nameof(UnitFormantValues));
+        OnPropertyChanged(nameof(UnitFormantHint));
+    }
+
     private void RefreshAllDetails()
     {
         foreach (var row in Lyrics)
@@ -1487,7 +1622,6 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 ? Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _project.Bpm))
                 : 0,
             Phoneme = entry?.DisplayName ?? Path.GetFileNameWithoutExtension(path),
-            Vowel = GuessVowel(entry?.DisplayName ?? Path.GetFileNameWithoutExtension(path)),
         };
         lyric.Segments.Add(segment);
         lyric.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
@@ -2136,7 +2270,6 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             foreach (var segment in segments)
             {
                 segment.Phoneme = Path.GetFileNameWithoutExtension(segment.Audio);
-                segment.Vowel = GuessVowel(segment.Phoneme);
                 ActiveLyric.AddPitchAnchor(segment);
             }
             LyricPhraseComposer.SyncWithSegments(ActiveLyric.Phrase, ActiveLyric);
@@ -2336,66 +2469,19 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             return;
         }
 
-        var script = Path.Combine(_services.Options.RepositoryRoot, "tools", "analyze_voicebank.py");
-        if (!File.Exists(script))
+        // Explicit re-analysis: drop the cached decomposition and measure the bank again.
+        VoicebankAnalysisCache.Invalidate(singer.LibraryRoot);
+        var measured = await EnsureVoicebankAnalysisAsync(singer, force: true).ConfigureAwait(true);
+        if (!measured)
         {
-            ReportError(new StageException(nameof(MainViewModel), "analyze-voicebank",
-                LanguageService.TranslateFormat("找不到声库分析脚本：{0}", script)));
+            ReportError(new StageException("VoicebankAnalyzer", "run",
+                LanguageService.Translate("声库分解失败，详见日志。")));
             return;
         }
 
-        IsBusy = true;
-        StatusText = "正在分析声库共振峰…";
-        try
-        {
-            var info = new ProcessStartInfo
-            {
-                FileName = _services.Options.PythonPath,
-                WorkingDirectory = _services.Options.RepositoryRoot,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            info.ArgumentList.Add(script);
-            info.ArgumentList.Add(singer.LibraryRoot);
-
-            using var process = new Process { StartInfo = info };
-            process.OutputDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrWhiteSpace(e.Data))
-                    AddLog("info", e.Data);
-            };
-            process.ErrorDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrWhiteSpace(e.Data))
-                    AddLog("warn", e.Data);
-            };
-
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode != 0)
-                throw new StageException("VoicebankAnalyzer", "run",
-                    LanguageService.TranslateFormat("声库分析失败（退出码 {0}），详见日志。", process.ExitCode));
-
-            // Reload the profile so the next plan/vowel-manager read uses measured formants.
-            OnPropertyChanged(nameof(UnitFormantInfo));
-            OnPropertyChanged(nameof(UnitFormantValues));
-            OnPropertyChanged(nameof(UnitFormantHint));
-            AddLog("info", "声库共振峰分析完成：formants.json 已写入声库目录。");
-            StatusText = "声库共振峰分析完成";
-        }
-        catch (Exception ex)
-        {
-            ReportError(ex);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        if (_project.FindLyric(singer.LyricId) is { } lyric)
+            ReportVoicebankIssues(lyric, singer);
+        RefreshFormantInfo();
     }
 
 
@@ -2403,16 +2489,6 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     {
         if (IsBusy)
             return;
-
-        var issues = ProjectValidator.Validate(_project);
-        foreach (var issue in issues)
-            AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
-        if (ProjectValidator.HasError(issues))
-        {
-            ReportError(new StageException(nameof(MainViewModel), "validate-render",
-                LanguageService.Translate("工程校验未通过，详见日志。")));
-            return;
-        }
 
         var singers = _project.Singers.Where(s => s.Enabled).ToList();
         if (singers.Count == 0)
@@ -2427,6 +2503,26 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
         try
         {
+            // Decomposition is a prerequisite: wait for every enabled bank before validating.
+            foreach (var singer in singers)
+            {
+                if (!await EnsureVoicebankAnalysisAsync(singer, _renderCts.Token).ConfigureAwait(true))
+                {
+                    ReportError(new StageException("VoicebankAnalyzer", "analyze",
+                        LanguageService.TranslateFormat("歌手「{0}」的声库分解失败，详见日志。", singer.Name)));
+                    return;
+                }
+            }
+
+            var issues = ProjectValidator.Validate(_project);
+            foreach (var issue in issues)
+                AddLog(issue.Severity == ProjectIssueSeverity.Error ? "error" : "warn", issue.Message);
+            if (ProjectValidator.HasError(issues))
+            {
+                ReportError(new StageException(nameof(MainViewModel), "validate-render",
+                    LanguageService.Translate("工程校验未通过，详见日志。")));
+                return;
+            }
             // The engine is a child Python process; start it on the first render and reuse it afterwards.
             if (!_services.Engine.IsReady)
             {
@@ -2504,24 +2600,63 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
         var startBeat = PlayheadBeat ?? 1.0;
         var seconds = Math.Max(0, (startBeat - 1) * 60.0 / Math.Max(1, _project.Bpm));
+        _playbackSeconds = ReadDurationSeconds(_lastMixPath);
         _services.Playback.Play(_lastMixPath, TimeSpan.FromSeconds(seconds));
         IsPlaying = true;
         _playheadTimer.Start();
     }
 
+    /// <summary>Manual stop keeps the current position; only a natural end rewinds to the project start.</summary>
     private void StopPlayback()
     {
         _services.Playback.Stop();
         _playheadTimer.Stop();
         IsPlaying = false;
+        _playbackSeconds = 0;
     }
 
     private void SyncPlayheadFromPlayback()
     {
         if (!IsPlaying)
             return;
+
         var seconds = _services.Playback.Position.TotalSeconds;
+
+        // MCI raises no event when a wave reaches its end; the position simply stops at the file
+        // duration. Detect that here so the playhead can return to the project start.
+        var ended = (_playbackSeconds > 0 && seconds >= _playbackSeconds - 0.05)
+                    || (!_services.Playback.IsPlaying && seconds > 0.25);
+        if (ended)
+        {
+            FinishPlayback(rewind: true);
+            return;
+        }
+
         PlayheadBeat = 1.0 + seconds * _project.Bpm / 60.0;
+    }
+
+    /// <summary>Stops the transport; a natural end (<paramref name="rewind"/>) returns the playhead to beat 1.</summary>
+    private void FinishPlayback(bool rewind)
+    {
+        _services.Playback.Stop();
+        _playheadTimer.Stop();
+        IsPlaying = false;
+        _playbackSeconds = 0;
+        if (rewind)
+            PlayheadBeat = 1.0;
+    }
+
+    private static double ReadDurationSeconds(string path)
+    {
+        try
+        {
+            return WavReader.ReadInfo(path).DurationSeconds;
+        }
+        catch (Exception)
+        {
+            // The duration is only used to detect the natural end; the MCI mode is the fallback.
+            return 0;
+        }
     }
 
     private string? EnsureBgmMix(string vocalPath)
@@ -2776,6 +2911,4 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         (RemoveNodeCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
-
-    private static string GuessVowel(string? phoneme) => LyricVowel.Guess(phoneme);
 }

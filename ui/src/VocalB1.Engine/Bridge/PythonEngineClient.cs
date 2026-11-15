@@ -25,6 +25,7 @@ public sealed class PythonEngineClient : IRenderEngine
     private Task? _stdoutPump;
     private Task? _stderrPump;
     private PendingRender? _pending;
+    private PendingAnalysis? _pendingAnalysis;
     private TaskCompletionSource<bool>? _handshake;
     private bool _ready;
     private bool _disposed;
@@ -184,9 +185,9 @@ public sealed class PythonEngineClient : IRenderEngine
                         count = plan.FrameCount,
                     },
                     curves = plan.Curves,
-                    // Opt-in: the envelope warp may only run for a voicebank with a measured formant
-                    // profile. Without formants.json the built-in vowel table would move every voice
-                    // onto one generic F1~F7 layout, which rewrites the singer's timbre.
+                    // Opt-in: the envelope warp may only run for a voicebank that has been decomposed.
+                    // Without measurements the built-in vowel table would move every voice onto one
+                    // generic F1~F7 layout, which rewrites the singer's timbre.
                     formantTargets = plan.FormantProfile.IsMeasured
                         ? ToJagged(plan.FormantTargetsHz)
                         : null,
@@ -232,6 +233,82 @@ public sealed class PythonEngineClient : IRenderEngine
                 {
                     if (ReferenceEquals(_pending, pending))
                         _pending = null;
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Voicebank decomposition
+    // ------------------------------------------------------------------
+    public async Task<VoicebankAnalysis> AnalyzeVoicebankAsync(
+        string voicebankRoot,
+        IProgress<EngineEvent>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (string.IsNullOrWhiteSpace(voicebankRoot) || !Directory.Exists(voicebankRoot))
+            throw new EngineException($"声库目录不存在：{voicebankRoot}");
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_ready)
+                throw new EngineException("引擎尚未初始化。");
+
+            if (_process is null || _process.HasExited)
+            {
+                _ready = false;
+                throw new EngineException("Python 进程已退出，请重试。\n" + StderrSummary());
+            }
+
+            var id = Guid.NewGuid().ToString("N");
+            var pending = new PendingAnalysis(progress);
+            lock (_sync)
+                _pendingAnalysis = pending;
+
+            progress?.Report(new EngineEvent(EngineEventKind.Log, "已提交声库分解请求…"));
+
+            var json = JsonSerializer.Serialize(new
+            {
+                id,
+                cmd = "analyze_voicebank",
+                voicebank = voicebankRoot,
+            }, BridgeJson.RequestOptions);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.AnalyzeTimeoutSeconds));
+            using var registration = timeoutCts.Token.Register(() =>
+            {
+                pending.TryCancel(timeoutCts.Token);
+                StopProcess();
+            });
+
+            await WriteLineAsync(json, timeoutCts.Token).ConfigureAwait(false);
+
+            try
+            {
+                return await pending.Completion.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("声库分解已取消，Python 进程已终止。", cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new EngineException($"声库分解超时（{_options.AnalyzeTimeoutSeconds}s），进程已终止。");
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_pendingAnalysis, pending))
+                        _pendingAnalysis = null;
                 }
             }
         }
@@ -287,6 +364,7 @@ public sealed class PythonEngineClient : IRenderEngine
         lock (_sync)
         {
             _pending?.TryFail(new EngineException("Python 进程意外退出。\n" + StderrSummary()));
+            _pendingAnalysis?.TryFail(new EngineException("Python 进程意外退出。\n" + StderrSummary()));
         }
     }
 
@@ -359,13 +437,13 @@ public sealed class PythonEngineClient : IRenderEngine
                 break;
 
             case "log":
-                _pending?.Progress?.Report(new EngineEvent(
+                ReportEvent(new EngineEvent(
                     message.Level is "warn" or "error" ? EngineEventKind.Warning : EngineEventKind.Log,
                     message.Message ?? string.Empty));
                 break;
 
             case "progress":
-                _pending?.Progress?.Report(new EngineEvent(
+                ReportEvent(new EngineEvent(
                     EngineEventKind.Progress,
                     message.Message ?? string.Empty,
                     message.Value));
@@ -373,6 +451,12 @@ public sealed class PythonEngineClient : IRenderEngine
 
             case "result":
             {
+                if (_pendingAnalysis is not null)
+                {
+                    CompleteAnalysis(message);
+                    break;
+                }
+
                 var pending = _pending;
                 if (pending is null)
                     break;
@@ -398,10 +482,45 @@ public sealed class PythonEngineClient : IRenderEngine
                     : $"[{message.ErrorType}{(where.Length > 0 ? " @ " + where : string.Empty)}] {detail}";
                 if (!string.IsNullOrWhiteSpace(message.Traceback))
                     typed += "\n\n" + message.Traceback;
-                _pending?.TryFail(new EngineException(typed));
-                if (_pending is null)
+                if (_pending is null && _pendingAnalysis is null)
+                {
                     _handshake?.TrySetException(new EngineException(typed));
+                    break;
+                }
+                _pending?.TryFail(new EngineException(typed));
+                _pendingAnalysis?.TryFail(new EngineException(typed));
                 break;
+        }
+    }
+
+    /// <summary>Forwards a bridge event to whichever request is currently in flight.</summary>
+    private void ReportEvent(EngineEvent engineEvent)
+    {
+        _pending?.Progress?.Report(engineEvent);
+        _pendingAnalysis?.Progress?.Report(engineEvent);
+    }
+
+    private void CompleteAnalysis(BridgeMessage message)
+    {
+        var pending = _pendingAnalysis;
+        if (pending is null)
+            return;
+
+        if (message.Analysis is not { } element)
+        {
+            pending.TryFail(new EngineException("声库分解结果缺少 analysis 字段。"));
+            return;
+        }
+
+        try
+        {
+            var analysis = element.Deserialize<VoicebankAnalysis>(BridgeJson.Options)
+                ?? throw new EngineException("声库分解结果为空。");
+            pending.TrySucceed(analysis);
+        }
+        catch (Exception ex)
+        {
+            pending.TryFail(new EngineException("解析声库分解结果失败：" + ex.Message, ex));
         }
     }
 
@@ -527,6 +646,19 @@ public sealed class PythonEngineClient : IRenderEngine
         public Task<RenderResult> Completion => _completion.Task;
 
         public void TrySucceed(RenderResult result) => _completion.TrySetResult(result);
+        public void TryFail(Exception ex) => _completion.TrySetException(ex);
+        public void TryCancel(CancellationToken token) => _completion.TrySetCanceled(token);
+    }
+
+    private sealed class PendingAnalysis(IProgress<EngineEvent>? progress)
+    {
+        private readonly TaskCompletionSource<VoicebankAnalysis> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IProgress<EngineEvent>? Progress { get; } = progress;
+        public Task<VoicebankAnalysis> Completion => _completion.Task;
+
+        public void TrySucceed(VoicebankAnalysis analysis) => _completion.TrySetResult(analysis);
         public void TryFail(Exception ex) => _completion.TrySetException(ex);
         public void TryCancel(CancellationToken token) => _completion.TrySetCanceled(token);
     }

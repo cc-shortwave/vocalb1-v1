@@ -14,6 +14,7 @@ Requests (C# -> Python):
     {"id": "1", "cmd": "ping"}
     {"id": "2", "cmd": "selfcheck"}
     {"id": "3", "cmd": "render", "output": "out/a.wav", "project": { ... }}
+    {"id": "5", "cmd": "analyze_voicebank", "voicebank": "voicebank/01_..."}
     {"id": "4", "cmd": "shutdown"}
 
 Responses (Python -> C#):
@@ -21,13 +22,18 @@ Responses (Python -> C#):
     {"id": "3", "type": "log", "level": "info", "message": "..."}
     {"id": "3", "type": "progress", "value": 0.35, "message": "..."}
     {"id": "3", "type": "result", "output": "...", "elapsedSec": 12.3, "durationSec": 7.5}
+    {"id": "5", "type": "result", "analysis": {"phonemes": {...}, "vowels": {...}, "breath": {...}, "failed": [...]}}
     {"id": "3", "type": "error", "message": "...", "traceback": "..."}
+
+The voicebank analysis reuses the same pyworld decomposition as rendering, so the C# side never has
+to read a sidecar formants file: formants, measured f0 and aperiodicity are returned inline.
 
 The project inside a render request is serialized by the C# project model (camelCase);
 this script also accepts snake_case keys and finally translates them into
 the keyword arguments of synthesize().
 """
 
+import datetime as _dt
 import json
 import os
 import sys
@@ -40,6 +46,12 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_BASE_DIR, "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+# The voicebank analyzer lives in tools/; its envelope peak picker and kana row mapping are shared
+# with this bridge so offline analysis and in-app analysis cannot drift apart.
+_TOOLS_DIR = os.path.join(_REPO_ROOT, "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
 
 _PROTOCOL_OUT = sys.__stdout__
 _CURRENT_ID = [None]
@@ -377,6 +389,132 @@ def cmd_render(req, req_id):
                "elapsedSec": round(time.time() - started, 3)})
 
 
+def _analyze_sample(path, frame_period):
+    """Decomposes one wav into (F1..F7, f0 Hz, aperiodicity); raises when it cannot be measured."""
+    import numpy as np
+    import soundfile as sf
+    from vocal_lib.core.pyworld_processor import extract_pyworld_features
+
+    data, sample_rate = sf.read(path, dtype="float64", always_2d=True)
+    if data.size == 0:
+        raise ValueError("空音频")
+    mono = data.mean(axis=1)
+    features = extract_pyworld_features(mono, int(sample_rate), frame_period=frame_period)
+    sp = np.asarray(features["sp"], dtype=np.float64)
+    ap = np.asarray(features["ap"], dtype=np.float64)
+    f0 = np.asarray(features["f0"], dtype=np.float64)
+    voiced = np.asarray(features["voiced_flags"], dtype=bool)
+    if sp.size == 0 or int(voiced.sum()) < 2:
+        raise ValueError("没有足够的浊音帧")
+
+    import analyze_voicebank as vb
+
+    f0_voiced = f0[voiced]
+    f0_voiced = f0_voiced[f0_voiced > 0]
+    f0_hz = float(np.median(f0_voiced)) if f0_voiced.size else 0.0
+
+    # A formant cannot sit below the fundamental: start the peak search above the measured f0.
+    formants = vb._pick_envelope_peaks(np.median(sp[voiced], axis=0), int(sample_rate),
+                                       min_hz=f0_hz if f0_hz > 0 else None)
+    if formants is None:
+        raise ValueError("无法从谱包络定位共振峰")
+
+    aperiodicity = float(np.mean(np.clip(ap[voiced], 0.0, 1.0))) if ap.size else 0.0
+    return [float(v) for v in formants], f0_hz, aperiodicity
+
+
+def cmd_analyze_voicebank(req, req_id):
+    started = time.time()
+    root = os.path.abspath(req.get("voicebank") or "")
+    if not root or not os.path.isdir(root):
+        _emit({"id": req_id, "type": "error", "errorType": "AnalyzerError", "stage": "validate",
+               "message": f"[VoicebankAnalyzer @ validate] 声库目录不存在：{root}"})
+        return
+
+    # The C# library scanner recurses subdirectories, so the decomposition must scan the same set.
+    paths = []
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            if name.lower().endswith(".wav"):
+                paths.append(os.path.join(base, name))
+    paths.sort()
+    if not paths:
+        _emit({"id": req_id, "type": "error", "errorType": "AnalyzerError", "stage": "scan",
+               "message": f"[VoicebankAnalyzer @ scan] 声库目录中没有 wav：{root}"})
+        return
+
+    try:
+        import numpy as np
+        import analyze_voicebank as vb
+    except Exception as exc:  # noqa: BLE001 - reported to the UI, never swallowed
+        _emit({"id": req_id, "type": "error", "errorType": type(exc).__name__, "stage": "analyze",
+               "message": f"[VoicebankAnalyzer @ analyze] 无法导入分解依赖：{type(exc).__name__}: {exc}",
+               "traceback": traceback.format_exc()})
+        return
+
+    frame_period = float(req.get("framePeriod") or 5.0)
+    phonemes: dict[str, dict] = {}
+    vowel_rows: dict[str, list] = {}
+    vowel_breath: dict[str, list] = {}
+    failed: list[str] = []
+    total = len(paths)
+    _log("info", f"开始分解声库：{root}（{total} 个样本）")
+
+    for index, path in enumerate(paths, start=1):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        _progress((index - 1) / total, f"{index}/{total} {stem}")
+        if stem in phonemes:
+            _log("warn", f"样本 {stem} 重复出现，已使用先扫描到的文件")
+            continue
+        try:
+            formants, f0_hz, aperiodicity = _analyze_sample(path, frame_period)
+        except Exception as exc:  # noqa: BLE001 - per-sample failure, reported and skipped
+            failed.append(f"{stem}: {type(exc).__name__}: {exc}")
+            _log("warn", f"样本 {stem} 分解失败：{type(exc).__name__}: {exc}")
+            continue
+
+        phonemes[stem] = {
+            "formants": formants,
+            "f0Hz": f0_hz,
+            "aperiodicity": aperiodicity,
+            "breathFactor": 1.0,
+        }
+        vowel_rows.setdefault(vb._vowel_of(stem), []).append(formants)
+
+    if not phonemes:
+        _emit({"id": req_id, "type": "error", "errorType": "AnalyzerError", "stage": "analyze",
+               "message": f"[VoicebankAnalyzer @ analyze] 没有可用的样本，失败 {len(failed)} 个。"})
+        return
+
+    # Breath baseline: aperiodicity relative to the bank median, so the average sample stays neutral.
+    measured = [m["aperiodicity"] for m in phonemes.values() if m["aperiodicity"] > 0]
+    base = float(np.median(measured)) if measured else 0.0
+    for stem, measurement in phonemes.items():
+        factor = 1.0
+        if base > 0:
+            factor = min(max(measurement["aperiodicity"] / base, 0.5), 2.0)
+        measurement["breathFactor"] = round(factor, 4)
+        vowel_breath.setdefault(vb._vowel_of(stem), []).append(factor)
+
+    vowels = {}
+    for vowel, rows in vowel_rows.items():
+        median = vb._median_rows(rows)
+        if median:
+            vowels[vowel] = [float(v) for v in median]
+    breath = {vowel: round(float(np.median(values)), 4) for vowel, values in vowel_breath.items()}
+
+    _progress(1.0, "Done")
+    _emit({"id": req_id, "type": "result", "elapsedSec": round(time.time() - started, 3),
+           "analysis": {
+               "phonemes": phonemes,
+               "vowels": vowels,
+               "breath": breath,
+               "failed": failed,
+               "source": "python-bridge",
+               "generatedAt": _dt.datetime.now().isoformat(timespec="seconds"),
+           }})
+
+
 def main():
     if hasattr(sys.stdin, "reconfigure"):
         # utf-8-sig: tolerate a BOM written by the peer on the first line
@@ -407,6 +545,8 @@ def main():
             cmd_selfcheck(req)
         elif cmd == "render":
             cmd_render(req, req_id)
+        elif cmd == "analyze_voicebank":
+            cmd_analyze_voicebank(req, req_id)
         elif cmd == "shutdown":
             _emit({"id": req_id, "type": "bye"})
             break

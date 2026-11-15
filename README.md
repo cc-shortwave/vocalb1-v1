@@ -34,8 +34,9 @@ pure signal processing that runs on a 2-core / 2 GB machine.
 - **UTAU 単独音 voicebanks** — 142 basic kana
 - **Dual-mode sample resolution** — phoneme names resolved from the voicebank, or one syllable
   overrides it with an absolute audio path
-- **Voicebank formant analysis** — `tools/analyze_voicebank.py` writes `formants.json` so the vowel
-  manager drives F1~F7 from the singer's own measured resonances
+- **Voicebank decomposition** — the engine measures formants, f0 and aperiodicity for every sample
+  in memory (no sidecar file); the vowel manager drives F1~F7 from the singer's own resonances and the
+  measured f0 calibrates the source pitch
 - **Zero pretraining** — no model weights, no dataset, no GPU
 - **Offline** — nothing leaves your machine
 - **Desktop UI** (C# / WPF) plus a plain command-line entry point

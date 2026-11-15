@@ -77,12 +77,25 @@ public sealed class SingerRenderPlan
                     $"歌手「{singer.Name}」没有绑定参数。");
 
             var resolver = new VoicebankSampleResolver(singer.LibraryRoot);
+            var profile = VoicebankFormantProfile.Load(singer.LibraryRoot);
             var segments = lyric.Segments
                 .OrderBy(s => s.BeatStart)
                 .Select(s =>
                 {
                     var copy = s.Clone();
                     copy.Audio = resolver.Resolve(s, singer.Name, lyric.ResolveFromVoicebank);
+
+                    // The bank's measured f0 is the source pitch baseline: a stale or guessed
+                    // annotation must not shift the sample to the wrong register. Manual absolute
+                    // samples keep their own SrcPitch.
+                    if (lyric.ResolveFromVoicebank
+                        && !s.PreferAbsoluteAudio
+                        && profile.TryGetSampleMeasurement(Path.GetFileNameWithoutExtension(copy.Audio), out var measurement)
+                        && measurement.F0Hz > 0)
+                    {
+                        copy.SrcPitch = PitchMath.ToPitchName(PitchMath.HzToSemitones(measurement.F0Hz));
+                    }
+
                     return copy;
                 })
                 .ToList();
@@ -97,7 +110,7 @@ public sealed class SingerRenderPlan
                 Singer = singer,
                 Lyric = lyric,
                 Parameters = parameters,
-                FormantProfile = VoicebankFormantProfile.Load(singer.LibraryRoot),
+                FormantProfile = profile,
                 SingerIndex = singerIndex,
                 SingerCount = singerCount,
                 Bpm = project.Bpm,
@@ -124,8 +137,10 @@ public sealed class SingerRenderPlan
 
                 var vowel = !string.IsNullOrWhiteSpace(unit?.Vowel)
                     ? unit!.Vowel
-                    : segment?.Vowel ?? "a";
-                var phoneme = unit?.Phoneme ?? segment?.Phoneme ?? string.Empty;
+                    : segment?.Vowel ?? string.Empty;
+                var phoneme = !string.IsNullOrWhiteSpace(unit?.Phoneme)
+                    ? unit!.Phoneme!
+                    : segment?.PhonemeLabel ?? string.Empty;
                 var semitone = PitchAt(plan.PitchLine, beat,
                     segment is null ? 0 : ParseSemitone(segment.DstPitch));
                 var pitchHz = PitchMath.SemitonesToHz(semitone);
@@ -135,12 +150,14 @@ public sealed class SingerRenderPlan
                     pitchHz, semitone, VoicebankFormantProfile.NormalizeVowel(vowel), phoneme,
                     singerIndex, singerCount, frame);
 
-                var formants = unit?.FormantHz is { Length: 7 } manual
-                    ? manual
-                    : plan.FormantProfile.Resolve(vowel, phoneme);
+                var formants = unit?.FormantHz is { Length: 7 } unitFormants
+                    ? unitFormants
+                    : segment?.FormantHz is { Length: 7 } segmentFormants
+                        ? segmentFormants
+                        : plan.FormantProfile.Resolve(vowel, phoneme);
 
                 // The baseline resolver honours manual lyric formants first, then the measured voicebank
-                // profile, then the built-in table — the node graphs only ever add to that baseline.
+                // profile; a missing measurement is an error. The node graphs only ever add to that baseline.
                 double ResolveBase(string key) =>
                     BaseValue(key, formants, unit, plan.FormantProfile, parameters);
 

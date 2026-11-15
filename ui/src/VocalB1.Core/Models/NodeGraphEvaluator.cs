@@ -309,8 +309,9 @@ public sealed class NodeGraphEvaluator
         var vowel = string.IsNullOrWhiteSpace(node.Text)
             ? VoicebankFormantProfile.NormalizeVowel(_globals.Vowel)
             : VoicebankFormantProfile.NormalizeVowel(node.Text);
+        var phoneme = string.IsNullOrWhiteSpace(node.Text) ? _globals.Phoneme : null;
         var factor = node.UseVoicebank
-            ? _vowels.BreathFactor(vowel)
+            ? _vowels.BreathFactor(vowel, phoneme)
             : VoicebankFormantProfile.BuiltInBreathFactor(vowel);
 
         return node.BreathOutput switch
@@ -330,7 +331,7 @@ public sealed class NodeGraphEvaluator
 
         var field = VoicebankField.Get(node.Field);
         if (field.Key == VoicebankField.Breath.Key)
-            return _vowels.BreathFactor(_globals.Vowel);
+            return _vowels.BreathFactor(_globals.Vowel, _globals.Phoneme);
 
         var index = ParameterKeys.FormantIndexOf(field.Key);
         if (index < 0)

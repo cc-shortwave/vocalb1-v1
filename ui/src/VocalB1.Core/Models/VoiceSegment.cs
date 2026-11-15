@@ -48,10 +48,10 @@ public sealed class VoiceSegment
     public string? LyricOverride { get; set; }
 
     /// <summary>
-    /// Vowel class of this syllable (a/i/u/e/o/N/-). Drives the vowel manager's F1~F7 output unless
-    /// <see cref="FormantHz"/> is supplied manually.
+    /// Optional vowel class (a/i/u/e/o/n). Empty keeps the formant targets driven by the measured
+    /// voicebank data for <see cref="Phoneme"/>; the importer never guesses it from characters.
     /// </summary>
-    public string Vowel { get; set; } = "a";
+    public string Vowel { get; set; } = string.Empty;
 
     /// <summary>Manual formant target positions F1~F7 in Hz; null = use the vowel manager.</summary>
     public double[]? FormantHz { get; set; }
@@ -76,6 +76,17 @@ public sealed class VoiceSegment
     public string Lyric => LyricOverride ?? (string.IsNullOrWhiteSpace(Audio)
         ? "(空)"
         : Path.GetFileNameWithoutExtension(Audio).TrimStart('_') is { Length: > 0 } s ? s : "(空)");
+
+    /// <summary>
+    /// Phoneme key used for measured voicebank lookups: the explicit phoneme, otherwise the audio stem
+    /// (kept with its leading underscore so decomposition keys match exactly).
+    /// </summary>
+    [JsonIgnore]
+    public string PhonemeLabel => !string.IsNullOrWhiteSpace(Phoneme)
+        ? Phoneme
+        : string.IsNullOrWhiteSpace(Audio)
+            ? string.Empty
+            : Path.GetFileNameWithoutExtension(Audio);
 
     public double Length => BeatEnd - BeatStart;
 

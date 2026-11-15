@@ -27,6 +27,9 @@ public sealed class EngineOptions
     /// <summary>Timeout for a single render.</summary>
     public int RenderTimeoutSeconds { get; set; } = 900;
 
+    /// <summary>Timeout for decomposing one voicebank (many wav files, so this is generous).</summary>
+    public int AnalyzeTimeoutSeconds { get; set; } = 900;
+
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
