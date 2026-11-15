@@ -1,18 +1,15 @@
-using System.Text.Json;
 using VocalB1.Core.Diagnostics;
 
 namespace VocalB1.Core.Models;
 
 /// <summary>
-/// Voicebank formant profile: the tool the vowel manager reads from. Prefers measured formants stored in
-/// &lt;voicebank&gt;/formants.json; falls back to a built-in vowel table when the voicebank has not been
-/// analysed yet. Both paths are explicit: a malformed profile raises a <see cref="StageException"/>
-/// instead of silently degrading.
+/// Voicebank formant profile backed by the in-memory decomposition produced by the Python engine
+/// (<see cref="VoicebankAnalysisCache"/>). No external formants file is read: a lyric phoneme without a
+/// measured entry is a hard error and is never classified from its characters. Explicit vowel nodes may
+/// still use the measured vowel averages, or the built-in table when the node opts out of voicebank data.
 /// </summary>
 public sealed class VoicebankFormantProfile
 {
-    public const string FileName = "formants.json";
-
     private static readonly Dictionary<string, double[]> BuiltInVowels = new(StringComparer.OrdinalIgnoreCase)
     {
         ["a"] = [800, 1200, 2500, 3400, 4000, 4500, 5000],
@@ -36,90 +33,163 @@ public sealed class VoicebankFormantProfile
     };
 
     private readonly Dictionary<string, double[]> _vowels;
-    private readonly Dictionary<string, double[]> _phonemes;
+    private readonly Dictionary<string, PhonemeMeasurement> _phonemes;
     private readonly Dictionary<string, double> _breath;
-    private readonly double _scale;
 
     public string VoicebankRoot { get; }
 
+    /// <summary>True when the bank has been decomposed and the result is cached for this session.</summary>
     public bool IsMeasured { get; }
+
+    /// <summary>Samples the engine could not decompose; surfaced as warnings, never used as data.</summary>
+    public IReadOnlyList<string> FailedSamples { get; }
 
     private VoicebankFormantProfile(
         string root,
         Dictionary<string, double[]> vowels,
-        Dictionary<string, double[]> phonemes,
+        Dictionary<string, PhonemeMeasurement> phonemes,
         Dictionary<string, double> breath,
-        double scale,
-        bool measured)
+        bool measured,
+        IReadOnlyList<string>? failed = null)
     {
         VoicebankRoot = root;
         _vowels = vowels;
         _phonemes = phonemes;
         _breath = breath;
-        _scale = scale;
         IsMeasured = measured;
+        FailedSamples = failed ?? [];
     }
 
+    /// <summary>
+    /// Builds the profile from the session cache. A bank that has not been decomposed yet yields an
+    /// unmeasured profile whose <see cref="Resolve"/> is a hard error.
+    /// </summary>
     public static VoicebankFormantProfile Load(string? voicebankRoot)
     {
         var root = voicebankRoot ?? string.Empty;
-        var path = string.IsNullOrWhiteSpace(root) ? null : Path.Combine(root, FileName);
-
-        if (path is null || !File.Exists(path))
-            return new VoicebankFormantProfile(root, BuiltInVowels, new(StringComparer.OrdinalIgnoreCase),
-                BuiltInBreath, 1.0, false);
-
-        return StageGuard.Run(nameof(VoicebankFormantProfile), "load", () =>
+        if (!VoicebankAnalysisCache.TryGet(root, out var analysis))
         {
-            var document = JsonSerializer.Deserialize<ProfileFile>(File.ReadAllText(path),
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                ?? throw new InvalidDataException("formants.json 为空或无法解析。");
+            return new VoicebankFormantProfile(root,
+                new(StringComparer.OrdinalIgnoreCase),
+                new(StringComparer.OrdinalIgnoreCase),
+                new(StringComparer.OrdinalIgnoreCase),
+                false);
+        }
 
-            var vowels = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (key, value) in document.Vowels ?? [])
-                vowels[NormalizeVowel(key)] = Sanitize(value, key);
+        var vowels = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in analysis.Vowels)
+        {
+            if (TrySanitize(value, out var clean))
+                vowels[NormalizeVowel(key)] = clean;
+        }
 
-            var phonemes = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (key, value) in document.Phonemes ?? [])
-                phonemes[key] = Sanitize(value, key);
+        var phonemes = new Dictionary<string, PhonemeMeasurement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in analysis.Phonemes)
+        {
+            if (TrySanitize(value.Formants, out var clean))
+                phonemes[key] = new PhonemeMeasurement
+                {
+                    Formants = clean,
+                    F0Hz = value.F0Hz,
+                    Aperiodicity = value.Aperiodicity,
+                    BreathFactor = value.BreathFactor,
+                };
+        }
 
-            var breath = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (key, value) in document.Breath ?? [])
-                breath[NormalizeVowel(key)] = Math.Clamp(value, 0, 4);
+        var breath = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in analysis.Breath)
+            breath[NormalizeVowel(key)] = Math.Clamp(value, 0.05, 4.0);
 
-            return new VoicebankFormantProfile(root, vowels, phonemes, breath,
-                double.IsFinite(document.Scale) && document.Scale > 0 ? document.Scale : 1.0, true);
-        });
+        return new VoicebankFormantProfile(root, vowels, phonemes, breath, true, analysis.Failed);
     }
 
-    private static double[] Sanitize(double[]? values, string key)
+    private static bool TrySanitize(double[]? values, out double[] sanitized)
     {
+        sanitized = [];
         if (values is null || values.Length < 7)
-            throw new StageException(nameof(VoicebankFormantProfile), "load",
-                $"formants.json 中「{key}」需要 7 个共振峰，实际 {values?.Length ?? 0} 个。");
+            return false;
 
-        var copy = values.Take(7).Select(v => double.IsFinite(v) && v > 0 ? v : 0).ToArray();
-        if (copy.Any(v => v <= 0))
-            throw new StageException(nameof(VoicebankFormantProfile), "load",
-                $"formants.json 中「{key}」包含非正数或 NaN。");
-        return copy;
+        var copy = values.Take(7).ToArray();
+        if (copy.Any(v => !double.IsFinite(v) || v <= 0))
+            return false;
+        sanitized = copy;
+        return true;
     }
 
-    /// <summary>Returns F1~F7 for a vowel class, preferring measured data for the given phoneme.</summary>
+    /// <summary>
+    /// Returns F1~F7 for a lyric phoneme from the bank's measured data. A phoneme without a measured
+    /// entry is a hard error: the pipeline never falls back to a character-derived vowel.
+    /// </summary>
     public double[] Resolve(string? vowel, string? phoneme)
     {
-        if (!string.IsNullOrWhiteSpace(phoneme) && _phonemes.TryGetValue(phoneme, out var measured))
-            return Scale(measured);
+        if (!string.IsNullOrWhiteSpace(phoneme))
+        {
+            if (TryGetMeasured(phoneme, out var measured))
+                return measured;
+
+            var reason = IsMeasured
+                ? "后台分解未得到该音节（详见日志），或该样本没有足够的浊音帧。"
+                : "声库尚未完成分解分析；请选择声库后等待后台分析，或点击「分析声库」。";
+            throw new StageException(nameof(VoicebankFormantProfile), "resolve",
+                $"声库「{VoicebankRoot}」缺少音节「{phoneme}」的实测共振峰：{reason}");
+        }
 
         var normalized = NormalizeVowel(vowel);
         if (_vowels.TryGetValue(normalized, out var value))
-            return Scale(value);
+            return value.ToArray();
 
-        return Scale(BuiltInVowels.TryGetValue(normalized, out var fallback) ? fallback : BuiltInVowels["a"]);
+        return BuiltInVowels.TryGetValue(normalized, out var fallback)
+            ? fallback.ToArray()
+            : BuiltInVowels["a"].ToArray();
     }
 
-    public double BreathFactor(string? vowel) =>
-        _breath.TryGetValue(NormalizeVowel(vowel), out var value) ? value : 1.0;
+    /// <summary>
+    /// Looks up the measured F1~F7 for a phoneme. The keys come from sample stems, so both "あ" and
+    /// "_あ" (and their underscored variants) are accepted.
+    /// </summary>
+    public bool TryGetMeasured(string? phoneme, out double[] formants)
+    {
+        if (TryGetSampleMeasurement(phoneme, out var measurement))
+        {
+            formants = measurement.Formants.ToArray();
+            return true;
+        }
+
+        formants = [];
+        return false;
+    }
+
+    /// <summary>Full measured entry (formants, f0, aperiodicity) for a phoneme or sample stem.</summary>
+    public bool TryGetSampleMeasurement(string? phoneme, out PhonemeMeasurement measurement)
+    {
+        foreach (var candidate in VoicebankAnalysis.PhonemeCandidates(phoneme))
+        {
+            if (_phonemes.TryGetValue(candidate, out var found))
+            {
+                measurement = found;
+                return true;
+            }
+        }
+
+        measurement = new PhonemeMeasurement();
+        return false;
+    }
+
+    /// <summary>
+    /// Measured breath factor: the lyric phoneme wins, then the vowel row, then neutral.
+    /// </summary>
+    public double BreathFactor(string? vowel, string? phoneme = null)
+    {
+        if (!string.IsNullOrWhiteSpace(phoneme)
+            && TryGetSampleMeasurement(phoneme, out var measurement)
+            && double.IsFinite(measurement.BreathFactor)
+            && measurement.BreathFactor > 0)
+        {
+            return Math.Clamp(measurement.BreathFactor, 0.05, 4.0);
+        }
+
+        return _breath.TryGetValue(NormalizeVowel(vowel), out var value) ? value : 1.0;
+    }
 
     /// <summary>Built-in vowel table, used when a modifier explicitly disables voicebank measurements.</summary>
     public static double[] BuiltInResolve(string? vowel)
@@ -133,13 +203,10 @@ public sealed class VoicebankFormantProfile
     public static double BuiltInBreathFactor(string? vowel) =>
         BuiltInBreath.TryGetValue(NormalizeVowel(vowel), out var value) ? value : 1.0;
 
-    private double[] Scale(double[] values) =>
-        Math.Abs(_scale - 1.0) < 1e-9 ? values.ToArray() : values.Select(v => v * _scale).ToArray();
-
     public static string NormalizeVowel(string? vowel)
     {
         if (string.IsNullOrWhiteSpace(vowel))
-            return "a";
+            return string.Empty;
         var value = vowel.Trim().ToLowerInvariant();
         return value switch
         {
@@ -150,15 +217,7 @@ public sealed class VoicebankFormantProfile
             "お" or "オ" => "o",
             "ん" or "ン" => "n",
             "a" or "i" or "u" or "e" or "o" or "n" => value,
-            _ => value.Length == 0 ? "a" : value[..1],
+            _ => value.Length == 0 ? string.Empty : value[..1],
         };
-    }
-
-    private sealed class ProfileFile
-    {
-        public Dictionary<string, double[]>? Vowels { get; set; }
-        public Dictionary<string, double[]>? Phonemes { get; set; }
-        public Dictionary<string, double>? Breath { get; set; }
-        public double Scale { get; set; } = 1.0;
     }
 }

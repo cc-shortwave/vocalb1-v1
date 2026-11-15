@@ -89,6 +89,7 @@ public sealed class PianoRollView : FrameworkElement
     private Brush _bgmFill = Brushes.Transparent;
     private Brush _bgmLabelBrush = Brushes.LightBlue;
     private Pen _bgmPen = new();
+    private Brush _paddingFill = Brushes.Transparent;
 
     private DragState? _drag;
 
@@ -200,6 +201,11 @@ public sealed class PianoRollView : FrameworkElement
             : Color.FromArgb(0x3A, 0x8A, 0xBB, 0xFF)));
         _bgmPen = new Pen(_bgmLabelBrush, 1);
         _bgmPen.Freeze();
+
+        // Left of beat 1 is viewport padding only, so it is washed with a flat grey to read as inert.
+        _paddingFill = Frozen(new SolidColorBrush(light
+            ? Color.FromArgb(0x26, 0x6B, 0x6B, 0x6B)
+            : Color.FromArgb(0x3C, 0x6B, 0x6B, 0x6B)));
     }
 
     // ------------------------------------------------------------------
@@ -413,7 +419,7 @@ public sealed class PianoRollView : FrameworkElement
         if (d is not PianoRollView view)
             return;
 
-        // While dragging the playhead it follows the mouse without centering; centering happens on release.
+        // While the playhead is dragged it follows the cursor; the view is re-centred on release.
         if (view._drag is { Kind: DragKind.Playhead })
             return;
 
@@ -423,20 +429,33 @@ public sealed class PianoRollView : FrameworkElement
             view.ResetView();
     }
 
-    /// <summary>Shift the viewport so the given beat sits at the center of the plot area (the playhead stays fixed and the content scrolls).</summary>
+    /// <summary>
+    /// Puts the given beat at the centre of the plot (the playhead stays fixed and the content scrolls).
+    /// The view may start before beat 1: that left band is viewport padding only — no grid, no
+    /// interaction — which keeps the playhead centred near the beginning even though the timeline
+    /// itself starts at beat 1.
+    /// </summary>
     private void CenterViewOnPlayhead(double beat)
     {
         var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
-        _viewStartBeat = Math.Max(1, beat - plotWidth / PxPerBeatFor(plotWidth) / 2);
+        _viewStartBeat = beat - plotWidth / PxPerBeatFor(plotWidth) / 2;
         InvalidateVisual();
     }
 
     /// <summary>Return the viewport to beat 1 when the playhead is hidden.</summary>
-    private void ResetView()
+    private void ResetView() => CenterViewOnPlayhead(1);
+
+    /// <summary>Re-derive the view start after a resize so the playhead does not drift off-centre.</summary>
+    protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
     {
-        _viewStartBeat = 1;
-        InvalidateVisual();
+        base.OnRenderSizeChanged(sizeInfo);
+        if (_panning || _brushing || _drag is not null)
+            return;
+        CenterViewOnPlayhead(PlayheadDisplayBeat);
     }
+
+    /// <summary>True when the point lies in the left padding band (left of beat 1): filler only, not interactive.</summary>
+    private static bool IsInLeftPadding(RollLayout layout, Point position) => position.X < layout.X(1);
 
     /// <summary>Raised when a note is added by right-click in Note mode.</summary>
     public event EventHandler<NoteAddEventArgs>? NoteAddRequested;
@@ -467,6 +486,7 @@ public sealed class PianoRollView : FrameworkElement
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
         DrawPitchRows(dc, layout, dpi);
+        DrawLeftPadding(dc, layout);
         DrawBeats(dc, layout, dpi);
         DrawBgmLane(dc, layout, dpi);
         DrawNotes(dc, layout, segments, dpi);
@@ -575,6 +595,22 @@ public sealed class PianoRollView : FrameworkElement
                 GutterWidth - text.Width - 6,
                 y + (layout.RowHeight - text.Height) / 2));
         }
+    }
+
+    /// <summary>
+    /// Left of beat 1 the timeline does not exist: the band only pads the viewport so the centred
+    /// playhead can reach the first beat. It is washed grey and accepts no input.
+    /// </summary>
+    private void DrawLeftPadding(DrawingContext dc, RollLayout layout)
+    {
+        var edge = layout.X(1);
+        var width = Math.Min(edge, layout.Plot.Right) - layout.Plot.Left;
+        if (width <= 0.5)
+            return;
+
+        var height = layout.Plot.Height + (layout.BgmLane.IsEmpty ? 0 : layout.BgmLane.Height);
+        dc.DrawRectangle(_paddingFill, null,
+            new Rect(layout.Plot.Left, layout.Plot.Top, width, height));
     }
 
     private void DrawBeats(DrawingContext dc, RollLayout layout, double dpi)
@@ -1348,6 +1384,19 @@ public sealed class PianoRollView : FrameworkElement
         if (IsMouseCaptured)
             ReleaseMouseCapture();
         Cursor = Cursors.Arrow;
+
+        // The playhead is re-centred on release: the beat now under the plot centre becomes the
+        // position, so the line lands in the middle again without a mid-drag jump.
+        var layout = Layout();
+        if (layout is not null)
+        {
+            var centre = Math.Max(1.0, _viewStartBeat + layout.VisibleBeats / 2);
+            if (Math.Abs(centre - (PlayheadBeat ?? 1.0)) < 1e-9)
+                CenterViewOnPlayhead(centre);
+            else
+                PlayheadBeat = centre;
+        }
+
         InvalidateVisual();
     }
 
@@ -1367,7 +1416,11 @@ public sealed class PianoRollView : FrameworkElement
         var rows = Math.Max(1, layout.High - layout.Low + 1);
 
         // Dragging right moves the content right, i.e. reveals earlier beats; dragging down reveals higher pitches.
-        _viewStartBeat = Math.Max(1, _panStartViewBeat - (ratio.X - _panStartRatio.X) * layout.VisibleBeats);
+        // The view may enter the left padding band, but never further than "beat 1 centred": past that
+        // point there is nothing earlier to reveal.
+        var minStart = 1 - layout.VisibleBeats / 2;
+        _viewStartBeat = Math.Max(minStart,
+            _panStartViewBeat - (ratio.X - _panStartRatio.X) * layout.VisibleBeats);
         _pitchScroll = Math.Clamp(
             (int)Math.Round(_panStartPitchScroll + (ratio.Y - _panStartRatio.Y) * rows),
             -MaxPitchScroll, MaxPitchScroll);
@@ -1392,6 +1445,13 @@ public sealed class PianoRollView : FrameworkElement
             return;
 
         var position = e.GetPosition(this);
+
+        // Left of beat 1 is viewport padding: the timeline starts at 1, so nothing there is interactive.
+        if (IsInLeftPadding(layout, position))
+        {
+            e.Handled = true;
+            return;
+        }
 
         // The playhead has hit priority: press and drag to move the playback position to any beat.
         // It must stay before the pencil branch, otherwise pencil mode swallows the press and the
@@ -1669,6 +1729,8 @@ public sealed class PianoRollView : FrameworkElement
 
         if (_drag.Kind == DragKind.Playhead)
         {
+            // The line stays at the centre, so the drag scrubs: dragging left moves to earlier beats
+            // and the timeline scrolls right under it. At beat 1 the view opens the left padding.
             PlayheadBeat = ClampBeat(_drag.OriginalBeat + (position.X - _drag.Start.X) / layout.PxPerBeat);
             e.Handled = true;
             return;
@@ -1966,15 +2028,17 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
+        var dragKind = _drag.Kind;
         CommitDrag(_drag);
         _drag = null;
         ReleaseMouseCapture();
         Cursor = Cursors.Arrow;
 
-        // The playhead stays where the mouse released it. Re-centering the viewport here scrolls the
-        // content under the cursor, which makes the line jump back to the middle and reads as a
-        // rejected drag. The viewport still follows the playhead while it is driven by playback,
-        // through OnPlayheadChanged.
+        // The playhead is always centred: after a playhead drag the view is re-derived from its new
+        // position. This also opens the left padding when it was dragged back towards the start.
+        if (dragKind == DragKind.Playhead)
+            CenterViewOnPlayhead(PlayheadDisplayBeat);
+
         InvalidateVisual();
         e.Handled = true;
     }
@@ -2010,6 +2074,10 @@ public sealed class PianoRollView : FrameworkElement
         var position = e.GetPosition(this);
         if (position.X < layout.Plot.Left || position.X > layout.Plot.Right
             || position.Y < layout.Plot.Top || position.Y > layout.Plot.Bottom)
+            return;
+
+        // The padding band before beat 1 accepts no edits (no note add, no pitch brush).
+        if (IsInLeftPadding(layout, position))
             return;
 
         var rawBeat = Math.Max(1, layout.BeatAt(position.X));
@@ -2280,7 +2348,7 @@ public sealed class PianoRollView : FrameworkElement
         else if (modifiers.HasFlag(ModifierKeys.Alt))
             ZoomPitchAt(position.Y, direction);
         else if (modifiers.HasFlag(ModifierKeys.Shift))
-            _viewStartBeat = Math.Max(1, _viewStartBeat - direction * layout.VisibleBeats * 0.12);
+            PlayheadBeat = Math.Max(1, PlayheadDisplayBeat - direction * layout.VisibleBeats * 0.12);
         else
             _pitchScroll = Math.Clamp(_pitchScroll + direction, -MaxPitchScroll, MaxPitchScroll);
 
@@ -2288,23 +2356,16 @@ public sealed class PianoRollView : FrameworkElement
         e.Handled = true;
     }
 
-    /// <summary>Ctrl+wheel: zoom the time axis while the beat under the cursor stays put.</summary>
+    /// <summary>Ctrl+wheel: zoom the time axis around the centred playhead.</summary>
     private void ZoomBeatsAt(double x, int direction)
     {
-        var layout = Layout();
-        if (layout is null)
-            return;
-
-        var anchor = layout.BeatAt(x);
         var zoom = Math.Clamp(_beatZoom * (direction > 0 ? 1.25 : 0.8), MinBeatZoom, MaxBeatZoom);
         if (Math.Abs(zoom - _beatZoom) < 1e-6)
             return;
         _beatZoom = zoom;
 
-        var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
-        var basePxPerBeat = Math.Max(MinPxPerBeat, plotWidth / Math.Max(1, TotalBeats()));
-        var pxPerBeat = Math.Max(4, basePxPerBeat * _beatZoom);
-        _viewStartBeat = Math.Max(1, anchor - Math.Max(0, x - GutterWidth) / pxPerBeat);
+        // The playhead must stay centred, so the zoom is anchored on it rather than on the cursor.
+        CenterViewOnPlayhead(PlayheadDisplayBeat);
     }
 
     /// <summary>Alt+wheel: zoom the visible pitch range while the row under the cursor stays put.</summary>
@@ -2698,6 +2759,13 @@ public sealed class PianoRollView : FrameworkElement
             return;
         }
 
+        // Pointer feedback stops at the padding band before beat 1.
+        if (IsInLeftPadding(layout, position))
+        {
+            Cursor = Cursors.Arrow;
+            return;
+        }
+
         if (IsPencil && Mode == PianoRollMode.Notes
             && position.X >= layout.Plot.Left && position.X <= layout.Plot.Right
             && position.Y >= layout.Plot.Top && position.Y <= layout.Plot.Bottom)
@@ -2754,16 +2822,16 @@ public sealed class PianoRollView : FrameworkElement
         return DragKind.Note;
     }
 
-    /// <summary>The playhead is clamped between beat 1 and the end of the track.</summary>
     /// <summary>
-    /// Clamps a beat to the timeline. The upper bound is the visible end rather than the last note,
-    /// so the playhead can still be scrubbed through rests and empty space after the song ends.
+    /// Clamps a beat to the timeline. The upper bound allows scrubbing one screen past the last note,
+    /// but stays independent of the view start: the view scrolls with the centred playhead, so a
+    /// view-relative bound would let the drag run away without limit.
     /// </summary>
     private double ClampBeat(double beat)
     {
         var plotWidth = Math.Max(1, ActualWidth - GutterWidth - RightPad);
-        var visibleEnd = _viewStartBeat + plotWidth / PxPerBeatFor(plotWidth);
-        return Math.Clamp(beat, 1, Math.Max(Math.Max(1, TotalBeats()), visibleEnd));
+        var visibleBeats = plotWidth / PxPerBeatFor(plotWidth);
+        return Math.Clamp(beat, 1, Math.Max(1, TotalBeats()) + visibleBeats);
     }
 
     /// <summary>Pixels per beat at the current horizontal zoom: the single source of truth for the layout, clamping and centering.</summary>

@@ -1818,7 +1818,7 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
                                    f"共振峰目标切片长度 {segment.shape[0]} 与帧数 {len(f0)} 不一致。")
         with _perf_span("seg.formant_targets"):
             sp, _fmt_diag = warp_to_targets(
-                sp, sr, segment, frame_period=fp)
+                sp, sr, segment, frame_period=fp, f0=f0)
         print(f"    [Formant targets] warped {_fmt_diag['frames_warped']} frames, "
               f"skipped {_fmt_diag['frames_skipped']} ({_fmt_diag['source']} source)")
 

@@ -175,8 +175,11 @@ public sealed class LyricUnit
         PreferAbsoluteAudio = PreferAbsoluteAudio,
     };
 
-    /// <summary>Vowel class driving the vowel manager (a/i/u/e/o/N/-).</summary>
-    public string Vowel { get; set; } = "a";
+    /// <summary>
+    /// Optional vowel class (a/i/u/e/o/n). Empty lets the measured voicebank formants for
+    /// <see cref="Phoneme"/> drive the vowel manager; nothing is guessed from the lyric text.
+    /// </summary>
+    public string Vowel { get; set; } = string.Empty;
 
     /// <summary>Manual formant targets F1~F7 in Hz; null = automatic (vowel manager).</summary>
     public double[]? FormantHz { get; set; }
@@ -189,6 +192,14 @@ public sealed class LyricUnit
 
     /// <summary>Phoneme/sample name resolved against the singer's voicebank (dual mode).</summary>
     public string? Phoneme { get; set; }
+
+    /// <summary>Measured voicebank lookup key: the explicit phoneme, otherwise the audio stem.</summary>
+    [JsonIgnore]
+    public string PhonemeLabel => !string.IsNullOrWhiteSpace(Phoneme)
+        ? Phoneme
+        : string.IsNullOrWhiteSpace(Audio)
+            ? string.Empty
+            : Path.GetFileNameWithoutExtension(Audio);
 
     /// <summary>Per-unit override: use the absolute audio path even when voicebank resolution is on.</summary>
     public bool PreferAbsoluteAudio { get; set; }

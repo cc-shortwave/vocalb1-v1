@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VocalB1.Core.Abstractions;
 using VocalB1.Core.Configuration;
 using VocalB1.Core.Dictionaries;
@@ -42,6 +43,7 @@ internal static class Program
         TestTimbreProfile();
         TestProjectFactory();
         TestVoicebankResolver();
+        TestMeasuredFormants();
         TestLocalization();
         await TestEngineHandshakeAsync(runRender);
         await TestRenderAsync(runRender);
@@ -872,11 +874,12 @@ internal static class Program
             && Math.Abs(result.Lyric.Segments[0].BeatStart - 1) < 1e-9
             && Math.Abs(result.Lyric.Segments[0].BeatEnd - 2.5) < 1e-9,
             string.Join(",", result.Lyric.Segments.Select(s => $"{s.BeatStart:0.##}-{s.BeatEnd:0.##}")));
-        Check("UST：连音符不改变音高与元音",
+        Check("UST：连音符不改变音高，也不猜测元音",
             result.Lyric.Segments[0].DstPitch == "C4"
-            && result.Lyric.Segments[0].Vowel == "a"
+            && string.IsNullOrEmpty(result.Lyric.Segments[0].Vowel)
+            && string.IsNullOrEmpty(result.Lyric.Phrase.Words[0].Units[0].Vowel)
             && result.Lyric.Phrase.Text == "あ",
-            $"{result.Lyric.Segments[0].DstPitch} / {result.Lyric.Segments[0].Vowel} / {result.Lyric.Phrase.Text}");
+            $"{result.Lyric.Segments[0].DstPitch} / \"{result.Lyric.Segments[0].Vowel}\" / {result.Lyric.Phrase.Text}");
 
         try
         {
@@ -1184,6 +1187,7 @@ internal static class Program
             Name = "主旋律",
             Segments =
             [
+                // No manual formants: the opt-in render exercises the in-app decomposition end to end.
                 new VoiceSegment { Audio = files[0], SrcPitch = "D4", DstPitch = "G4", BeatStart = 1, BeatEnd = 2, KeepUnvoicedHead = true, Vowel = "e" },
                 new VoiceSegment { Audio = files[1], SrcPitch = "D4", DstPitch = "G4", BeatStart = 2, BeatEnd = 3, Vowel = "i" },
             ],
@@ -1215,14 +1219,26 @@ internal static class Program
         await using var engine = new PythonEngineClient(options);
         try
         {
-            await engine.InitializeAsync();
             var progress = new Progress<EngineEvent>(e =>
             {
                 if (e.Kind == EngineEventKind.Log && e.Message.Length > 0)
                     Console.WriteLine("    [engine] " + e.Message);
             });
 
+            await engine.InitializeAsync();
+
+            var analysis = await engine.AnalyzeVoicebankAsync(library, progress);
+            VoicebankAnalysisCache.Set(library, analysis);
+            Check("端到端：声库分解得到音节", analysis.Phonemes.Count > 0, $"{analysis.Phonemes.Count} 个音节");
+            Check("端到端：分解覆盖歌词音节",
+                analysis.TryGetMeasurement("_で", out _) && analysis.TryGetMeasurement("_い", out _));
+
             var plan = SingerRenderPlan.Build(project, singer, 0, 1);
+            Check("端到端：源音高由实测基频校准",
+                analysis.TryGetMeasurement("_で", out var measured)
+                && plan.Segments[0].SrcPitch == PitchMath.ToPitchName(PitchMath.HzToSemitones(measured.F0Hz)),
+                plan.Segments[0].SrcPitch);
+
             var result = await engine.RenderAsync(
                 new RenderRequest(project, plan, output), progress);
             Check("端到端渲染产出文件", File.Exists(result.OutputPath) && new FileInfo(result.OutputPath).Length > 44);
@@ -1360,6 +1376,103 @@ internal static class Program
         Check("声库：PreferAbsoluteAudio 时用绝对路径",
             resolver.Resolve(absolute, "测试歌手", resolveFromVoicebank: true) == wav);
         File.Delete(wav);
+    }
+
+    private static void TestMeasuredFormants()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "measured");
+        Directory.CreateDirectory(root);
+
+        var analysis = new VoicebankAnalysis();
+        analysis.Phonemes["_あ"] = new PhonemeMeasurement
+        {
+            Formants = [800, 1200, 2500, 3400, 4000, 4500, 5000],
+            F0Hz = 261.63,
+            Aperiodicity = 0.2,
+            BreathFactor = 1.1,
+        };
+        analysis.Vowels["a"] = [810, 1210, 2510, 3410, 4010, 4510, 5010];
+        analysis.Breath["a"] = 1.35;
+        analysis.Failed.Add("_ん: ValueError: 没有足够的浊音帧");
+        VoicebankAnalysisCache.Set(root, analysis);
+
+        var measured = VoicebankFormantProfile.Load(root);
+        Check("实测共振峰：内存分解结果被识别", measured.IsMeasured);
+        Check("实测共振峰：音素查找兼容有无下划线",
+            measured.Resolve(string.Empty, "あ")[0] == 800
+            && measured.Resolve(string.Empty, "_あ")[0] == 800);
+        Check("实测共振峰：实测基频换算为源音高",
+            measured.TryGetSampleMeasurement("あ", out var measurement)
+            && PitchMath.ToPitchName(PitchMath.HzToSemitones(measurement.F0Hz)) == "C4");
+        Check("实测共振峰：音素级气声优先于元音行",
+            Math.Abs(measured.BreathFactor(string.Empty, "あ") - 1.1) < 1e-9
+            && Math.Abs(measured.BreathFactor("a") - 1.35) < 1e-9);
+        Check("实测共振峰：失败样本被记录", measured.FailedSamples.Count == 1);
+
+        var missing = false;
+        try
+        {
+            measured.Resolve(string.Empty, "か");
+        }
+        catch (StageException)
+        {
+            missing = true;
+        }
+        Check("实测共振峰：缺音节直接报错", missing);
+
+        var emptyRoot = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "no-analysis");
+        Directory.CreateDirectory(emptyRoot);
+        var unmeasured = VoicebankFormantProfile.Load(emptyRoot);
+        var unmeasuredError = false;
+        try
+        {
+            unmeasured.Resolve(string.Empty, "あ");
+        }
+        catch (StageException)
+        {
+            unmeasuredError = true;
+        }
+        Check("实测共振峰：没有分解结果报错", unmeasuredError);
+
+        var lyric = new LyricDocument
+        {
+            Segments =
+            [
+                new VoiceSegment { Phoneme = "あ", BeatStart = 1, BeatEnd = 2 },
+                new VoiceSegment { Phoneme = "か", BeatStart = 2, BeatEnd = 3 },
+            ],
+        };
+        var singer = new SingerDocument { Name = "实测歌手", LibraryRoot = root };
+        var issues = ProjectValidator.ValidateVoicebank(lyric, singer);
+        Check("实测共振峰：校验只报告缺失音节",
+            issues.Count(i => i.Severity == ProjectIssueSeverity.Error) == 1
+            && issues.Where(i => i.Severity == ProjectIssueSeverity.Error)
+                .All(i => i.Message.Contains("か") && !i.Message.Contains("あ")),
+            string.Join(";", issues.Select(i => i.Message)));
+
+        VoicebankAnalysisCache.Invalidate(root);
+        Check("实测共振峰：缓存可失效", !VoicebankFormantProfile.Load(root).IsMeasured);
+
+        var wire = JsonSerializer.Deserialize<VoicebankAnalysis>("""
+            {
+              "phonemes": { "_あ": { "formants": [800, 1200, 2500, 3400, 4000, 4500, 5000],
+                                       "f0Hz": 261.6, "aperiodicity": 0.2, "breathFactor": 1.1 } },
+              "vowels": { "a": [810, 1210, 2510, 3410, 4010, 4510, 5010] },
+              "breath": { "a": 1.1 },
+              "failed": ["_ん: ValueError: 没有足够的浊音帧"],
+              "source": "python-bridge",
+              "generatedAt": "2026-11-15T12:00:00"
+            }
+            """, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Check("实测共振峰：引擎返回的 JSON 可反序列化",
+            wire is not null
+            && wire.TryGetMeasurement("あ", out var typed)
+            && typed.Formants.Length == 7
+            && Math.Abs(typed.F0Hz - 261.6) < 1e-6
+            && wire.Failed.Count == 1);
+
+        Directory.Delete(root, true);
+        Directory.Delete(emptyRoot, true);
     }
 
     private static void TestLocalization()

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace VocalB1.Engine.Bridge;
@@ -22,6 +23,9 @@ internal sealed class BridgeMessage
     [JsonPropertyName("engine")] public string? Engine { get; set; }
     [JsonPropertyName("importError")] public string? ImportError { get; set; }
     [JsonPropertyName("ok")] public bool? Ok { get; set; }
+
+    /// <summary>Voicebank decomposition payload returned by the analyze command.</summary>
+    [JsonPropertyName("analysis")] public JsonElement? Analysis { get; set; }
 }
 
 internal static class BridgeJson

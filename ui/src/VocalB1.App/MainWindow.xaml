@@ -705,9 +705,9 @@
 
                             <TextBlock Text="歌手绑定栈：在「参数」页勾选“编辑歌手的绑定栈”即可在共享参数之上追加时间渐变等节点。"
                                        Margin="0,12,0,0" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap" />
-                            <Button Content="分析声库共振峰（生成 formants.json）" Margin="0,10,0,0"
+                            <Button Content="重新分析声库（共振峰 / 基频 / 气声）" Margin="0,10,0,0"
                                     HorizontalAlignment="Left" Command="{Binding AnalyzeVoicebankCommand}" />
-                            <TextBlock Text="声库数据节点输出该声库实测的 F1~F7 与气声系数；缺少 formants.json 时使用内置元音表。"
+                            <TextBlock Text="声库数据节点输出分解得到的 F1~F7 与气声系数；绑定声库后会自动在后台分解，不写任何附加文件。分解未完成的音节无法渲染。"
                                        Margin="0,6,0,0" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap" />
                             <TextBlock Text="共振峰由歌词管理：音节选择元音后，汇总节点未连线的输入自动跟随声库目标位置；也可在歌词页手动覆盖 F1~F7。"
                                        Margin="0,6,0,0" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap" />

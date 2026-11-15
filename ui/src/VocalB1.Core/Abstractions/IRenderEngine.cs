@@ -38,6 +38,15 @@ public interface IRenderEngine : IAsyncDisposable
     Task InitializeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Decomposes a voicebank into per-phoneme formants, f0 and aperiodicity. The result is returned to
+    /// the caller (and cached in memory by the app); the engine never writes a sidecar file.
+    /// </summary>
+    Task<VoicebankAnalysis> AnalyzeVoicebankAsync(
+        string voicebankRoot,
+        IProgress<EngineEvent>? progress = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Renders a project. Implementations must forward synthesis logs to <paramref name="progress"/> in real time;
     /// cancellation kills the underlying process (the synthesis function itself cannot be interrupted) and then restarts it for the next call.
     /// </summary>

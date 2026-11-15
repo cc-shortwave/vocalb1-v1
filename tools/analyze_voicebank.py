@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Analyze a UTAU voicebank and write formants.json for the v3 vowel manager.
+"""Offline voicebank inspection CLI; the app decomposes banks in memory at runtime.
 
-The C# vowel manager reads <voicebank>/formants.json to drive F1~F7 from the singer's own
-voicebank instead of the built-in vowel table. This tool produces that file by reading pyworld's
-CheapTrick spectral envelope of every wav in the bank (harmonic peaks are already removed from the
-envelope) and taking the median resonance positions of the voiced frames.
+The C# app no longer reads <voicebank>/formants.json: it sends analyze_voicebank to the Python bridge
+and caches the returned measurements for the session. This tool stays as a debugging aid that writes
+the same measurements to a file for manual inspection, and it exposes the envelope peak picker and the
+kana row mapping that the bridge imports, so offline and in-app measurements cannot drift apart.
+
+The measurements come from pyworld's CheapTrick spectral envelope of every wav in the bank (harmonic
+peaks are already removed from the envelope), taking the median resonance positions of the voiced
+frames.
 
 Usage:
     python tools/analyze_voicebank.py <voicebank-dir> [--limit N] [--frame-period 5]
@@ -89,15 +93,26 @@ def _formants_of_sample(path: str, frame_period: float):
     if len(rows) < 2:
         return None, len(rows)
 
+    f0 = np.asarray(features["f0"], dtype=np.float64)
+    f0_voiced = f0[voiced] if voiced.any() else f0
+    f0_voiced = f0_voiced[f0_voiced > 0]
+    f0_hz = float(np.median(f0_voiced)) if f0_voiced.size else 0.0
+
     envelope = np.median(rows, axis=0)
-    values = _pick_envelope_peaks(envelope, int(sr))
+    values = _pick_envelope_peaks(envelope, int(sr), min_hz=f0_hz if f0_hz > 0 else None)
     if values is None:
         return None, len(rows)
     return values, len(rows)
 
 
-def _pick_envelope_peaks(envelope: np.ndarray, sample_rate: int, count: int = 7):
-    """Picks up to ``count`` increasing vocal-tract resonances from a median power envelope."""
+def _pick_envelope_peaks(envelope: np.ndarray, sample_rate: int, count: int = 7,
+                         min_hz: float | None = None):
+    """Picks up to ``count`` increasing vocal-tract resonances from a median power envelope.
+
+    ``min_hz`` is the lowest admissible resonance. Formants cannot sit below the fundamental, so
+    callers pass the sample's measured f0 here; the search then starts above it instead of picking
+    a low-frequency plateau artefact.
+    """
     n_bins = len(envelope)
     if n_bins < 8:
         return None
@@ -109,7 +124,8 @@ def _pick_envelope_peaks(envelope: np.ndarray, sample_rate: int, count: int = 7)
     window = max(3, int(round(150.0 / bin_hz)) | 1)
     smooth = np.convolve(log_env, np.ones(window) / window, mode="same")
 
-    low = max(1, int(np.searchsorted(freqs, 200.0)))
+    floor_hz = 200.0 if min_hz is None else max(200.0, float(min_hz))
+    low = max(1, int(np.searchsorted(freqs, floor_hz)))
     high = min(n_bins - 2, int(np.searchsorted(freqs, 5000.0)))
     candidates = [i for i in range(low, high)
                   if smooth[i] >= smooth[i - 1] and smooth[i] > smooth[i + 1]]
