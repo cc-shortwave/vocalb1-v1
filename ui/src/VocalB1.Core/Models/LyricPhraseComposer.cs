@@ -252,7 +252,7 @@ public static class LyricPhraseComposer
                     LyricOverride = unit.Text,
                 };
                 track.Segments.Add(segment);
-                track.AddPitchNodes(segment, 5);
+                track.AddPitchAnchor(segment);
                 unit.SegmentId = segment.Id;
             }
 

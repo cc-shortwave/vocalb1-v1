@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using VocalB1.App.Services;
 using VocalB1.Core.Models;
@@ -94,6 +96,14 @@ public sealed class PianoRollView : FrameworkElement
     private bool _brushing;
     private double _brushLastBeat;
 
+    /// <summary>The pitch window is frozen for the whole brush stroke so painting never scrolls the view.</summary>
+    private bool _brushViewLocked;
+    private int _brushLow;
+    private int _brushHigh;
+
+    /// <summary>True while the OS cursor is clipped to the window rect (right-button pitch brush).</summary>
+    private bool _cursorClipped;
+
     /// <summary>Box/multi selection: selected notes are tracked by Id and selected points by reference to avoid index drift.</summary>
     private readonly HashSet<string> _selectedSegmentIds = [];
     private readonly List<PitchPoint> _selectedPoints = [];
@@ -132,6 +142,7 @@ public sealed class PianoRollView : FrameworkElement
         {
             ThemeManager.Changed -= OnThemeChanged;
             LanguageService.Changed -= OnLanguageChanged;
+            ReleaseCursorClip();
         };
     }
 
@@ -211,6 +222,8 @@ public sealed class PianoRollView : FrameworkElement
         view._selectedPoints.Clear();
         view._drag = null;
         view._brushing = false;
+        view._brushViewLocked = false;
+        view.ReleaseCursorClip();
     }
 
     public static readonly DependencyProperty BpmProperty = DependencyProperty.Register(
@@ -509,6 +522,11 @@ public sealed class PianoRollView : FrameworkElement
         IReadOnlyList<PitchPoint> points,
         PitchRaster? raster)
     {
+        // While the brush is down the painted values may leave the current span: keep the frozen
+        // window so the rows never scroll under the cursor mid-stroke.
+        if (_brushViewLocked)
+            return (_brushLow, _brushHigh);
+
         var (autoLow, autoHigh) = PitchRange(segments, points, RestRegions, raster);
         var baseRows = autoHigh - autoLow + 1;
         var rows = Math.Clamp((int)Math.Round(baseRows * _pitchZoom), 6, MaxPitchRows);
@@ -1629,7 +1647,8 @@ public sealed class PianoRollView : FrameworkElement
 
             var brushPosition = e.GetPosition(this);
             var brushBeat = Math.Max(1, brushLayout.BeatAt(brushPosition.X));
-            var brushSemitone = brushLayout.SemitoneAtFine(brushPosition.Y);
+            var brushSemitone = Math.Clamp(
+                brushLayout.SemitoneAtFine(brushPosition.Y), brushLayout.Low, brushLayout.High);
             PaintPitchStroke(brushBeat, brushSemitone);
             InvalidateVisual();
             e.Handled = true;
@@ -1974,7 +1993,7 @@ public sealed class PianoRollView : FrameworkElement
             EndPan();
         if (_brushing)
         {
-            _brushing = false;
+            EndPitchBrush();
             EditCommitted?.Invoke(this, EventArgs.Empty);
             InvalidateVisual();
         }
@@ -2003,7 +2022,7 @@ public sealed class PianoRollView : FrameworkElement
         else
         {
             // The pitch brush is not grid-snapped: time resolution is the raster cell itself.
-            BeginPitchBrush(rawBeat, layout.SemitoneAtFine(position.Y));
+            BeginPitchBrush(rawBeat, layout.SemitoneAtFine(position.Y), layout.Low, layout.High);
         }
 
         Focus();
@@ -2017,8 +2036,7 @@ public sealed class PianoRollView : FrameworkElement
         if (!_brushing)
             return;
 
-        _brushing = false;
-        ReleaseMouseCapture();
+        EndPitchBrush();
         Cursor = Cursors.Arrow;
 
         var track = Lyric;
@@ -2392,7 +2410,7 @@ public sealed class PianoRollView : FrameworkElement
     }
 
     /// <summary>Starts a right-button brush stroke; painting is only allowed over an existing note.</summary>
-    private void BeginPitchBrush(double beat, double semitone)
+    private void BeginPitchBrush(double beat, double semitone, int low, int high)
     {
         var track = Lyric;
         if (track is null)
@@ -2404,13 +2422,74 @@ public sealed class PianoRollView : FrameworkElement
             return;
 
         EditStarted?.Invoke(this, EventArgs.Empty);
+        // The first stroke bakes the current Bézier anchor line into the raster so notes that are
+        // not painted keep their curve instead of falling back to the spliced original pitch.
+        track.PitchRaster ??= PitchRaster.FromPitchLine(track.BuildRenderPitchLine());
         track.PitchRaster ??= new PitchRaster();
         _brushing = true;
+        _brushViewLocked = true;
+        _brushLow = low;
+        _brushHigh = high;
         _brushLastBeat = beat;
+        ClipCursorToWindow();
         PaintPitchStroke(beat, semitone);
         CaptureMouse();
         Cursor = Cursors.Pen;
     }
+
+    /// <summary>Ends the brush stroke: unfreezes the pitch window and releases the clipped cursor.</summary>
+    private void EndPitchBrush()
+    {
+        _brushing = false;
+        _brushViewLocked = false;
+        ReleaseCursorClip();
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+    }
+
+    /// <summary>Keeps the OS cursor inside the window while the brush is down.</summary>
+    private void ClipCursorToWindow()
+    {
+        var window = Window.GetWindow(this);
+        if (window is null)
+            return;
+
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+            return;
+
+        if (!GetWindowRect(handle, out var rect) || !ClipCursor(ref rect))
+            return;
+
+        _cursorClipped = true;
+    }
+
+    private void ReleaseCursorClip()
+    {
+        if (!_cursorClipped)
+            return;
+
+        ClipCursor(IntPtr.Zero);
+        _cursorClipped = false;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClipCursor(ref NativeRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClipCursor(IntPtr rect);
 
     /// <summary>Paints the cells between the previous and current brush position, replacing the old curve.</summary>
     private void PaintPitchStroke(double beat, double semitone)

@@ -97,7 +97,7 @@ public static class ProjectFactory
         lyric.Phrase = LyricPhrase.FromSegments(lyric.Segments);
 
         foreach (var segment in lyric.Segments)
-            lyric.AddPitchNodes(segment, 5);
+            lyric.AddPitchAnchor(segment);
 
         return project;
     }
