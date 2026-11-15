@@ -36,6 +36,7 @@ internal static class Program
         TestNodeGraph();
         TestDictionary();
         TestLyricPhrase();
+        TestUstImport();
         TestWaveform();
         TestSegmentLayout();
         TestTimbreProfile();
@@ -831,6 +832,71 @@ internal static class Program
             SegmentLayout.Overlaps(normalized).Count == 0
             && Math.Abs(normalized.Segments[1].BeatStart - 3) < 1e-9,
             string.Join("; ", normalized.Segments.Select(s => $"{s.BeatStart:0.##}-{s.BeatEnd:0.##}")));
+    }
+
+    // ------------------------------------------------------------------
+    // 4b. UTAU .ust import
+    // ------------------------------------------------------------------
+    private static void TestUstImport()
+    {
+        const string ust = """
+            [#VERSION]
+            UST Version1.2
+            [#SETTING]
+            Tempo=120.00
+            [#PREV]
+            Length=960
+            Lyric=さ
+            NoteNum=72
+            [#0000]
+            Length=480
+            Lyric=あ
+            NoteNum=60
+            [#0001]
+            Length=240
+            Lyric=-
+            NoteNum=67
+            [#NEXT]
+            Length=480
+            Lyric=か
+            NoteNum=67
+            [#TRACKEND]
+            """;
+
+        var result = UstLyricImporter.Parse(ust, "UST 自检");
+        Check("UST：[#PREV]/[#NEXT] 不是音符",
+            result.NoteCount == 1 && result.RestCount == 0,
+            $"{result.NoteCount} 个音符 / {result.RestCount} 个休止");
+        Check("UST：连音符 \"-\" 延长前一个音",
+            result.Lyric.Segments.Count == 1
+            && Math.Abs(result.Lyric.Segments[0].BeatStart - 1) < 1e-9
+            && Math.Abs(result.Lyric.Segments[0].BeatEnd - 2.5) < 1e-9,
+            string.Join(",", result.Lyric.Segments.Select(s => $"{s.BeatStart:0.##}-{s.BeatEnd:0.##}")));
+        Check("UST：连音符不改变音高与元音",
+            result.Lyric.Segments[0].DstPitch == "C4"
+            && result.Lyric.Segments[0].Vowel == "a"
+            && result.Lyric.Phrase.Text == "あ",
+            $"{result.Lyric.Segments[0].DstPitch} / {result.Lyric.Segments[0].Vowel} / {result.Lyric.Phrase.Text}");
+
+        try
+        {
+            UstLyricImporter.Parse("[#0000]\nLength=-480\nLyric=あ\nNoteNum=60\n[#TRACKEND]\n", "负长度");
+            Check("UST：负长度报告错误", false);
+        }
+        catch (InvalidDataException ex)
+        {
+            Check("UST：负长度报告错误", ex.Message.Contains("Length"), ex.Message);
+        }
+
+        try
+        {
+            UstLyricImporter.Parse("[#0000]\nLength=480\nLyric=-\nNoteNum=60\n[#TRACKEND]\n", "孤立连音");
+            Check("UST：孤立连音符报告错误", false);
+        }
+        catch (InvalidDataException ex)
+        {
+            Check("UST：孤立连音符报告错误", ex.Message.Contains("连音符"), ex.Message);
+        }
     }
 
     // ------------------------------------------------------------------
