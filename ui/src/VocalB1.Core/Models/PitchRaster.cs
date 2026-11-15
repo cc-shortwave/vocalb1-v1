@@ -179,33 +179,45 @@ public sealed class PitchRaster
         }
     }
 
-    /// <summary>Converts the raster to the dense pitch-point list consumed by the synthesizer.</summary>
+    /// <summary>
+    /// Converts the raster to the dense pitch-point list consumed by the synthesizer. A value that
+    /// lasted several cells is a real step, so it is closed with a hold endpoint on the beat where
+    /// the new value starts (otherwise the engine would glide across the whole run); a cell-by-cell
+    /// ramp, as produced by a sampled Bézier curve, only needs its new endpoint.
+    /// </summary>
     public List<PitchPoint> ToPitchPoints()
     {
         var result = new List<PitchPoint>();
         var index = 0;
         while (index < Values.Count && Values[index] is null)
             index++;
+        if (index >= Values.Count)
+            return result;
 
-        string? previous = null;
-        var first = true;
-        for (; index < Values.Count; index++)
+        var previous = Encode(Values[index]);
+        result.Add(PointAt(index, previous));
+        var runStart = index;
+        for (index++; index < Values.Count; index++)
         {
             var encoded = Encode(Values[index]);
-            if (!first && string.Equals(encoded, previous, StringComparison.Ordinal))
+            if (string.Equals(encoded, previous, StringComparison.Ordinal))
                 continue;
 
-            result.Add(new PitchPoint
-            {
-                Beat = BeatOfIndex(index),
-                Pitch = encoded,
-            });
+            if (index - runStart > 1)
+                result.Add(PointAt(index, previous));
+            result.Add(PointAt(index, encoded));
             previous = encoded;
-            first = false;
+            runStart = index;
         }
 
         return result;
     }
+
+    private PitchPoint PointAt(int index, string? encoded) => new()
+    {
+        Beat = BeatOfIndex(index),
+        Pitch = encoded,
+    };
 
     public PitchRaster Clone() => new()
     {

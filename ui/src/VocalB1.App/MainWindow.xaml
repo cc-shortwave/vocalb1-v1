@@ -54,6 +54,8 @@
                     <TextBlock Text="VocalB1" FontSize="17" FontWeight="Bold"
                                Foreground="{DynamicResource AccentBrush}" />
                     <TextBlock Text="Studio" Margin="6,2,0,0" Foreground="{DynamicResource DimBrush}" />
+                    <TextBlock Text="{Binding AppVersionText}" Margin="6,2,0,0"
+                               Foreground="{DynamicResource DimBrush}" />
                     <TextBlock Text="{Binding ProjectPathText}" Margin="14,2,0,0"
                                Foreground="{DynamicResource DimBrush}" MaxWidth="280"
                                TextTrimming="CharacterEllipsis" />

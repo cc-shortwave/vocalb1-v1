@@ -36,6 +36,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     private const string LyricBlockPitch = "D4";
 
     private readonly AppServices _services;
+    private readonly string _appVersion;
     private readonly List<ProjectDocument> _undoStack = [];
     private readonly List<ProjectDocument> _redoStack = [];
     private readonly DispatcherTimer _playheadTimer;
@@ -96,6 +97,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     public MainViewModel(AppServices services)
     {
         _services = services;
+        _appVersion = ReadAppVersion(services.Options.RepositoryRoot);
         _project = ProjectFactory.CreateEmpty(services.Options.LibraryRoot);
 
         LanguageService.Initialize(services.Options.RepositoryRoot);
@@ -397,8 +399,34 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         OnPropertyChanged(nameof(PreviewInfo));
     }
 
+    public string AppVersionText => $"v{_appVersion}";
+
     public string EngineInfo =>
         $"{Path.GetFileName(_services.Options.PythonPath)} · {Path.GetFileName(_services.Options.BridgeScriptPath)}";
+
+    /// <summary>Reads the repository's VERSION file, falling back to the assembly version.</summary>
+    private static string ReadAppVersion(string repositoryRoot)
+    {
+        try
+        {
+            var path = Path.Combine(repositoryRoot, "VERSION");
+            if (File.Exists(path))
+            {
+                var text = File.ReadAllText(path).Trim();
+                if (text.Length > 0)
+                    return text;
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        var version = typeof(MainViewModel).Assembly.GetName().Version;
+        return version is null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
 
     public string ThemeToggleText =>
         LanguageService.Translate(_isLightTheme ? "深色模式" : "浅色模式");
@@ -1455,7 +1483,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         };
         lyric.Segments.Add(segment);
         lyric.Segments.Sort((a, b) => a.BeatStart.CompareTo(b.BeatStart));
-        lyric.AddPitchNodes(segment, 5);
+        lyric.AddPitchAnchor(segment);
         LyricPhraseComposer.SyncWithSegments(lyric.Phrase, lyric);
 
         _rollRevision++;
@@ -2101,7 +2129,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             {
                 segment.Phoneme = Path.GetFileNameWithoutExtension(segment.Audio);
                 segment.Vowel = GuessVowel(segment.Phoneme);
-                ActiveLyric.AddPitchNodes(segment, 5);
+                ActiveLyric.AddPitchAnchor(segment);
             }
             LyricPhraseComposer.SyncWithSegments(ActiveLyric.Phrase, ActiveLyric);
             _rollRevision++;
@@ -2149,14 +2177,17 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var dialog = new OpenFileDialog
         {
             Title = "导入歌词数据块",
-            Filter = LanguageService.Translate("歌词数据块 (*.vblyric.json)|*.vblyric.json|JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
+            Filter = LanguageService.Translate(
+                "歌词数据块 (*.vblyric.json)|*.vblyric.json|UTAU 序列 (*.ust)|*.ust|JSON (*.json)|*.json|所有文件 (*.*)|*.*"),
         };
         if (dialog.ShowDialog() != true)
             return;
         try
         {
-            var lyric = JsonSerializer.Deserialize<LyricDocument>(File.ReadAllText(dialog.FileName),
-                ProjectJson.ReadOptions) ?? throw new InvalidDataException(LanguageService.Translate("歌词文件为空。"));
+            var lyric = string.Equals(Path.GetExtension(dialog.FileName), ".ust", StringComparison.OrdinalIgnoreCase)
+                ? ImportUstLyric(dialog.FileName)
+                : JsonSerializer.Deserialize<LyricDocument>(File.ReadAllText(dialog.FileName),
+                    ProjectJson.ReadOptions) ?? throw new InvalidDataException(LanguageService.Translate("歌词文件为空。"));
             lyric.Id = Guid.NewGuid().ToString("N");
             lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
             PushUndo();
@@ -2168,6 +2199,21 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         {
             ReportError(ex);
         }
+    }
+
+    private LyricDocument ImportUstLyric(string path)
+    {
+        var transition = Math.Round(0.25 * FramesPerBeatConstant / Math.Max(1, _project.Bpm));
+        var result = UstLyricImporter.ImportFile(path, transition);
+        AddLog("info", LanguageService.TranslateFormat(
+            "UST 已解析：{0} 个发音音符，{1} 个休止。", result.NoteCount, result.RestCount));
+        if (result.Tempo is { } tempo && Math.Abs(tempo - _project.Bpm) > 0.01)
+        {
+            AddLog("warn", LanguageService.TranslateFormat(
+                "UST 速度 {0} BPM 与工程速度 {1} BPM 不同：拍位按四分音符换算，工程速度未改动。",
+                tempo, _project.Bpm));
+        }
+        return result.Lyric;
     }
 
     private void ExportParameterAsset()
@@ -2723,26 +2769,5 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         (ClearBgmCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
-    private static string GuessVowel(string? phoneme)
-    {
-        if (string.IsNullOrWhiteSpace(phoneme))
-            return "a";
-        var text = phoneme.Trim().TrimStart('_', '-').ToLowerInvariant();
-        foreach (var ch in text)
-        {
-            var vowel = ch switch
-            {
-                'あ' or 'か' or 'さ' or 'た' or 'な' or 'は' or 'ま' or 'や' or 'ら' or 'わ' or 'が' or 'ざ' or 'だ' or 'ば' or 'ぱ' => "a",
-                'い' or 'き' or 'し' or 'ち' or 'に' or 'ひ' or 'み' or 'り' or 'ぎ' or 'じ' or 'ぢ' or 'び' or 'ぴ' => "i",
-                'う' or 'く' or 'す' or 'つ' or 'ぬ' or 'ふ' or 'む' or 'ゆ' or 'る' or 'ぐ' or 'ず' or 'づ' or 'ぶ' or 'ぷ' => "u",
-                'え' or 'け' or 'せ' or 'て' or 'ね' or 'へ' or 'め' or 'れ' or 'げ' or 'ぜ' or 'で' or 'べ' or 'ぺ' => "e",
-                'お' or 'こ' or 'そ' or 'と' or 'の' or 'ほ' or 'も' or 'よ' or 'ろ' or 'を' or 'ご' or 'ぞ' or 'ど' or 'ぼ' or 'ぽ' => "o",
-                'ん' => "n",
-                _ => string.Empty,
-            };
-            if (vowel.Length > 0)
-                return vowel;
-        }
-        return text.Length > 0 && "aiueon".Contains(text[^1]) ? text[^1].ToString() : "a";
-    }
+    private static string GuessVowel(string? phoneme) => LyricVowel.Guess(phoneme);
 }
