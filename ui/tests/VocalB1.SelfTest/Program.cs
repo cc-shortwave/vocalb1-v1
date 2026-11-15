@@ -1,6 +1,8 @@
 using VocalB1.Core.Abstractions;
 using VocalB1.Core.Configuration;
 using VocalB1.Core.Dictionaries;
+using VocalB1.Core.Diagnostics;
+using VocalB1.Core.Library;
 using VocalB1.Core.Models;
 using VocalB1.Core.Pitch;
 using VocalB1.Core.Serialization;
@@ -36,6 +38,10 @@ internal static class Program
         TestLyricPhrase();
         TestWaveform();
         TestSegmentLayout();
+        TestTimbreProfile();
+        TestProjectFactory();
+        TestVoicebankResolver();
+        TestLocalization();
         await TestEngineHandshakeAsync(runRender);
         await TestRenderAsync(runRender);
 
@@ -1156,6 +1162,178 @@ internal static class Program
     }
 
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // 12. Timbre profile (*.vbtimbre.json), project factory, sample resolver, i18n
+    // ------------------------------------------------------------------
+    private static void TestTimbreProfile()
+    {
+        var source = new SynthesisSettings
+        {
+            FollowRatio = [0.9, 0.1, 0.2, 0.3, 0.4, 0.05, 0.0],
+            BandRatios = [1.2, 0.8, 1.0, 1.0, 0.7, 1.1, 0.9, 1.0],
+            BandWidthHz = 400,
+            BreathyThr = 0.42,
+            ApScale = 0.31,
+            ApMax = 0.11,
+            AddBreath = false,
+            BreathGain = 2.5,
+            BreathFollowPitch = false,
+            BreathShapeToMain = false,
+            Jitter = 7.5,
+            Shimmer = 3.5,
+        };
+
+        var path = Path.Combine(Path.GetTempPath(), "vocalb1-selftest-timbre.vbtimbre.json");
+        TimbreProfile.From(source).Save(path);
+        var loaded = TimbreProfile.Load(path);
+
+        var target = new SynthesisSettings();
+        var skipped = loaded.ApplyTo(target);
+        Check("音色：往返保留七段跟随比",
+            skipped.Count == 0 && target.FollowRatio.SequenceEqual(source.FollowRatio),
+            string.Join(";", skipped));
+        Check("音色：往返保留八段能量比", target.BandRatios.SequenceEqual(source.BandRatios));
+        Check("音色：标量参数往返一致",
+            Math.Abs(target.BandWidthHz - 400) < 1e-9 && Math.Abs(target.BreathyThr - 0.42) < 1e-9
+            && Math.Abs(target.ApScale - 0.31) < 1e-9 && Math.Abs(target.ApMax - 0.11) < 1e-9
+            && Math.Abs(target.BreathGain - 2.5) < 1e-9 && Math.Abs(target.Jitter - 7.5) < 1e-9
+            && Math.Abs(target.Shimmer - 3.5) < 1e-9);
+        Check("音色：开关参数往返一致",
+            !target.AddBreath && !target.BreathFollowPitch && !target.BreathShapeToMain);
+
+        var outOfRange = TimbreProfile.From(source);
+        outOfRange.BandWidthHz = 99999;
+        outOfRange.BreathyThr = -5;
+        outOfRange.Jitter = 1e9;
+        var clamped = new SynthesisSettings();
+        var clampSkipped = outOfRange.ApplyTo(clamped);
+        Check("音色：越界值按滑块范围钳制",
+            clampSkipped.Count == 0 && Math.Abs(clamped.BandWidthHz - 5000) < 1e-9
+            && Math.Abs(clamped.BreathyThr) < 1e-9 && Math.Abs(clamped.Jitter - 100) < 1e-9,
+            $"{clamped.BandWidthHz}/{clamped.BreathyThr}/{clamped.Jitter}");
+
+        var shortBands = TimbreProfile.From(source);
+        shortBands.FollowRatio = [0.1, 0.2, 0.3];
+        var guarded = new SynthesisSettings();
+        var guardSkipped = shortBands.ApplyTo(guarded);
+        Check("音色：段数不符的数组被跳过且不改原值",
+            guardSkipped.Any(x => x.Contains("followRatio"))
+            && guarded.FollowRatio.SequenceEqual(new SynthesisSettings().FollowRatio),
+            string.Join(";", guardSkipped));
+
+        var nan = TimbreProfile.From(source);
+        nan.BandRatios[0] = double.NaN;
+        var nanTarget = new SynthesisSettings();
+        var nanSkipped = nan.ApplyTo(nanTarget);
+        Check("音色：NaN 被跳过且不改原值",
+            nanSkipped.Any(x => x.Contains("bandRatios"))
+            && nanTarget.BandRatios.SequenceEqual(new SynthesisSettings().BandRatios),
+            string.Join(";", nanSkipped));
+
+        File.Delete(path);
+    }
+
+    private static void TestProjectFactory()
+    {
+        var project = ProjectFactory.CreateEmpty();
+        Check("工厂：空工程各有一个歌手/歌词/参数组",
+            project.Singers.Count == 1 && project.Lyrics.Count == 1 && project.ParameterSets.Count == 1);
+        Check("工厂：新工程格式版本为 3.0", project.FormatVersion == "3.0");
+
+        var singer = project.Singers[0];
+        var lyric = project.FindLyric(singer.LyricId);
+        var parameters = project.FindParameterSet(singer.ParameterSetId);
+        Check("工厂：歌手引用的歌词与参数组都能解析", lyric is not null && parameters is not null);
+        Check("工厂：参数组自带共振峰节点图", parameters is not null && parameters.Graph.Nodes.Count > 0);
+
+        var before = project.ParameterSets.Count;
+        var second = ProjectFactory.AddSingerBundle(project, "歌手 1", null, parameters);
+        Check("工厂：共享参数组时不新增参数块",
+            project.ParameterSets.Count == before && second.ParameterSetId == parameters!.Id);
+        Check("工厂：同名歌手自动加序号", second.Name == "歌手 1 (2)", second.Name);
+
+        var demo = ProjectFactory.CreateDemo(@"Z:\vocalb1-no-such-bank");
+        var demoLyric = demo.FindLyric(demo.Singers[0].LyricId);
+        Check("工厂：声库缺失时不生成演示音块也不抛错",
+            demo.Singers.Count == 1 && demoLyric is not null && demoLyric.Segments.Count == 0);
+    }
+
+    private static void TestVoicebankResolver()
+    {
+        var missingRoot = Path.Combine(Path.GetTempPath(), "vocalb1-no-such-bank");
+        var resolver = new VoicebankSampleResolver(missingRoot);
+
+        StageException? error = null;
+        try
+        {
+            resolver.Resolve(new VoiceSegment { Phoneme = "_あ" }, "测试歌手", resolveFromVoicebank: true);
+        }
+        catch (StageException ex)
+        {
+            error = ex;
+        }
+
+        Check("声库：找不到样本抛 StageException", error is not null);
+        Check("声库：错误带类名与阶段",
+            error is not null && error.ClassName == nameof(VoicebankSampleResolver) && error.Stage == "resolve",
+            error?.Message);
+        Check("声库：错误信息含歌手名与声库路径",
+            error is not null && error.Message.Contains("测试歌手") && error.Message.Contains("vocalb1-no-such-bank"));
+
+        var wav = Path.Combine(Path.GetTempPath(), "vocalb1-selftest-sample.wav");
+        File.WriteAllBytes(wav, new byte[44]);
+        var absolute = new VoiceSegment { Audio = wav, PreferAbsoluteAudio = true, Phoneme = "_あ" };
+        Check("声库：PreferAbsoluteAudio 时用绝对路径",
+            resolver.Resolve(absolute, "测试歌手", resolveFromVoicebank: true) == wav);
+        File.Delete(wav);
+    }
+
+    private static void TestLocalization()
+    {
+        var dir = Path.Combine(EngineOptions.Discover().RepositoryRoot, "languages");
+        var langs = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+
+        foreach (var code in new[] { "zh", "en", "ja" })
+        {
+            var path = Path.Combine(dir, code + ".json");
+            if (!File.Exists(path))
+            {
+                Check($"三语：{code}.json 存在", false, path);
+                continue;
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var prop in doc.RootElement.GetProperty("entries").EnumerateObject())
+                map[prop.Name] = prop.Value.GetString() ?? string.Empty;
+            langs[code] = map;
+        }
+
+        Check("三语：三份字典都能解析且条目完整",
+            langs.Count == 3 && langs.Values.All(m => m.Count > 400),
+            string.Join("/", langs.Select(kv => $"{kv.Key}={kv.Value.Count}")));
+
+        if (langs.Count != 3)
+            return;
+
+        var zh = langs["zh"];
+        var en = langs["en"];
+        var ja = langs["ja"];
+        Check("三语：键集合完全一致",
+            zh.Keys.ToHashSet().SetEquals(en.Keys) && zh.Keys.ToHashSet().SetEquals(ja.Keys),
+            $"zh={zh.Count}/en={en.Count}/ja={ja.Count}");
+
+        var empty = langs.SelectMany(kv => kv.Value
+                .Where(p => string.IsNullOrWhiteSpace(p.Value))
+                .Select(p => $"{kv.Key}:{p.Key}"))
+            .ToList();
+        Check("三语：没有空词条", empty.Count == 0, string.Join(",", empty.Take(5)));
+
+        var cjk = new System.Text.RegularExpressions.Regex(@"[\u3040-\u30ff\u4e00-\u9fff]");
+        var leaked = en.Where(p => cjk.IsMatch(p.Value)).Select(p => p.Key).ToList();
+        Check("三语：英文词典里没有中文字符", leaked.Count == 0, string.Join(",", leaked.Take(5)));
+    }
+
     private static void Check(string name, bool ok, string? detail = null)
     {
         _total++;

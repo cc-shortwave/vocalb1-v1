@@ -14,6 +14,7 @@ Coverage:
     [5] pitch_shift pitch transformation (frequency ratio matches the semitone relation)
     [6] synthesize_vocal synthesis (duration / no NaN / energy)
     [7] End-to-end VocalB1Synthesizer.synthesize (file output + intermediate cleanup)
+    [8] Spatialisation: equal-power pan / distance gain / cutoff rolloff / bypass
 
 Runs directly without pytest; any failing case returns a non-zero exit code.
 Test artifacts are written to _test_output/ for listening and troubleshooting.
@@ -216,6 +217,101 @@ def t_e2e():
                  if f.startswith("breath_seg") or f == "spliced_frames.txt"]
     assert not leftovers, f"intermediate artifacts not cleaned up: {leftovers}"
     return f"artifact {back.duration:.2f}s, intermediate artifacts cleaned up"
+
+
+# ----------------------------------------------------------------------
+# [8] Spatialisation: pan law / distance gain / rolloff / bypass
+# ----------------------------------------------------------------------
+def _spatial_input(seconds=0.5, sr=44100):
+    rng = np.random.RandomState(0)
+    return sr, rng.standard_normal(int(sr * seconds)) * 0.1
+
+
+def _frames_for(n, sr, frame_period=5.0):
+    hop = max(1, int(round(frame_period / 1000.0 * sr)))
+    return max(1, int(np.ceil(n / hop)))
+
+
+def _spatial_call(pan, gain=1.0, cutoff=18000.0, seconds=0.5):
+    from VocalB1Synthesizer import _apply_spatial
+    sr, mono = _spatial_input(seconds)
+    frames = _frames_for(mono.size, sr)
+    return mono, _apply_spatial(
+        mono, sr, 5.0,
+        {"pan": [pan] * frames, "gain": [gain] * frames, "cutoffHz": [cutoff] * frames},
+    )
+
+
+@test("Spatial: left pan puts energy on the left channel only")
+def test_spatial_pan_left():
+    mono, stereo = _spatial_call(-1.0)
+    assert stereo.shape == (mono.size, 2), stereo.shape
+    left = float(np.sqrt(np.mean(stereo[:, 0] ** 2)))
+    right = float(np.sqrt(np.mean(stereo[:, 1] ** 2)))
+    assert right < left * 1e-3, f"L={left:.5f} R={right:.5f}"
+    # equal power: L² + R² ≈ mono²
+    power = float(np.mean(stereo[:, 0] ** 2 + stereo[:, 1] ** 2))
+    assert approx(power, float(np.mean(mono ** 2)), 0.02), f"{power} vs {np.mean(mono ** 2)}"
+    return f"L={left:.4f} R={right:.6f}"
+
+
+@test("Spatial: centre pan is symmetric")
+def test_spatial_pan_centre():
+    mono, stereo = _spatial_call(0.0)
+    diff = float(np.max(np.abs(stereo[:, 0] - stereo[:, 1])))
+    assert diff < 1e-9, f"max|L-R|={diff}"
+    return f"max|L-R|={diff:.2e}"
+
+
+@test("Spatial: distance gain scales the level")
+def test_spatial_gain():
+    _, near = _spatial_call(0.0, gain=1.0)
+    _, far = _spatial_call(0.0, gain=1.0 / 3.0)
+    rn = float(np.sqrt(np.mean(near ** 2)))
+    rf = float(np.sqrt(np.mean(far ** 2)))
+    assert approx(rn / rf, 3.0, 0.01), f"ratio={rn / rf:.4f}"
+    return f"ratio={rn / rf:.3f}"
+
+
+@test("Spatial: far cutoff removes the high band")
+def test_spatial_rolloff():
+    _, bright = _spatial_call(0.0, cutoff=18000.0)
+    _, dark = _spatial_call(0.0, cutoff=800.0)
+
+    def high_band(x):
+        spec = np.abs(np.fft.rfft(x[:, 0]))
+        freqs = np.fft.rfftfreq(x.shape[0], 1.0 / 44100)
+        return float(np.sqrt(np.mean(spec[freqs > 4000] ** 2)))
+
+    hb_bright = high_band(bright)
+    hb_dark = high_band(dark)
+    assert hb_dark < hb_bright * 0.2, f"{hb_dark:.3f} vs {hb_bright:.3f}"
+    # low band must survive
+    def low_band(x):
+        spec = np.abs(np.fft.rfft(x[:, 0]))
+        freqs = np.fft.rfftfreq(x.shape[0], 1.0 / 44100)
+        return float(np.sqrt(np.mean(spec[(freqs > 100) & (freqs < 400)] ** 2)))
+
+    assert low_band(dark) > low_band(bright) * 0.5, "low band lost"
+    return f"high {hb_bright:.2f} -> {hb_dark:.2f}"
+
+
+@test("Spatial: empty pan leaves the signal untouched")
+def test_spatial_bypass_empty():
+    from VocalB1Synthesizer import _apply_spatial
+    sr, mono = _spatial_input(0.1)
+    out = _apply_spatial(mono, sr, 5.0, {})
+    assert out is mono or np.array_equal(out, mono), "input was modified"
+    return "mono passthrough"
+
+
+@test("Spatial: non-finite cutoff falls back to bypass")
+def test_spatial_nan_cutoff():
+    mono, fallback = _spatial_call(0.0, cutoff=float("nan"))
+    _, reference = _spatial_call(0.0, cutoff=1e9)
+    diff = float(np.max(np.abs(fallback - reference)))
+    assert diff < 1e-9, f"max diff={diff}"
+    return "NaN cutoff -> bypass"
 
 
 # ----------------------------------------------------------------------
