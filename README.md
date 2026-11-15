@@ -216,9 +216,7 @@ pretrained models.
 
 ## Acknowledgements
 
-- **Mingxuan** — visual identity and release testing: designed the application icon,
-  installed the `setup.exe` build on Windows 11, ran it end to
-  end, and reported the problems he found.
+- **Mingxuan** — designed the application icon.
 
 The icon is his work; see [NOTICE.md](NOTICE.md) for how it relates to the MIT license.
 
