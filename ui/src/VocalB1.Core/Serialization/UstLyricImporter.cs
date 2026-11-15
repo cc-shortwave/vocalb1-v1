@@ -22,6 +22,9 @@ public static class UstLyricImporter
 
     private const string RestLyric = "R";
 
+    /// <summary>UTAU continuation: the note extends the previous one instead of starting a new segment.</summary>
+    private const string ContinuationLyric = "-";
+
     private static readonly Encoding? ShiftJis = CreateShiftJis();
 
     /// <summary>Import outcome: the lyric block plus the source tempo and note counts for logging.</summary>
@@ -168,6 +171,11 @@ public static class UstLyricImporter
                 continue;
             }
 
+            // [#PREV] / [#NEXT] / [#VERSION] reuse the note keys but describe neighbouring notes,
+            // not the sequence itself. Only sections whose name is purely numeric are real notes.
+            if (!IsNoteSection(section))
+                continue;
+
             switch (key.ToLowerInvariant())
             {
                 case "length":
@@ -189,16 +197,50 @@ public static class UstLyricImporter
 
         void Flush()
         {
-            if (length is { } ticks && ticks > 0)
-                notes.Add(new ParsedNote(
-                    (lyric ?? string.Empty).Trim(),
-                    Math.Clamp(noteNumber ?? 60, 0, 127),
-                    ticks));
+            if (length is { } ticks && section is not null && IsNoteSection(section))
+            {
+                if (ticks <= 0)
+                    throw new InvalidDataException(
+                        $"UST 第 {section} 段的 Length 必须大于 0（实际 {ticks}）。");
+
+                var noteLyric = (lyric ?? string.Empty).Trim();
+                if (string.Equals(noteLyric, ContinuationLyric, StringComparison.Ordinal))
+                {
+                    // A "-" note has no pitch of its own: it lengthens the previous note (or rest).
+                    if (notes.Count == 0)
+                        throw new InvalidDataException(
+                            $"UST 第 {section} 段是连音符 \"-\"，但前面没有可延长的音符。");
+
+                    notes[^1] = notes[^1] with { LengthTicks = notes[^1].LengthTicks + ticks };
+                }
+                else
+                {
+                    notes.Add(new ParsedNote(
+                        noteLyric,
+                        Math.Clamp(noteNumber ?? 60, 0, 127),
+                        ticks));
+                }
+            }
 
             length = null;
             lyric = null;
             noteNumber = null;
         }
+    }
+
+    /// <summary>Note sections are the numbered blocks ([#0000], [#0001], …), not named metadata blocks.</summary>
+    private static bool IsNoteSection(string section)
+    {
+        if (section.Length == 0)
+            return false;
+
+        foreach (var ch in section)
+        {
+            if (ch is < '0' or > '9')
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>UTF-8 (with or without BOM), UTF-16 LE, otherwise Shift-JIS (most UTAU editors).</summary>
