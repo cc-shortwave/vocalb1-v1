@@ -274,7 +274,8 @@ if ($variants -contains 'full') {
 # ------------------------------------------------------------------ assemble
 $engineFiles = @(
     'VocalB1Synthesizer.py', 'VocalDecomposer.py', 'VocalSynthesizer.py', 'VocalB1.py',
-    'tools/spectrogram.py', 'tools/oscilloscope.py', 'tools/pit_editor.py', 'prosses_breath.py'
+    'tools/spectrogram.py', 'tools/oscilloscope.py', 'tools/pit_editor.py', 'tools/analyze_voicebank.py',
+    'prosses_breath.py'
 )
 
 $built = @()
@@ -338,6 +339,18 @@ foreach ($variant in $variants) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
     $sizeMB = Get-SizeMB $target
+    # 7.5 打包自检：任何运行时会 import 的模块缺一个就立刻失败，别把半成品发出去
+    $required = @(
+        'VocalB1.exe', 'VocalB1Synthesizer.py', 'vocal_lib', 'languages', 'VERSION',
+        'analyze_voicebank.py', 'prosses_breath.py',
+        'ui\bridge\vocal_bridge.py', 'voicebank\README.md'
+    )
+    $absent = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $target $_)) })
+    if ($absent.Count -gt 0) {
+        throw ("payload {0} is missing: {1}" -f $folderName, ($absent -join ', '))
+    }
+    Write-Ok ("payload check: {0} files present" -f $required.Count)
+
     $zipName = "$folderName.zip"
     $zipPath = Join-Path $DistPath $zipName
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
