@@ -217,7 +217,7 @@ pretrained models.
 
 ## Acknowledgements
 
-- **Mingxuan** — designed the application icon.
+- **Mingxuan** — designed the application icon, and tests every release before it ships; he found the module missing from the 2.1.1 installer payload.
 
 The icon is his work; see [NOTICE.md](NOTICE.md) for how it relates to the MIT license.
 
