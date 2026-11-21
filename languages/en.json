@@ -642,6 +642,7 @@
     "歌词数据块已导出：{0}": "Lyric data-block exported: {0}",
     "歌词数据块已导入：{0}": "Lyric data-block imported: {0}",
     "已将歌手「{0}」的歌词切换为「{1}」。": "Singer \"{0}\" now uses lyric \"{1}\".",
+    "歌词为空，未修改音轨。": "Lyrics are empty; the track was left unchanged.",
     "UST 已解析：{0} 个发音音符，{1} 个休止。": "UST parsed: {0} sung note(s), {1} rest(s).",
     "UST 速度 {0} BPM 与工程速度 {1} BPM 不同：拍位按四分音符换算，工程速度未改动。": "UST tempo {0} BPM differs from the project tempo {1} BPM: beats are converted at quarter-note resolution; the project tempo is unchanged.",
     "参数数据块已导出：{0}": "Parameter data-block exported: {0}",

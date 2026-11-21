@@ -83,6 +83,13 @@ internal static class Program
                     && viewModel.ActiveLyric!.Phrase.Text == "あいう";
             });
 
+            Check("歌词栏：空输入不会清空音轨", () =>
+            {
+                viewModel!.LyricInput = string.Empty;
+                viewModel.CommitLyricCommand.Execute(null);
+                return viewModel.Segments.Count == 3 && viewModel.ActiveLyric!.Phrase.Words.Count == 3;
+            });
+
             Check("元音管理器：音节元音传播到发音段", () =>
             {
                 viewModel!.SelectedUnit = viewModel.LyricUnits[0];
@@ -226,6 +233,24 @@ internal static class Program
             {
                 viewModel!.ClearBgm();
                 return !viewModel.HasBgm && Math.Abs(viewModel.BgmStartBeat) < 1e-9;
+            });
+
+            Check("导入 UST：按 .ust 生成歌词数据块并填入歌词栏", () =>
+            {
+                var ustPath = Path.Combine(bank, "import.ust");
+                File.WriteAllText(ustPath,
+                    "[#0000]\nLength=480\nLyric=あ\nNoteNum=60\n[#0001]\nLength=480\nLyric=い\nNoteNum=62\n[#TRACKEND]\n");
+                var before = viewModel!.Lyrics.Count;
+                viewModel.ImportUstFromPath(ustPath);
+                var lyric = viewModel.ActiveLyric!;
+                return viewModel.Lyrics.Count == before + 1
+                    && lyric.Phrase.Text == "あい"
+                    && viewModel.LyricInput == "あい"
+                    && lyric.Segments.Count == 2
+                    && viewModel.Segments.Count == 2
+                    && viewModel.LyricUnits.Count == 2
+                    && lyric.Segments[0].LyricOverride == "あ"
+                    && lyric.Segments[1].DstPitch == "D4";
             });
 
             Check("默认字典：常用词按假名分解", () =>

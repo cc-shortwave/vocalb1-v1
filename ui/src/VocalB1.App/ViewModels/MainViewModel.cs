@@ -489,6 +489,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             if (!SetProperty(ref _selectedLyric, value))
                 return;
             OnPropertyChanged(nameof(ActiveLyric));
+            SyncLyricInput();
             RefreshSegments();
             RefreshLyricUnits();
             (CommitLyricCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -553,6 +554,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 RefreshLyricUnits();
                 RefreshParameterKeys();
                 ResetNodeSelection();
+                SyncLyricInput();
             }
             OnPropertyChanged(nameof(GraphOwnerText));
             OnPropertyChanged(nameof(ActiveGraph));
@@ -1354,6 +1356,18 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         RefreshSegments();
         RefreshLyricUnits();
         ResetNodeSelection();
+        SyncLyricInput();
+    }
+
+    /// <summary>
+    /// Keeps the lyric box showing the active lyric. Without this the box stays empty after a load or a
+    /// UST import, and the first lost-focus commit parses an empty string and deletes every note.
+    /// </summary>
+    private void SyncLyricInput()
+    {
+        var text = ActiveLyric?.Phrase.Text ?? string.Empty;
+        if (!string.Equals(_lyricInput, text, StringComparison.Ordinal))
+            LyricInput = text;
     }
 
     private string? ResolveLyricName(string? id) => _project.FindLyric(id)?.Name;
@@ -1609,6 +1623,21 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     {
         var lyric = ActiveLyric;
         if (lyric is null || _dictionary is null)
+            return;
+
+        // Losing focus with an untouched box used to parse an empty template, delete every word and
+        // segment, and leave the track with "at least 1 voiced segment" errors. An empty box is a no-op;
+        // an unchanged text needs no commit either.
+        if (string.IsNullOrWhiteSpace(LyricInput))
+        {
+            if (lyric.Phrase.Words.Count > 0)
+            {
+                AddLog("warn", LanguageService.Translate("歌词为空，未修改音轨。"));
+                SetLyricStatus("歌词为空，未修改音轨。");
+            }
+            return;
+        }
+        if (string.Equals(LyricInput, lyric.Phrase.Text, StringComparison.Ordinal))
             return;
 
         try
