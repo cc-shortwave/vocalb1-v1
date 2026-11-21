@@ -2171,6 +2171,26 @@ public sealed class PianoRollView : FrameworkElement
         if (drag.Kind == DragKind.Note)
             segment.DstPitch = PitchMath.ToPitchName(drag.OriginalSemitone + drag.SemitoneDelta);
 
+        // Pushed notes move out of the way first, right to left. Their pitch cells must be copied
+        // before the dragged note's new range is written, otherwise ShiftRange clears the cells the
+        // pushed note still needs and the dragged note's own curve ends up empty.
+        foreach (var (index, delta) in drag.Shifts
+                     .OrderByDescending(pair => pair.Key >= 0 && pair.Key < track.Segments.Count
+                         ? track.Segments[pair.Key].BeatStart
+                         : double.MinValue))
+        {
+            if (index < 0 || index >= track.Segments.Count)
+                continue;
+
+            var other = track.Segments[index];
+            var from = other.BeatStart;
+            var length = other.BeatEnd - other.BeatStart;
+            other.BeatStart += delta;
+            other.BeatEnd += delta;
+            MovePitchPoints(track, other.Id, delta, 0);
+            track.PitchRaster?.ShiftRange(from, from + length, delta);
+        }
+
         if (drag.Kind == DragKind.Note)
         {
             MovePitchPoints(track, segment.Id, drag.PreviewStart - originalStart,
@@ -2184,19 +2204,6 @@ public sealed class PianoRollView : FrameworkElement
                 drag.PreviewStart, drag.PreviewEnd);
             track.PitchRaster?.ScaleRange(originalStart, originalEnd,
                 drag.PreviewStart, drag.PreviewEnd);
-        }
-
-        // Notes pushed by the drag shift as a whole, and their points follow.
-        foreach (var (index, delta) in drag.Shifts)
-        {
-            if (index < 0 || index >= track.Segments.Count)
-                continue;
-
-            var other = track.Segments[index];
-            other.BeatStart += delta;
-            other.BeatEnd += delta;
-            MovePitchPoints(track, other.Id, delta, 0);
-            track.PitchRaster?.ShiftRange(other.BeatStart - delta, other.BeatEnd - delta, delta);
         }
 
         // Overlaps are never allowed to survive an edit: resolve them before transitions are rebuilt.
@@ -2221,7 +2228,26 @@ public sealed class PianoRollView : FrameworkElement
         if (Math.Abs(delta) < 1e-9 && semitone == 0)
             return;
 
-        foreach (var (index, preview) in drag.Previews)
+        // Pushed unselected notes move first, then the selected ones, both right to left: a cell range
+        // must be copied before another moving note can write over it (same rule as the single drag).
+        foreach (var (index, shift) in drag.Shifts
+                     .OrderByDescending(pair => pair.Key >= 0 && pair.Key < track.Segments.Count
+                         ? track.Segments[pair.Key].BeatStart
+                         : double.MinValue))
+        {
+            if (index < 0 || index >= track.Segments.Count)
+                continue;
+
+            var other = track.Segments[index];
+            var from = other.BeatStart;
+            var length = other.BeatEnd - other.BeatStart;
+            other.BeatStart += shift;
+            other.BeatEnd += shift;
+            MovePitchPoints(track, other.Id, shift, 0);
+            track.PitchRaster?.ShiftRange(from, from + length, shift);
+        }
+
+        foreach (var (index, preview) in drag.Previews.OrderByDescending(pair => pair.Value.OriginalStart))
         {
             if (index < 0 || index >= track.Segments.Count)
                 continue;
@@ -2248,17 +2274,6 @@ public sealed class PianoRollView : FrameworkElement
             point.Beat = Math.Max(1, point.Beat + delta);
             if (semitone != 0 && !point.IsTransition && point.Pitch is not null)
                 point.Pitch = PitchMath.ToPitchName(SemitoneOf(point.Pitch) + semitone);
-        }
-
-        foreach (var (index, shift) in drag.Shifts)
-        {
-            if (index < 0 || index >= track.Segments.Count)
-                continue;
-
-            var other = track.Segments[index];
-            other.BeatStart += shift;
-            other.BeatEnd += shift;
-            MovePitchPoints(track, other.Id, shift, 0);
         }
 
         SegmentLayout.RemoveOverlaps(track);

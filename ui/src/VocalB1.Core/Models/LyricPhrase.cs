@@ -103,15 +103,17 @@ public sealed class LyricWord
     public string Projection => IsRest ? new string(' ', Units.Count) : Surface;
 
     /// <summary>
-    /// Identity used to reuse the same word (and its melody) across a text edit:
-    /// lyric text + audio path + rest flag. Rests are identified by their unit count so a deleted
-    /// word can still match the spaces produced for it.
+    /// Identity used to reuse the same word (and its melody) across a text edit: lyric text plus the
+    /// rest flag. The audio path is deliberately excluded, because an imported UST word has no sample
+    /// path yet while the dictionary parser resolves one; matching on the path would replace every
+    /// imported word and reset the whole melody. Rests are identified by their unit count so a
+    /// deleted word can still match the spaces produced for it.
     /// </summary>
     [JsonIgnore]
     public string IdentityKey => IsRest
         ? "R" + Units.Count
         : Surface + "#" + string.Join(",",
-            Units.Select(u => $"{u.Text}|{u.Audio}|{(u.IsRest ? 1 : 0)}"));
+            Units.Select(u => $"{u.Text}|{(u.IsRest ? 1 : 0)}"));
 
     public LyricWord Clone() => new()
     {

@@ -897,6 +897,24 @@ internal static class Program
             && !string.Equals(boundary[0].Pitch, boundary[1].Pitch, StringComparison.Ordinal),
             string.Join(",", boundary.Select(p => $"{p.Beat:0.###}:{p.Pitch}")));
 
+        // Committing the lyric text must reuse the imported words even though the import has no sample
+        // paths yet; otherwise every word is replaced and the melody drops to the default pitch.
+        var edited = UstLyricImporter.Parse(
+            "[#0000]\nLength=480\nLyric=あ\nNoteNum=60\n[#0001]\nLength=480\nLyric=い\nNoteNum=64\n[#TRACKEND]\n",
+            "编辑").Lyric;
+        var parsedWords = new List<LyricWord>
+        {
+            new() { Surface = "あ", Units = [new LyricUnit { Text = "あ", Audio = @"C:\vb\_あ.wav", Display = "あ" }] },
+            new() { Surface = "い", Units = [new LyricUnit { Text = "い", Audio = @"C:\vb\_い.wav", Display = "い" }] },
+        };
+        var editedApply = LyricPhraseComposer.Apply(edited.Phrase, parsedWords, edited, 1.0, 0, "D4");
+        Check("UST：提交歌词时保留导入的旋律",
+            editedApply.Reused == 2 && editedApply.Added == 0
+            && edited.Segments.Select(s => s.DstPitch).SequenceEqual(["C4", "E4"])
+            && Math.Abs((edited.PitchRaster?.ValueAt(1.5) ?? double.NaN) - 0) < 1e-6
+            && Math.Abs((edited.PitchRaster?.ValueAt(2.5) ?? double.NaN) - 4) < 1e-6,
+            $"reused={editedApply.Reused} added={editedApply.Added} pitches={string.Join(",", edited.Segments.Select(s => s.DstPitch))}");
+
         try
         {
             UstLyricImporter.Parse("[#0000]\nLength=-480\nLyric=あ\nNoteNum=60\n[#TRACKEND]\n", "负长度");

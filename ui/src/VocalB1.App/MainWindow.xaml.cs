@@ -104,9 +104,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effects = IsDroppable(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
+
+    /// <summary>Project files and UTAU sequences can be dropped; anything else is rejected.</summary>
+    private static bool IsDroppable(IDataObject data) =>
+        data.GetDataPresent(DataFormats.FileDrop)
+        && data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } paths
+        && File.Exists(paths[0])
+        && (ProjectJson.IsProjectFile(paths[0])
+            || string.Equals(Path.GetExtension(paths[0]), ".ust", StringComparison.OrdinalIgnoreCase));
 
     private void OnWindowDrop(object sender, DragEventArgs e)
     {
@@ -120,8 +128,13 @@ public partial class MainWindow : Window
             return;
 
         var path = paths[0];
-        if (File.Exists(path) && ProjectJson.IsProjectFile(path))
+        if (!File.Exists(path))
+            return;
+
+        if (ProjectJson.IsProjectFile(path))
             Dispatcher.BeginInvoke(new Action(() => _viewModel?.OpenProjectFromPath(path)));
+        else if (string.Equals(Path.GetExtension(path), ".ust", StringComparison.OrdinalIgnoreCase))
+            Dispatcher.BeginInvoke(new Action(() => _viewModel?.ImportUstFromPath(path)));
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)

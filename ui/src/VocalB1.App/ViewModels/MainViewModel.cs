@@ -2391,30 +2391,50 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 ? ImportUstLyric(dialog.FileName)
                 : JsonSerializer.Deserialize<LyricDocument>(File.ReadAllText(dialog.FileName),
                     ProjectJson.ReadOptions) ?? throw new InvalidDataException(LanguageService.Translate("歌词文件为空。"));
-            lyric.Id = Guid.NewGuid().ToString("N");
-            lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
-            PushUndo();
-            _project.Lyrics.Add(lyric);
-
-            // The piano roll follows the singer's bound lyric, so an imported data-block would stay
-            // invisible until the user rebinds it. Make it the selected singer's lyric right away.
-            _selectedLyric = new LyricRow(lyric);
-            if (_selectedSinger is not null)
-            {
-                _selectedSinger.Model.LyricId = lyric.Id;
-                _selectedSinger.Refresh();
-                OnPropertyChanged(nameof(SelectedSingerLyric));
-                AddLog("info", LanguageService.TranslateFormat(
-                    "已将歌手「{0}」的歌词切换为「{1}」。", _selectedSinger.Model.Name, lyric.Name));
-            }
-
-            RebuildRows();
-            AddLog("info", LanguageService.TranslateFormat("歌词数据块已导入：{0}", lyric.Name));
+            AddImportedLyric(lyric);
         }
         catch (Exception ex)
         {
             ReportError(ex);
         }
+    }
+
+    /// <summary>Imports a .ust dropped onto the window, mirroring the lyric-import dialog.</summary>
+    public void ImportUstFromPath(string path)
+    {
+        if (!CanEdit)
+            return;
+        try
+        {
+            AddImportedLyric(ImportUstLyric(path));
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
+    private void AddImportedLyric(LyricDocument lyric)
+    {
+        lyric.Id = Guid.NewGuid().ToString("N");
+        lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
+        PushUndo();
+        _project.Lyrics.Add(lyric);
+
+        // The piano roll follows the singer's bound lyric, so an imported data-block would stay
+        // invisible until the user rebinds it. Make it the selected singer's lyric right away.
+        _selectedLyric = new LyricRow(lyric);
+        if (_selectedSinger is not null)
+        {
+            _selectedSinger.Model.LyricId = lyric.Id;
+            _selectedSinger.Refresh();
+            OnPropertyChanged(nameof(SelectedSingerLyric));
+            AddLog("info", LanguageService.TranslateFormat(
+                "已将歌手「{0}」的歌词切换为「{1}」。", _selectedSinger.Model.Name, lyric.Name));
+        }
+
+        RebuildRows();
+        AddLog("info", LanguageService.TranslateFormat("歌词数据块已导入：{0}", lyric.Name));
     }
 
     private LyricDocument ImportUstLyric(string path)
