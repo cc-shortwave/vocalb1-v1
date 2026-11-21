@@ -13,6 +13,8 @@ namespace VocalB1.Core.Serialization;
 /// One typed note becomes one segment + one lyric unit, with the lyric doubling as the phoneme so the
 /// singer's voicebank resolves the sample at render time; a "R" note becomes a rest of the same span and
 /// NoteNum becomes the target pitch. The UST tempo is reported but not applied, because the project owns BPM.
+/// The pitch curve is a held raster: every note stays on its own pitch and switches instantly at the
+/// boundary (hard link), matching UTAU where pitch bend data is not imported.
 /// </para>
 /// </summary>
 public static class UstLyricImporter
@@ -49,6 +51,9 @@ public static class UstLyricImporter
         var lyric = new LyricDocument
         {
             Name = string.IsNullOrWhiteSpace(name) ? "UST 歌词" : name.Trim(),
+            // UTAU notes carry no pitch bend: each note keeps its own pitch and steps at the
+            // boundary, so the curve is stored as a held raster instead of gliding anchors.
+            PitchRaster = new PitchRaster(),
         };
 
         var cursor = 1.0;
@@ -90,7 +95,10 @@ public static class UstLyricImporter
                 Phoneme = note.Lyric,
             };
             lyric.Segments.Add(segment);
-            lyric.AddPitchAnchor(segment);
+            // Hold the note's own pitch for its whole span: the next note starts on a new cell, so
+            // the curve switches instantly at the boundary instead of gliding across the note.
+            if (PitchMath.TryParseSemitones(segment.DstPitch, out var semitone))
+                lyric.PitchRaster!.Paint(segment.BeatStart, segment.BeatEnd - 1e-9, Math.Round(semitone, 3));
 
             lyric.Phrase.Words.Add(new LyricWord
             {

@@ -882,6 +882,21 @@ internal static class Program
             && result.Lyric.Phrase.Text == "あ",
             $"{result.Lyric.Segments[0].DstPitch} / \"{result.Lyric.Segments[0].Vowel}\" / {result.Lyric.Phrase.Text}");
 
+        var held = UstLyricImporter.Parse(
+            "[#0000]\nLength=480\nLyric=あ\nNoteNum=60\n[#0001]\nLength=480\nLyric=い\nNoteNum=62\n[#TRACKEND]\n",
+            "硬链接");
+        var heldRaster = held.Lyric.PitchRaster;
+        var boundary = held.Lyric.BuildRenderPitchLine().Where(p => Math.Abs(p.Beat - 2) < 1e-6).ToList();
+        Check("UST：PIT 线默认硬链接（音符内保持自身音高）",
+            held.Lyric.HasPitchRaster
+            && Math.Abs((heldRaster!.ValueAt(1.5) ?? double.NaN) - 0) < 1e-6
+            && Math.Abs((heldRaster.ValueAt(2.5) ?? double.NaN) - 2) < 1e-6,
+            $"1.5→{heldRaster?.ValueAt(1.5)} 2.5→{heldRaster?.ValueAt(2.5)}");
+        Check("UST：PIT 线在音符边界瞬时切换",
+            boundary.Count == 2
+            && !string.Equals(boundary[0].Pitch, boundary[1].Pitch, StringComparison.Ordinal),
+            string.Join(",", boundary.Select(p => $"{p.Beat:0.###}:{p.Pitch}")));
+
         try
         {
             UstLyricImporter.Parse("[#0000]\nLength=-480\nLyric=あ\nNoteNum=60\n[#TRACKEND]\n", "负长度");
