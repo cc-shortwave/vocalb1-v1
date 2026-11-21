@@ -66,6 +66,11 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     private int _graphRevision;
     private bool _isBusy;
     private bool _isPlaying;
+    private bool _isAnalyzingVoicebank;
+    private double _analysisProgress;
+    private string _analysisBankName = string.Empty;
+    private string _analysisCurrentSample = string.Empty;
+    private int _analysisRunning;
     private bool _isPencil;
     private bool _isLightTheme;
     private bool _languageReady;
@@ -352,6 +357,37 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     {
         get => _isPlaying;
         private set => SetProperty(ref _isPlaying, value);
+    }
+
+    /// <summary>
+    /// True while a voicebank is being decomposed. The window shows a modal overlay with the progress
+    /// bar and the sample being measured, so no other command can run in the meantime.
+    /// </summary>
+    public bool IsAnalyzingVoicebank
+    {
+        get => _isAnalyzingVoicebank;
+        private set => SetProperty(ref _isAnalyzingVoicebank, value);
+    }
+
+    /// <summary>Decomposition progress of the running analysis, 0..1.</summary>
+    public double AnalysisProgress
+    {
+        get => _analysisProgress;
+        private set => SetProperty(ref _analysisProgress, Math.Clamp(value, 0, 1));
+    }
+
+    /// <summary>Voicebank folder shown in the analysis overlay.</summary>
+    public string AnalysisBankName
+    {
+        get => _analysisBankName;
+        private set => SetProperty(ref _analysisBankName, value);
+    }
+
+    /// <summary>Current sample reported by the engine, for example "37/142 _か".</summary>
+    public string AnalysisCurrentSample
+    {
+        get => _analysisCurrentSample;
+        private set => SetProperty(ref _analysisCurrentSample, value);
     }
 
     public string StatusText
@@ -1378,12 +1414,15 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         var name = Path.GetFileName(root.TrimEnd(
             Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         AddLog("info", LanguageService.TranslateFormat("开始分解声库「{0}」…", name));
+        BeginAnalysisUi(name);
 
         var progress = new Progress<EngineEvent>(e =>
         {
             switch (e.Kind)
             {
                 case EngineEventKind.Progress:
+                    AnalysisProgress = e.Progress ?? 0;
+                    AnalysisCurrentSample = e.Message;
                     SetStatus("正在分解声库「{0}」{1:0}% {2}", name, (e.Progress ?? 0) * 100, e.Message);
                     break;
                 case EngineEventKind.Warning:
@@ -1424,6 +1463,29 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             AddLog("error", LanguageService.TranslateFormat("声库「{0}」分解失败：{1}", name, ex.Message));
             return false;
         }
+        finally
+        {
+            EndAnalysisUi();
+        }
+    }
+
+    /// <summary>Opens the modal analysis overlay; nested/overlapping analyses keep it open until the last one ends.</summary>
+    private void BeginAnalysisUi(string bankName)
+    {
+        Interlocked.Increment(ref _analysisRunning);
+        AnalysisBankName = bankName;
+        AnalysisProgress = 0;
+        AnalysisCurrentSample = string.Empty;
+        IsAnalyzingVoicebank = true;
+    }
+
+    private void EndAnalysisUi()
+    {
+        if (Interlocked.Decrement(ref _analysisRunning) > 0)
+            return;
+
+        Interlocked.Exchange(ref _analysisRunning, 0);
+        IsAnalyzingVoicebank = false;
     }
 
     private void RefreshFormantInfo()
@@ -2333,6 +2395,19 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             lyric.Name = ProjectDocument.UniqueName(lyric.Name, _project.Lyrics.Select(l => l.Name));
             PushUndo();
             _project.Lyrics.Add(lyric);
+
+            // The piano roll follows the singer's bound lyric, so an imported data-block would stay
+            // invisible until the user rebinds it. Make it the selected singer's lyric right away.
+            _selectedLyric = new LyricRow(lyric);
+            if (_selectedSinger is not null)
+            {
+                _selectedSinger.Model.LyricId = lyric.Id;
+                _selectedSinger.Refresh();
+                OnPropertyChanged(nameof(SelectedSingerLyric));
+                AddLog("info", LanguageService.TranslateFormat(
+                    "已将歌手「{0}」的歌词切换为「{1}」。", _selectedSinger.Model.Name, lyric.Name));
+            }
+
             RebuildRows();
             AddLog("info", LanguageService.TranslateFormat("歌词数据块已导入：{0}", lyric.Name));
         }

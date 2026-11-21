@@ -13,6 +13,8 @@
         AllowDrop="True"
         DragOver="OnWindowDragOver"
         Drop="OnWindowDrop"
+        PreviewKeyDown="OnWindowPreviewKeyDown"
+        KeyDown="OnWindowPreviewKeyDown"
         UseLayoutRounding="True">
 
     <Window.Resources>
@@ -859,5 +861,37 @@
                            Foreground="{DynamicResource DimBrush}" VerticalAlignment="Center" />
             </Grid>
         </Border>
+
+        <!-- Voicebank decomposition lock: covers the whole window, blocks every input, shows progress. -->
+        <Grid x:Name="AnalysisOverlay" Grid.RowSpan="3"
+              Background="#99000000" Focusable="True"
+              IsVisibleChanged="OnAnalysisOverlayIsVisibleChanged"
+              Visibility="{Binding IsAnalyzingVoicebank, Converter={StaticResource BoolToVis}}">
+            <Border Width="460" Padding="26,22" CornerRadius="10"
+                    Background="{DynamicResource PanelBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="正在分解声库" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding AnalysisBankName}" Margin="0,6,0,0"
+                               Foreground="{DynamicResource DimBrush}" TextTrimming="CharacterEllipsis" />
+                    <Grid Margin="0,16,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ProgressBar Grid.Column="0" Height="8" Minimum="0" Maximum="1"
+                                     Value="{Binding AnalysisProgress, Mode=OneWay}" />
+                        <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource DimBrush}"
+                                   Text="{Binding AnalysisProgress, StringFormat={}{0:P0}}" />
+                    </Grid>
+                    <TextBlock Text="{Binding AnalysisCurrentSample}" Margin="0,10,0,0"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="分解完成前界面将保持锁定。" Margin="0,8,0,0" FontSize="11"
+                               Foreground="{DynamicResource DimBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

@@ -80,8 +80,30 @@ public partial class MainWindow : Window
             _viewModel?.SeekToBeat(beat);
     }
 
+    /// <summary>While a voicebank is decomposed the overlay is modal: every shortcut is swallowed.</summary>
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_viewModel?.IsAnalyzingVoicebank == true)
+            e.Handled = true;
+    }
+
+    /// <summary>Moves keyboard focus onto the overlay so no editor keeps receiving text input.</summary>
+    private void OnAnalysisOverlayIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is UIElement overlay && e.NewValue is true)
+            overlay.Focus();
+    }
+
     private void OnWindowDragOver(object sender, DragEventArgs e)
     {
+        // The analysis overlay is modal; a file dragged in must not bypass it.
+        if (_viewModel?.IsAnalyzingVoicebank == true)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
         e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
@@ -89,6 +111,9 @@ public partial class MainWindow : Window
     private void OnWindowDrop(object sender, DragEventArgs e)
     {
         e.Handled = true;
+        if (_viewModel?.IsAnalyzingVoicebank == true)
+            return;
+
         if (!e.Data.GetDataPresent(DataFormats.FileDrop))
             return;
         if (e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths)

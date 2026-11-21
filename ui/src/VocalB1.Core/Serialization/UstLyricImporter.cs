@@ -25,7 +25,9 @@ public static class UstLyricImporter
     /// <summary>UTAU continuation: the note extends the previous one instead of starting a new segment.</summary>
     private const string ContinuationLyric = "-";
 
-    private static readonly Encoding? ShiftJis = CreateShiftJis();
+    private static readonly Encoding? ShiftJis = TryGetCodePage(932);
+
+    private static readonly Encoding? Gbk = TryGetCodePage(936);
 
     /// <summary>Import outcome: the lyric block plus the source tempo and note counts for logging.</summary>
     public sealed record Result(LyricDocument Lyric, double? Tempo, int NoteCount, int RestCount);
@@ -240,7 +242,10 @@ public static class UstLyricImporter
         return true;
     }
 
-    /// <summary>UTF-8 (with or without BOM), UTF-16 LE, otherwise Shift-JIS (most UTAU editors).</summary>
+    /// <summary>
+    /// UTF-8 (with or without BOM), UTF-16 LE/BE (with or without BOM), otherwise the locale code page:
+    /// UTAU editors save Shift-JIS on Japanese systems and GBK on Chinese ones.
+    /// </summary>
     private static string ReadText(string path)
     {
         var bytes = File.ReadAllBytes(path);
@@ -248,6 +253,11 @@ public static class UstLyricImporter
             return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
         if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
             return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+
+        if (DetectUtf16(bytes) is { } utf16)
+            return utf16;
 
         try
         {
@@ -256,18 +266,106 @@ public static class UstLyricImporter
         }
         catch (DecoderFallbackException)
         {
-            // Not valid UTF-8: fall through to the Japanese code page.
+            // Not valid UTF-8: fall through to the locale code pages.
         }
 
-        return ShiftJis?.GetString(bytes) ?? Encoding.Latin1.GetString(bytes);
+        return DecodeLegacy(bytes);
     }
 
-    private static Encoding? CreateShiftJis()
+    /// <summary>
+    /// UTF-16 without a BOM would otherwise pass the UTF-8 check with a NUL beside every ASCII
+    /// character, so the section headers would never match. Detect it by the zero-byte pattern.
+    /// </summary>
+    private static string? DetectUtf16(byte[] bytes)
+    {
+        if (bytes.Length < 4 || bytes.Length % 2 != 0)
+            return null;
+
+        var sample = Math.Min(bytes.Length, 8192);
+        var pairs = sample / 2;
+        var evenZeros = 0;
+        var oddZeros = 0;
+        for (var i = 0; i < sample; i += 2)
+        {
+            if (bytes[i] == 0)
+                evenZeros++;
+            if (bytes[i + 1] == 0)
+                oddZeros++;
+        }
+
+        if (oddZeros > pairs * 0.2 && oddZeros > evenZeros * 3)
+            return Encoding.Unicode.GetString(bytes);
+        if (evenZeros > pairs * 0.2 && evenZeros > oddZeros * 3)
+            return Encoding.BigEndianUnicode.GetString(bytes);
+        return null;
+    }
+
+    /// <summary>
+    /// Shift-JIS and GBK both decode almost any byte sequence without errors, so pick the candidate
+    /// whose result looks like real lyrics instead of trusting the first code page.
+    /// </summary>
+    private static string DecodeLegacy(byte[] bytes)
+    {
+        var shiftJis = Decode(ShiftJis, bytes);
+        var gbk = Decode(Gbk, bytes);
+        if (shiftJis is null)
+            return gbk ?? Encoding.Latin1.GetString(bytes);
+        if (gbk is null)
+            return shiftJis;
+        return ScoreText(gbk) > ScoreText(shiftJis) ? gbk : shiftJis;
+    }
+
+    private static string? Decode(Encoding? encoding, byte[] bytes)
+    {
+        if (encoding is null)
+            return null;
+
+        var lenient = (Encoding)encoding.Clone();
+        lenient.DecoderFallback = new DecoderReplacementFallback("\uFFFD");
+        return lenient.GetString(bytes);
+    }
+
+    /// <summary>
+    /// Lyric plausibility: kana and Han characters score positively, while half-width katakana and
+    /// replacement characters are the fingerprint of text decoded with the wrong code page.
+    /// </summary>
+    private static int ScoreText(string text)
+    {
+        var score = 0;
+        foreach (var ch in text)
+        {
+            switch (ch)
+            {
+                case >= '\u3040' and <= '\u30FF':
+                    score += 3;
+                    break;
+                case >= '\uFF61' and <= '\uFF9F':
+                    score -= 4;
+                    break;
+                case >= '\u4E00' and <= '\u9FFF':
+                    score += 1;
+                    break;
+                case '\uFFFD':
+                    score -= 6;
+                    break;
+                case '\r' or '\n' or '\t':
+                    break;
+                default:
+                    if (char.IsControl(ch))
+                        score -= 6;
+                    break;
+            }
+        }
+
+        return score;
+    }
+
+    private static Encoding? TryGetCodePage(int codePage)
     {
         try
         {
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-            return Encoding.GetEncoding(932);
+            return Encoding.GetEncoding(codePage);
         }
         catch (Exception)
         {

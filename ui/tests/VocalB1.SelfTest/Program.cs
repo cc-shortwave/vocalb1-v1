@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using VocalB1.Core.Abstractions;
 using VocalB1.Core.Configuration;
@@ -900,6 +901,32 @@ internal static class Program
         {
             Check("UST：孤立连音符报告错误", ex.Message.Contains("连音符"), ex.Message);
         }
+
+        // Encodings: Japanese UTAU saves Shift-JIS, Chinese UTAU saves GBK, and some editors drop
+        // the UTF-16 BOM. All three must decode to readable lyrics and real notes.
+        var dir = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest");
+        Directory.CreateDirectory(dir);
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        var sjisPath = Path.Combine(dir, "ust-sjis.ust");
+        File.WriteAllBytes(sjisPath,
+            Encoding.GetEncoding(932).GetBytes("[#0000]\nLength=480\nLyric=さくら\nNoteNum=60\n[#TRACKEND]\n"));
+        var sjis = UstLyricImporter.ImportFile(sjisPath);
+        Check("UST：Shift-JIS 歌词按日文解码", sjis.Lyric.Phrase.Text == "さくら", sjis.Lyric.Phrase.Text);
+
+        var gbkPath = Path.Combine(dir, "ust-gbk.ust");
+        File.WriteAllBytes(gbkPath,
+            Encoding.GetEncoding(936).GetBytes("[#0000]\nLength=480\nLyric=你好\nNoteNum=60\n[#TRACKEND]\n"));
+        var gbk = UstLyricImporter.ImportFile(gbkPath);
+        Check("UST：GBK 歌词按中文解码", gbk.Lyric.Phrase.Text == "你好", gbk.Lyric.Phrase.Text);
+
+        var utf16Path = Path.Combine(dir, "ust-utf16-nobom.ust");
+        File.WriteAllBytes(utf16Path,
+            Encoding.Unicode.GetBytes("[#0000]\nLength=480\nLyric=あ\nNoteNum=60\n[#TRACKEND]\n"));
+        var utf16 = UstLyricImporter.ImportFile(utf16Path);
+        Check("UST：无 BOM 的 UTF-16 仍能导入",
+            utf16.NoteCount == 1 && utf16.Lyric.Phrase.Text == "あ",
+            $"{utf16.NoteCount} 个音符 / \"{utf16.Lyric.Phrase.Text}\"");
     }
 
     // ------------------------------------------------------------------
