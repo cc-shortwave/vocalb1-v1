@@ -55,7 +55,10 @@ _OUTPUT_DIR = os.path.join(_BASE_DIR, "_output")
 
 # ----------------------------------------------------------------------
 # [1.2] Lyric-driven per-frame parameter curves (v3 object model)
-#   FRAME_CURVES      : {canonical key: [value per synthesis frame]} or None
+#   FRAME_CURVES      : {canonical key: [value per synthesis frame]} or None. Consumed keys:
+#                       followRatio.1~7 / bandRatios.1~8 / breathyThr (per-segment mean),
+#                       apScale / apMax / breathGain (per frame),
+#                       formant.G1~7 / formant.BW1~7 (per-frame formant gain and bandwidth).
 #   FORMANT_TARGETS   : np.ndarray (frames, 7) absolute F1~F7 targets in Hz or None
 #   FRAMES_PER_BEAT   : frames per beat used to slice a segment's frame range
 #   SEGMENT_FRAME_OFFSETS : absolute frame index of each segment start (filled by run())
@@ -1714,6 +1717,34 @@ def _curve_mean(key: str, start: int, n_frames: int, fallback):
     return float(np.mean(segment[np.isfinite(segment)])) if np.any(np.isfinite(segment)) else fallback
 
 
+def _curve_frames(key: str, start: int, n_frames: int, fallback):
+    """Per-frame curve values padded/trimmed to n_frames; None when the curve is absent."""
+    segment = _curve_slice(key, start, n_frames)
+    if segment is None or segment.size == 0:
+        return None
+    if segment.size < n_frames:
+        segment = np.pad(segment, (0, n_frames - segment.size), mode="edge")
+    else:
+        segment = segment[:n_frames]
+    return np.where(np.isfinite(segment), segment, fallback)
+
+
+def _curve_matrix(prefix: str, count: int, start: int, n_frames: int, fallback):
+    """F1~F7 style per-formant matrix (n_frames, count) from per-key curves, or None when absent."""
+    if not FRAME_CURVES:
+        return None
+    columns = []
+    found = False
+    for i in range(count):
+        values = _curve_frames(f"{prefix}{i + 1}", start, n_frames, fallback)
+        if values is None:
+            values = np.full(n_frames, fallback, dtype=np.float64)
+        else:
+            found = True
+        columns.append(values)
+    return np.column_stack(columns) if found else None
+
+
 def _curve_vector(prefix: str, count: int, start: int, n_frames: int, fallback):
     values = [_curve_mean(f"{prefix}{i}", start, n_frames,
                           fallback[i] if isinstance(fallback, (list, tuple)) and i < len(fallback) else 1.0)
@@ -1818,7 +1849,9 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
                                    f"共振峰目标切片长度 {segment.shape[0]} 与帧数 {len(f0)} 不一致。")
         with _perf_span("seg.formant_targets"):
             sp, _fmt_diag = warp_to_targets(
-                sp, sr, segment, frame_period=fp, f0=f0)
+                sp, sr, segment, frame_period=fp, f0=f0,
+                target_gain=_curve_matrix("formant.G", 7, frame_start, len(f0), 1.0),
+                target_bw=_curve_matrix("formant.BW", 7, frame_start, len(f0), 80.0))
         print(f"    [Formant targets] warped {_fmt_diag['frames_warped']} frames, "
               f"skipped {_fmt_diag['frames_skipped']} ({_fmt_diag['source']} source)")
 
@@ -1884,9 +1917,19 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
     # ── AP correction: d4c systematically overestimates -> scale+clamp restores periodicity (removes the synthesized noise-cloud artifact) ──
     if ap_v is not None:
         ap_raw_mean = float(ap_v.mean())
-        ap_v = np.minimum(ap_v * AP_SCALE, AP_MAX)
-        print(f"    [AP correction] mean aperiodicity {ap_raw_mean:.3f} → {float(ap_v.mean()):.3f} "
-              f"(scale={AP_SCALE}, max={AP_MAX})")
+        # Per-frame AP curves come from the graph (breath manager); the constants stay the fallback.
+        scale_curve = _curve_frames("apScale", frame_start, len(f0), AP_SCALE)
+        cap_curve = _curve_frames("apMax", frame_start, len(f0), AP_MAX)
+        if scale_curve is None:
+            ap_v = np.minimum(ap_v * AP_SCALE, AP_MAX)
+            print(f"    [AP correction] mean aperiodicity {ap_raw_mean:.3f} → {float(ap_v.mean()):.3f} "
+                  f"(scale={AP_SCALE}, max={AP_MAX})")
+        else:
+            caps = cap_curve if cap_curve is not None else np.full(len(f0), AP_MAX, dtype=np.float64)
+            ap_v = np.minimum(ap_v * scale_curve[vf][:, None], caps[vf][:, None])
+            print(f"    [AP correction] mean aperiodicity {ap_raw_mean:.3f} → {float(ap_v.mean()):.3f} "
+                  f"(per-frame scale {float(np.min(scale_curve[vf])):.3f}~{float(np.max(scale_curve[vf])):.3f}, "
+                  f"max {float(np.min(caps[vf])):.3f}~{float(np.max(caps[vf])):.3f})")
 
     # Breath: sliced precisely at the voiced-frame sample boundaries and concatenated (length = voiced frame count × frame period)
     with _perf_span("seg.breath_slice"):
@@ -1908,6 +1951,15 @@ def _decompose_and_shift(audio_path: str, src_pitch: str, dst_pitch: str,
                 breath_v, sr, ratio,
                 frame_ms=BREATH_PV_FRAME_MS, hop_ms=BREATH_PV_HOP_MS)
         print(f"    [Breath pitch follow] semitones={semitones:.2f}, ratio={ratio:.4f}")
+
+    # Per-frame breath gain from the graph: scales this segment's noise layer frame by frame.
+    if FRAME_CURVES and len(breath_v) > 1:
+        gain_curve = _curve_frames("breathGain", frame_start, len(f0), BREATH_GAIN)
+        if gain_curve is not None:
+            gains = gain_curve[idx]
+            if np.any(np.abs(gains - 1.0) > 1e-6):
+                breath_v = breath_v * _frame_gain_to_samples(gains, sr, fp, len(breath_v))
+                print(f"    [Breath gain] per-frame {float(np.min(gains)):.3f}~{float(np.max(gains)):.3f}")
 
     # Jitter characteristics measured on this segment's source audio (when extending duration, continue the period/amplitude fluctuation using the real jitter)
     jitter_local = float((gp.get('jitter') or {}).get('jitter_local', 0.0))

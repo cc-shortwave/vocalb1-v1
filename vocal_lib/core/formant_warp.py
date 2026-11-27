@@ -148,9 +148,83 @@ def envelope_formants(sp: np.ndarray, sample_rate: int, max_formants: int = 7,
 _PAIR_TOLERANCE_HZ = 250.0
 _PAIR_TOLERANCE_RATIO = 0.2
 
+# The graph's F1~F7 bandwidth default. Bandwidth is applied relative to this nominal width so an
+# untouched graph (bandwidth = 80 Hz on every formant) leaves the envelope exactly as measured.
+_DEFAULT_FORMANT_BW_HZ = 80.0
+
+
+def _gain_profile(freqs, targets, gains, nyquist, default=1.0):
+    """Per-bin amplitude multiplier interpolated through the formant gains (1.0 at DC/Nyquist)."""
+    xs = [0.0]
+    ys = [default]
+    for hz, gain in zip(targets, gains):
+        try:
+            hz = float(hz)
+            gain = float(gain)
+        except (TypeError, ValueError):
+            continue
+        if not (np.isfinite(hz) and np.isfinite(gain)) or hz <= 0.0 or gain <= 0.0:
+            continue
+        xs.append(min(hz, nyquist * 0.98))
+        ys.append(gain)
+    xs.append(nyquist)
+    ys.append(default)
+    xs = np.asarray(xs, dtype=np.float64)
+    ys = np.asarray(ys, dtype=np.float64)
+    order = np.argsort(xs, kind="stable")
+    xs, ys = xs[order], ys[order]
+    keep = np.concatenate(([True], np.diff(xs) > 1e-6))
+    xs, ys = xs[keep], ys[keep]
+    if xs.size < 2 or np.allclose(ys, default):
+        return None
+    return np.interp(freqs, xs, ys, left=default, right=default)
+
+
+def _bandwidth_anchors(src_pairs, tgt_pairs, pair_indices, bandwidths):
+    """Extra mapping anchors that widen/narrow each formant to its target bandwidth.
+
+    A pair maps the target formant frequency onto the source formant. Two more anchors at
+    ``target ± bw/2`` → ``source ± default/2`` change the local slope of the frequency mapping, which
+    is what makes the resonance wider (bw > default) or narrower (bw < default). Bandwidths equal to
+    the default are skipped so the measured envelope is untouched by default.
+    """
+    extra_src: list[float] = []
+    extra_tgt: list[float] = []
+    half_default = _DEFAULT_FORMANT_BW_HZ * 0.5
+    for source, target, formant_index in zip(src_pairs, tgt_pairs, pair_indices):
+        if formant_index >= len(bandwidths):
+            continue
+        try:
+            bw = float(bandwidths[formant_index])
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(bw) or bw <= 0.0 or abs(bw - _DEFAULT_FORMANT_BW_HZ) <= 1e-6:
+            continue
+        half_target = bw * 0.5
+        for sign in (-1.0, 1.0):
+            t = target + sign * half_target
+            s = source + sign * half_default
+            if t > 1.0 and s > 1.0:
+                extra_tgt.append(t)
+                extra_src.append(s)
+    return extra_src, extra_tgt
+
+
+def _as_matrix(values, n_frames):
+    """Coerces per-formant data to (n_frames, 7) with edge padding; returns None when unusable."""
+    if values is None:
+        return None
+    matrix = np.asarray(values, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[1] < 7:
+        return None
+    if matrix.shape[0] < n_frames:
+        matrix = np.pad(matrix, ((0, n_frames - matrix.shape[0]), (0, 0)), mode="edge")
+    return matrix[:n_frames]
+
 
 def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
-                    frame_period: float = 5.0, f0=None):
+                    frame_period: float = 5.0, f0=None,
+                    target_gain=None, target_bw=None):
     """Warps ``sp`` so its measured formants move onto ``target_hz``.
 
     Parameters
@@ -166,6 +240,11 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
     f0 : array-like, optional
         Per-frame fundamental in Hz. Formants at or below it are physically impossible, so it is
         used as the per-frame floor for both the measured source peaks and the targets.
+    target_gain : np.ndarray, shape (n_frames, 7), optional
+        Per-formant amplitude gain (1.0 = unchanged; F1~F7 order).
+    target_bw : np.ndarray, shape (n_frames, 7), optional
+        Per-formant bandwidth in Hz (F1~F7 order), applied relative to 80 Hz so the default graph
+        leaves the measured width untouched.
 
     Returns
     -------
@@ -189,6 +268,8 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
 
     n_frames, n_bins = sp.shape
     count = min(n_frames, targets.shape[0])
+    gains = _as_matrix(target_gain, n_frames)
+    bandwidths = _as_matrix(target_bw, n_frames)
 
     floors = None
     if f0 is not None:
@@ -216,18 +297,36 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
 
     for i in range(count):
         src = _valid_formants(sources[i])
-        tgt = _valid_formants(targets[i])
+
+        # Keep each target's formant index so bandwidth control can look up the matching BW value.
+        tgt: list[float] = []
+        tgt_indices: list[int] = []
+        last = 0.0
+        for formant_index, value in enumerate(targets[i]):
+            try:
+                hz = float(value)
+            except (TypeError, ValueError):
+                break
+            if not np.isfinite(hz) or hz <= 0.0 or hz <= last:
+                break
+            last = hz
+            if floors is not None and hz <= floors[i]:
+                continue
+            tgt.append(hz)
+            tgt_indices.append(formant_index)
+        tgt = np.asarray(tgt, dtype=np.float64)
+
         if floors is not None:
             src = src[src > floors[i]]
-            tgt = tgt[tgt > floors[i]]
 
         # Peaks are matched by frequency, not by index: the measured lists and the target lists do
         # not have to describe the same number of peaks, and a plateau artefact would otherwise
         # shift every later pair by one slot.
         src_pairs: list[float] = []
         tgt_pairs: list[float] = []
+        pair_indices: list[int] = []
         cursor = 0
-        for target in tgt:
+        for target, formant_index in zip(tgt, tgt_indices):
             tolerance = max(_PAIR_TOLERANCE_HZ, _PAIR_TOLERANCE_RATIO * float(target))
             best = -1
             best_distance = None
@@ -241,6 +340,7 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
                 continue
             src_pairs.append(float(src[best]))
             tgt_pairs.append(float(target))
+            pair_indices.append(formant_index)
             cursor = best + 1
 
         # Two matched pairs are the minimum for a stable piecewise-linear mapping.
@@ -251,6 +351,17 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
         # Anchors: DC, matched formants, Nyquist. Target anchors must stay below Nyquist.
         src_anchor = np.concatenate(([0.0], np.asarray(src_pairs), [nyquist]))
         tgt_anchor = np.concatenate(([0.0], np.minimum(np.asarray(tgt_pairs), nyquist * 0.98), [nyquist]))
+
+        # Bandwidth control: extra anchors stretch or shrink each formant's local width.
+        if bandwidths is not None:
+            extra_src, extra_tgt = _bandwidth_anchors(src_pairs, tgt_pairs, pair_indices, bandwidths[i])
+            if extra_tgt:
+                src_anchor = np.concatenate((src_anchor, np.asarray(extra_src)))
+                tgt_anchor = np.concatenate(
+                    (tgt_anchor, np.minimum(np.asarray(extra_tgt), nyquist * 0.98)))
+                order = np.argsort(tgt_anchor, kind="stable")
+                src_anchor, tgt_anchor = src_anchor[order], tgt_anchor[order]
+
         tgt_anchor = np.maximum.accumulate(tgt_anchor)
         keep = np.concatenate(([True], np.diff(tgt_anchor) > 0))
         src_anchor = src_anchor[keep]
@@ -259,7 +370,15 @@ def warp_to_targets(sp: np.ndarray, sample_rate: int, target_hz,
         # For each output frequency, read the source frequency whose formants were at that position.
         source_freq = np.interp(freqs, tgt_anchor, src_anchor)
         old_bins = source_freq * fft_size / sample_rate
-        out[i] = np.exp(np.interp(old_bins, src_bins, sp_log[i]))
+        warped_frame = np.exp(np.interp(old_bins, src_bins, sp_log[i]))
+
+        # Formant gain: a smooth amplitude profile through the seven target positions.
+        if gains is not None:
+            profile = _gain_profile(freqs, targets[i], gains[i], nyquist)
+            if profile is not None:
+                warped_frame = warped_frame * profile
+
+        out[i] = warped_frame
         warped += 1
 
     diagnostics = {
