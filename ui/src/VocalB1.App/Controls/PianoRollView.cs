@@ -1108,11 +1108,25 @@ public sealed class PianoRollView : FrameworkElement
 
         foreach (var point in points)
         {
-            var (beat, maybeSemitone) = indexOf.TryGetValue(point, out var index)
-                ? PointState(index, point)
-                : (point.Beat, PitchSemitone(point));
+            double beat;
+            double? maybeSemitone;
+            if (indexOf.TryGetValue(point, out var index))
+            {
+                var state = PointState(index, point);
+                beat = state.Beat;
+                // Generated automatic-PIT nodes keep their fractional depth when no drag previews them.
+                maybeSemitone = point.IsAutoPitch && _drag is null
+                    ? PitchValue(point)
+                    : state.Semitone;
+            }
+            else
+            {
+                // Compiled extras that are not stored in the line keep their fractional pitch.
+                beat = point.Beat;
+                maybeSemitone = PitchValue(point);
+            }
 
-            if (maybeSemitone is not int semitone)
+            if (maybeSemitone is not { } semitone)
             {
                 run = null;
                 previousPoint = null;
@@ -1147,8 +1161,9 @@ public sealed class PianoRollView : FrameworkElement
 
         for (var i = 0; i < nodes.Length; i++)
         {
-            // Anchors at note edges only pin the curve and do not show a control point.
-            if (nodes[i] is not Point node || source[i].IsEdgeAnchor)
+            // Anchors at note edges only pin the curve and do not show a control point; generated
+            // automatic-PIT nodes are drawn as part of the curve only, so they never take a handle.
+            if (nodes[i] is not Point node || source[i].IsEdgeAnchor || source[i].IsAutoPitch)
                 continue;
 
             var selected = (Mode == PianoRollMode.PitchLine && SelectedPitchIndex == i)
@@ -1290,6 +1305,12 @@ public sealed class PianoRollView : FrameworkElement
             ? null
             : SemitoneOf(point.Pitch, 0);
 
+    /// <summary>Fractional pitch of a node in semitones, used for the curve itself (not for handles).</summary>
+    private static double? PitchValue(PitchPoint point) =>
+        point.Pitch is null || string.Equals(point.Pitch.Trim(), "KEEP", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : PitchMath.TryParseSemitones(point.Pitch, out var value) ? value : null;
+
     /// <summary>Diamond drag handle: apex up, all four sides equal.</summary>
     private static void DrawDiamond(DrawingContext dc, Brush fill, Pen? pen, Point center, double half)
     {
@@ -1406,8 +1427,7 @@ public sealed class PianoRollView : FrameworkElement
         (position.Y - layout.Plot.Top) / Math.Max(1, layout.Plot.Height));
 
     /// <summary>Middle-button pan: the drag distance is a ratio of the plot, so the content follows the mouse on any display.</summary>
-    private void PanTo(Point position)
-    {
+    private void PanTo(Point position)    {
         var layout = Layout();
         if (layout is null)
             return;
@@ -1424,6 +1444,28 @@ public sealed class PianoRollView : FrameworkElement
         _pitchScroll = Math.Clamp(
             (int)Math.Round(_panStartPitchScroll + (ratio.Y - _panStartRatio.Y) * rows),
             -MaxPitchScroll, MaxPitchScroll);
+        InvalidateVisual();
+    }
+
+    /// <summary>Toolbar pan: shifts the visible beat window by a fraction of its width (negative = earlier beats).</summary>
+    public void PanBeats(double fraction)
+    {
+        var layout = Layout();
+        if (layout is null || Math.Abs(fraction) < 1e-9)
+            return;
+
+        var minStart = 1 - layout.VisibleBeats / 2;
+        _viewStartBeat = Math.Max(minStart, _viewStartBeat + fraction * layout.VisibleBeats);
+        InvalidateVisual();
+    }
+
+    /// <summary>Toolbar pan: shifts the visible pitch rows (positive = higher pitches).</summary>
+    public void ScrollPitchRows(int rows)
+    {
+        if (rows == 0)
+            return;
+
+        _pitchScroll = Math.Clamp(_pitchScroll + rows, -MaxPitchScroll, MaxPitchScroll);
         InvalidateVisual();
     }
 
@@ -1660,7 +1702,7 @@ public sealed class PianoRollView : FrameworkElement
         for (var i = 0; i < points.Count; i++)
         {
             var point = points[i];
-            if (point.Pitch is null || point.IsEdgeAnchor
+            if (point.Pitch is null || point.IsEdgeAnchor || point.IsAutoPitch
                 || !PitchMath.TryParseSemitones(point.Pitch, out var semitones))
                 continue;
             if (!point.IsTransition && IsInsideOverlap(overlaps, point.Beat))
@@ -2210,6 +2252,13 @@ public sealed class PianoRollView : FrameworkElement
         SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
 
+        // A transposed note (and the note after it) needs its automatic opening articulation rebuilt.
+        if (pitchMoved)
+        {
+            AutoPitchCurve.Apply(track, segment);
+            AutoPitchCurve.Apply(track, SegmentLayout.Neighbors(track, segment).Next);
+        }
+
         EditCommitted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -2278,6 +2327,20 @@ public sealed class PianoRollView : FrameworkElement
 
         SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
+
+        // Rebuilt after the batch so every transposed note keeps an articulation that matches its new interval.
+        if (semitone != 0)
+        {
+            foreach (var index in drag.Previews.Keys)
+            {
+                if (index < 0 || index >= track.Segments.Count)
+                    continue;
+                var moved = track.Segments[index];
+                AutoPitchCurve.Apply(track, moved);
+                AutoPitchCurve.Apply(track, SegmentLayout.Neighbors(track, moved).Next);
+            }
+        }
+
         EditCommitted?.Invoke(this, EventArgs.Empty);
     }
 
@@ -2325,7 +2388,7 @@ public sealed class PianoRollView : FrameworkElement
         for (var i = 0; i < track.PitchLine.Count; i++)
         {
             var point = track.PitchLine[i];
-            if (point.Pitch is null || point.IsEdgeAnchor
+            if (point.Pitch is null || point.IsEdgeAnchor || point.IsAutoPitch
                 || !PitchMath.TryParseSemitones(point.Pitch, out _))
                 continue;
             if (!point.IsTransition && IsInsideOverlap(overlaps, point.Beat))
@@ -2431,6 +2494,8 @@ public sealed class PianoRollView : FrameworkElement
         _selectedPoints.Clear();
         SegmentLayout.SyncTransitionPoints(track);
         track.SortPitchLine();
+        // The note that followed a deleted one now compares against a different reference pitch.
+        AutoPitchCurve.RefreshAll(track);
         SelectedNoteIndex = null;
         SelectedPitchIndex = null;
         EditCommitted?.Invoke(this, EventArgs.Empty);
@@ -2622,6 +2687,7 @@ public sealed class PianoRollView : FrameworkElement
         {
             // Right-clicking an edge anchor converts it into a regular control point so it is visible and draggable.
             existing.IsEdgeAnchor = false;
+            existing.IsAutoPitch = false;
             existing.Pitch = PitchMath.ToPitchName(semitone);
             SelectedPitchIndex = track.PitchLine.IndexOf(existing);
         }
@@ -2637,6 +2703,10 @@ public sealed class PianoRollView : FrameworkElement
             SelectedPitchIndex = track.PitchLine.FindIndex(
                 p => Math.Abs(p.Beat - beat) < 0.01 && p.SegmentId == ownerId);
         }
+
+        // A hand-placed node means the user takes this note's attack over: drop the generated part
+        // (the manual node also blocks regeneration, see AutoPitchCurve).
+        track.PitchLine.RemoveAll(p => p.IsAutoPitch && p.SegmentId == ownerId);
     }
 
     private (double BeatStart, double BeatEnd, int Semitone) NoteState(int index, VoiceSegment segment)
@@ -2890,7 +2960,7 @@ public sealed class PianoRollView : FrameworkElement
         for (var i = 0; i < points.Count; i++)
         {
             var point = points[i];
-            if (point.Pitch is null || point.IsEdgeAnchor
+            if (point.Pitch is null || point.IsEdgeAnchor || point.IsAutoPitch
                 || !PitchMath.TryParseSemitones(point.Pitch, out var semitones))
                 continue;
 

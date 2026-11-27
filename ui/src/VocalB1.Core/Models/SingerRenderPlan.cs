@@ -148,7 +148,10 @@ public sealed class SingerRenderPlan
                 var globals = new FrameGlobals(
                     (beat - 1) * 60.0 / Math.Max(1, project.Bpm), beat, progress,
                     pitchHz, semitone, VoicebankFormantProfile.NormalizeVowel(vowel), phoneme,
-                    singerIndex, singerCount, frame);
+                    singerIndex, singerCount, frame)
+                {
+                    NoteSemitone = segment is null ? semitone : ParseSemitone(segment.DstPitch),
+                };
 
                 var formants = unit?.FormantHz is { Length: 7 } unitFormants
                     ? unitFormants

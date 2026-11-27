@@ -59,6 +59,7 @@ public sealed class LyricDocument : IDatablock
             var value = Math.Round(semitone, 3);
             for (var index = start; index <= end; index++)
                 raster.SetValue(index, value);
+            ApplyAutoPitch(segment);
             return;
         }
 
@@ -75,10 +76,24 @@ public sealed class LyricDocument : IDatablock
 
         SortPitchLine();
         RefreshPitchEndAnchor();
+        ApplyAutoPitch(segment);
 
         bool SameAnchor(PitchPoint p, VoiceSegment owner, double beat) =>
             p.IsEdgeAnchor && !p.IsTransition && p.SegmentId == owner.Id
             && Math.Abs(p.Beat - beat) < 1e-6;
+    }
+
+    /// <summary>
+    /// Regenerates the automatic PIT layer for a note and its neighbours: the previous note needs a
+    /// hold node once a successor exists, and the next note now compares against a different reference.
+    /// See <see cref="AutoPitchCurve"/>.
+    /// </summary>
+    private void ApplyAutoPitch(VoiceSegment segment)
+    {
+        var (previous, next) = SegmentLayout.Neighbors(this, segment);
+        AutoPitchCurve.Apply(this, previous);
+        AutoPitchCurve.Apply(this, segment);
+        AutoPitchCurve.Apply(this, next);
     }
 
     /// <summary>

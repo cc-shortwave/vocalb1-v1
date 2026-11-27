@@ -199,6 +199,11 @@ public static class ProjectJson
             }
             else if (lyric.PitchLine.Count > 0)
             {
+                // A project that only carries the hidden edge anchors has no authored pitch curve,
+                // so the automatic PIT attack is generated before the sparse line is rasterised.
+                // Authored lines (any regular or transition node) are migrated unchanged.
+                if (lyric.PitchLine.All(p => p.IsEdgeAnchor || p.IsAutoPitch))
+                    AutoPitchCurve.RefreshAll(lyric);
                 lyric.PitchRaster = PitchRaster.FromPitchLine(lyric.BuildRenderPitchLine());
                 if (lyric.PitchRaster is not null)
                     lyric.PitchLine.Clear();

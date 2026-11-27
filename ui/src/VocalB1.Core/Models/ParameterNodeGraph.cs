@@ -153,6 +153,9 @@ public enum NodeKind
 
     /// <summary>Breath summary: packs the breath-related settings for the output node.</summary>
     BreathParameters,
+
+    /// <summary>PIT line source: outputs the per-frame pitch curve (semitones / Hz / deviation from the note).</summary>
+    PitchLine,
 }
 
 /// <summary>
@@ -182,6 +185,10 @@ public sealed record VoicebankField(string Key, string Label)
     [
         .. Enumerable.Range(1, 7)
             .Select(i => new VoicebankField($"{ParameterKeys.FormantPrefix}{i}", $"F{i} 位置 (Hz)")),
+        .. Enumerable.Range(1, 7)
+            .Select(i => new VoicebankField($"{ParameterKeys.FormantGainPrefix}{i}", $"F{i} 增益 (声库基准)")),
+        .. Enumerable.Range(1, 7)
+            .Select(i => new VoicebankField($"{ParameterKeys.FormantBandwidthPrefix}{i}", $"F{i} 带宽 (声库基准)")),
         Breath,
     ];
 
@@ -231,6 +238,14 @@ public static class NodeCatalog
 
         Add(new NodeDefinition(NodeKind.FieldDecompose, "字段分解", CategoryInput, "#3F6F92",
             [new NodeSocket("声库", Type: SocketType.Voicebank)], [new NodeSocket("值")]));
+
+        Add(new NodeDefinition(NodeKind.PitchLine, "PIT 线", CategoryInput, "#3F6F92",
+            [],
+            [
+                new NodeSocket("半音"),
+                new NodeSocket("Hz"),
+                new NodeSocket("音高差"),
+            ]));
 
         Add(new NodeDefinition(NodeKind.TimeCurve, "时间曲线", CategoryCurve, "#7A4E9E",
             [], [new NodeSocket("值")]));
@@ -337,7 +352,7 @@ public static class NodeCatalog
     private static readonly NodeKind[] DisplayOrder =
     [
         NodeKind.Number, NodeKind.TimeInput, NodeKind.ParameterInput,
-        NodeKind.VoicebankData, NodeKind.FieldDecompose,
+        NodeKind.VoicebankData, NodeKind.FieldDecompose, NodeKind.PitchLine,
         NodeKind.TimeCurve, NodeKind.TimeGradient, NodeKind.Noise, NodeKind.Random,
         NodeKind.CurveRemap,
         NodeKind.Add, NodeKind.Subtract, NodeKind.Multiply, NodeKind.Divide,
@@ -746,26 +761,53 @@ public sealed class ParameterNodeGraph
     };
 
     /// <summary>
-    /// Default graph for a fresh parameter set: voicebank data feeds a field-decompose node (available for
-    /// patching), the four summary nodes are wired into the four sockets of a single parameter output node.
-    /// An unwired summary input falls back to the voicebank / lyric value of that key.
+    /// Default graph for a fresh parameter set. Every input socket of the four summary nodes is wired:
+    /// formant positions / bandwidths come from the voicebank bundle, the breath group from the measured
+    /// breath factor, and the formant gains follow the PIT line deviation. The render therefore reads the
+    /// graph instead of an invisible measured fallback, and users can reroute any socket.
+    /// The layout is four horizontal bands (one per summary) read left to right — data source, per-input
+    /// nodes, summary, output — so wires never run backwards across the canvas.
     /// </summary>
     public static ParameterNodeGraph CreateFormantDefault()
     {
-        // Laid out to fit the parameter canvas without panning: four summaries in a 2x2 block,
-        // the output node to their right, and the voicebank chain underneath.
-        var graph = new ParameterNodeGraph { Zoom = 0.66, PanX = 14, PanY = 8 };
+        var graph = new ParameterNodeGraph { Zoom = 0.6, PanX = 14, PanY = 8 };
 
-        var position = graph.Add(NodeKind.FormantPosition, 10, 0);
-        var bandwidth = graph.Add(NodeKind.FormantBandwidth, 210, 0);
-        var gain = graph.Add(NodeKind.FormantGain, 10, 200);
-        var breath = graph.Add(NodeKind.BreathParameters, 210, 200);
-        var output = graph.Add(NodeKind.ParameterOutput, 420, 80);
+        // Summaries are stacked in output-socket order, which keeps the four wires into the output node
+        // parallel instead of crossing each other.
+        var position = graph.Add(NodeKind.FormantPosition, 540, 120);
+        var gain = graph.Add(NodeKind.FormantGain, 540, 520);
+        var bandwidth = graph.Add(NodeKind.FormantBandwidth, 540, 900);
+        var breath = graph.Add(NodeKind.BreathParameters, 540, 1390);
+        var output = graph.Add(NodeKind.ParameterOutput, 800, 700);
 
-        var voicebank = graph.Add(NodeKind.VoicebankData, 10, 400);
-        var decompose = graph.Add(NodeKind.FieldDecompose, 210, 400);
-        decompose.Field = $"{ParameterKeys.FormantPrefix}1";
-        graph.Connect(voicebank.Id, 0, decompose.Id, 0);
+        // One bundle per band, parked next to the nodes it feeds so the fan-out stays short.
+        var positionBank = graph.Add(NodeKind.VoicebankData, 0, 150);
+        var bandwidthBank = graph.Add(NodeKind.VoicebankData, 0, 930);
+
+        // Every measured field gets its own decompose node, aligned with its summary input row.
+        for (var i = 0; i < 7; i++)
+            WireField(graph, positionBank, position, i, $"{ParameterKeys.FormantPrefix}{i + 1}", 0);
+        for (var i = 0; i < 7; i++)
+            WireField(graph, bandwidthBank, bandwidth, i, $"{ParameterKeys.FormantBandwidthPrefix}{i + 1}", 780);
+
+        // Pitch-line branch: a downward bend shrinks every gain and an upward bend opens it
+        // (deviation −1 … +1 semitone → 0.85 … 1.15). One map feeds all seven gain inputs.
+        var pitch = graph.Add(NodeKind.PitchLine, 0, 560);
+        var gainMap = graph.Add(NodeKind.MapRange, 250, 560);
+        gainMap.InputDefaults = [0, -1, 1, 0.85, 1.15];
+        graph.Connect(pitch.Id, 2, gainMap.Id, 0);
+        for (var i = 0; i < 7; i++)
+            graph.Connect(gainMap.Id, 0, gain.Id, i);
+
+        // Breath group: the measured breath factor drives all four keys through the breath manager.
+        var breathOutputs = new[] { "threshold", "apScale", "apMax", "gain" };
+        for (var i = 0; i < breathOutputs.Length; i++)
+        {
+            var manager = graph.Add(NodeKind.BreathManager, 250, 1340 + i * 76);
+            manager.BreathOutput = breathOutputs[i];
+            manager.UseVoicebank = true;
+            graph.Connect(manager.Id, 0, breath.Id, i);
+        }
 
         graph.Connect(position.Id, 0, output.Id, PositionSocket);
         graph.Connect(gain.Id, 0, output.Id, GainSocket);
@@ -773,6 +815,50 @@ public sealed class ParameterNodeGraph
         graph.Connect(breath.Id, 0, output.Id, BreathSocket);
 
         return graph;
+    }
+
+    /// <summary>Adds one field-decompose node fed by the voicebank bundle and wires it into a summary input.</summary>
+    private static void WireField(ParameterNodeGraph graph, ParameterNode voicebank,
+        ParameterNode summary, int socket, string field, double top)
+    {
+        var node = graph.Add(NodeKind.FieldDecompose, 250, top + socket * 76);
+        node.Field = field;
+        graph.Connect(voicebank.Id, 0, node.Id, 0);
+        graph.Connect(node.Id, 0, summary.Id, socket);
+    }
+
+    /// <summary>
+    /// Describes summary inputs that are not wired, so the UI can report a graph that still relies on
+    /// the measured fallback instead of driving the render itself.
+    /// </summary>
+    public List<string> UnwiredSummaryInputs()
+    {
+        var result = new List<string>();
+        if (OutputNode() is not { } output)
+        {
+            result.Add("参数输出节点");
+            return result;
+        }
+
+        for (var socket = 0; socket <= BreathSocket; socket++)
+        {
+            if (LinkInto(output.Id, socket) is not { } link
+                || Find(link.FromNode) is not { } summary
+                || summary.Kind != GroupKindOfSocket(socket))
+            {
+                result.Add(NodeCatalog.Get(GroupKindOfSocket(socket)).Title);
+                continue;
+            }
+
+            var keys = KeysOfSocket(socket);
+            for (var index = 0; index < keys.Length; index++)
+            {
+                if (LinkInto(summary.Id, index) is null)
+                    result.Add($"{summary.DisplayTitle}/{keys[index]}");
+            }
+        }
+
+        return result;
     }
 
     /// <summary>

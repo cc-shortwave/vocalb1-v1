@@ -36,6 +36,7 @@ public sealed class EnumDisplayConverter : IValueConverter
         NodeKind.Divide => "除法 ÷",
         NodeKind.VoicebankData => "声库数据",
         NodeKind.FieldDecompose => "字段分解",
+        NodeKind.PitchLine => "PIT 线",
         NodeKind.FormantPosition => "共振峰位置",
         NodeKind.FormantGain => "共振峰增益",
         NodeKind.FormantBandwidth => "共振峰带宽",

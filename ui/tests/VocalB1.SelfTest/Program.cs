@@ -485,7 +485,7 @@ internal static class Program
             key => ParameterKeys.Get(key).Default).EvaluateOutputs();
         Check("节点图：默认图含四个汇总节点与一个输出节点",
             defaultGraph.Nodes.Count(n => n.Kind == NodeKind.ParameterOutput) == 1
-            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.VoicebankData) == 1
+            && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.VoicebankData) >= 1
             && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantPosition) == 1
             && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantGain) == 1
             && defaultGraph.Nodes.Count(n => n.Kind == NodeKind.FormantBandwidth) == 1

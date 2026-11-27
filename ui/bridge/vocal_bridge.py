@@ -423,6 +423,20 @@ def _analyze_sample(path, frame_period):
     return [float(v) for v in formants], f0_hz, aperiodicity
 
 
+def _analyze_sample_job(path, frame_period):
+    """Pool worker for one sample (module level so Windows spawn can import it).
+
+    Returns (stem, formants, f0Hz, aperiodicity, error) instead of raising: an exception from a
+    worker would abort the whole pool, while a per-sample failure only skips that sample.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0]
+    try:
+        formants, f0_hz, aperiodicity = _analyze_sample(path, frame_period)
+        return stem, formants, f0_hz, aperiodicity, None
+    except Exception as exc:  # noqa: BLE001 - reported to the parent as data
+        return stem, None, 0.0, 0.0, f"{type(exc).__name__}: {exc}"
+
+
 def cmd_analyze_voicebank(req, req_id):
     started = time.time()
     root = os.path.abspath(req.get("voicebank") or "")
@@ -453,26 +467,70 @@ def cmd_analyze_voicebank(req, req_id):
         return
 
     frame_period = float(req.get("framePeriod") or 5.0)
+
+    # Duplicate stems keep the first scanned file, exactly like the former sequential loop.
+    unique: dict[str, str] = {}
+    for path in paths:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem in unique:
+            _log("warn", f"样本 {stem} 重复出现，已使用先扫描到的文件")
+            continue
+        unique[stem] = path
+
+    total = len(unique)
+    # pyworld/numpy hold the GIL inside their C extensions, so threads would not overlap; one
+    # worker process per core is what actually saturates the CPU.
+    workers = max(1, min(total, os.cpu_count() or 1))
+    _log("info", f"开始分解声库：{root}（{total} 个样本，{workers} 个并行进程）")
+
+    measured: dict[str, tuple] = {}
+    failed: list[str] = []
+    completed = 0
+
+    def record(stem, formants, f0_hz, aperiodicity, error):
+        nonlocal completed
+        completed += 1
+        _progress(completed / total, f"{completed}/{total} {stem}")
+        if error is None:
+            measured[stem] = (formants, f0_hz, aperiodicity)
+            return
+        failed.append(f"{stem}: {error}")
+        _log("warn", f"样本 {stem} 分解失败：{error}")
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    pool = None
+    futures = None
+    if workers > 1:
+        try:
+            pool = ProcessPoolExecutor(max_workers=workers)
+            futures = {pool.submit(_analyze_sample_job, path, frame_period): stem
+                       for stem, path in unique.items()}
+        except Exception as exc:  # noqa: BLE001 - restricted environments fall back to one process
+            _log("warn", f"无法启用多进程分解（{type(exc).__name__}: {exc}），回退为单进程")
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+            pool = None
+            futures = None
+
+    if futures is None:
+        for stem, path in unique.items():
+            record(*_analyze_sample_job(path, frame_period))
+    else:
+        try:
+            for future in as_completed(futures):
+                try:
+                    record(*future.result())
+                except Exception as exc:  # noqa: BLE001 - a dead worker only fails its own sample
+                    record(futures[future], None, 0.0, 0.0, f"{type(exc).__name__}: {exc}")
+        finally:
+            pool.shutdown(wait=True)
+
     phonemes: dict[str, dict] = {}
     vowel_rows: dict[str, list] = {}
     vowel_breath: dict[str, list] = {}
-    failed: list[str] = []
-    total = len(paths)
-    _log("info", f"开始分解声库：{root}（{total} 个样本）")
-
-    for index, path in enumerate(paths, start=1):
-        stem = os.path.splitext(os.path.basename(path))[0]
-        _progress((index - 1) / total, f"{index}/{total} {stem}")
-        if stem in phonemes:
-            _log("warn", f"样本 {stem} 重复出现，已使用先扫描到的文件")
-            continue
-        try:
-            formants, f0_hz, aperiodicity = _analyze_sample(path, frame_period)
-        except Exception as exc:  # noqa: BLE001 - per-sample failure, reported and skipped
-            failed.append(f"{stem}: {type(exc).__name__}: {exc}")
-            _log("warn", f"样本 {stem} 分解失败：{type(exc).__name__}: {exc}")
-            continue
-
+    for stem in sorted(measured):
+        formants, f0_hz, aperiodicity = measured[stem]
         phonemes[stem] = {
             "formants": formants,
             "f0Hz": f0_hz,
@@ -480,6 +538,7 @@ def cmd_analyze_voicebank(req, req_id):
             "breathFactor": 1.0,
         }
         vowel_rows.setdefault(vb._vowel_of(stem), []).append(formants)
+    failed.sort()
 
     if not phonemes:
         _emit({"id": req_id, "type": "error", "errorType": "AnalyzerError", "stage": "analyze",
@@ -487,8 +546,8 @@ def cmd_analyze_voicebank(req, req_id):
         return
 
     # Breath baseline: aperiodicity relative to the bank median, so the average sample stays neutral.
-    measured = [m["aperiodicity"] for m in phonemes.values() if m["aperiodicity"] > 0]
-    base = float(np.median(measured)) if measured else 0.0
+    aperiodicities = [m["aperiodicity"] for m in phonemes.values() if m["aperiodicity"] > 0]
+    base = float(np.median(aperiodicities)) if aperiodicities else 0.0
     for stem, measurement in phonemes.items():
         factor = 1.0
         if base > 0:

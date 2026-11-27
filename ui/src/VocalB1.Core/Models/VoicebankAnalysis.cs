@@ -133,4 +133,7 @@ public static class VoicebankAnalysisCache
         if (key.Length > 0)
             Entries.TryRemove(key, out _);
     }
+
+    /// <summary>Drops every cached decomposition (the UI's "clear cache" action).</summary>
+    public static void Clear() => Entries.Clear();
 }

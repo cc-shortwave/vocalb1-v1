@@ -169,6 +169,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         ImportTimbreCommand = new RelayCommand(_ => ImportTimbre(), _ => CanEdit && SelectedParameterSet is not null);
         AnalyzeVoicebankCommand = new AsyncRelayCommand(_ => AnalyzeVoicebankAsync(),
             _ => SelectedSinger is not null && !IsBusy, ReportError);
+        ClearCacheCommand = new RelayCommand(_ => ClearCache(), _ => !IsBusy);
+        ClearRenderFolderCommand = new RelayCommand(_ => ClearRenderFolder(), _ => !IsBusy);
 
         _playheadTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
@@ -286,6 +288,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     public ICommand ExportTimbreCommand { get; }
     public ICommand ImportTimbreCommand { get; }
     public ICommand AnalyzeVoicebankCommand { get; }
+    public ICommand ClearCacheCommand { get; }
+    public ICommand ClearRenderFolderCommand { get; }
 
     // ------------------------------------------------------------------
     // Project state
@@ -1738,6 +1742,8 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             lyric.PitchRaster?.ClearRange(segment.Model.BeatStart, segment.Model.BeatEnd);
             lyric.Segments.Remove(segment.Model);
             lyric.PitchLine.RemoveAll(p => p.SegmentId == segment.Model.Id);
+            // The following note now compares against a different reference pitch.
+            AutoPitchCurve.RefreshAll(lyric);
             foreach (var word in lyric.Phrase.Words)
             {
                 foreach (var unit in word.Units.Where(u => u.SegmentId == segment.Model.Id))
@@ -2609,6 +2615,62 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     }
 
 
+    /// <summary>Drops the session caches: voicebank decompositions, in-flight analysis bookkeeping and the last render.</summary>
+    private void ClearCache()
+    {
+        VoicebankAnalysisCache.Clear();
+        lock (_analysisSync)
+            _analysisTasks.Clear();
+
+        _lastMixPath = null;
+        _bgmMixPath = null;
+        _bgmMixKey = null;
+        SetPreviewInfo("尚未渲染");
+        SetStatus("缓存已清除");
+        AddLog("info", "已清除缓存：声库分解结果与渲染结果。下次渲染会重新分解声库。");
+        RefreshFormantInfo();
+    }
+
+    /// <summary>Deletes the contents of the default render output directory.</summary>
+    private void ClearRenderFolder()
+    {
+        var folder = ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot);
+        if (!Directory.Exists(folder))
+        {
+            AddLog("info", LanguageService.TranslateFormat("默认渲染结果文件夹不存在：{0}", folder));
+            return;
+        }
+
+        if (MessageBox.Show(
+                LanguageService.TranslateFormat("确定要删除默认渲染结果文件夹里的全部文件吗？\n{0}", folder),
+                LanguageService.Translate("清除默认渲染结果文件夹"),
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            foreach (var file in Directory.GetFiles(folder))
+                File.Delete(file);
+            foreach (var directory in Directory.GetDirectories(folder))
+                Directory.Delete(directory, true);
+
+            if (!string.IsNullOrWhiteSpace(_lastMixPath)
+                && Path.GetFullPath(_lastMixPath).StartsWith(
+                    Path.GetFullPath(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastMixPath = null;
+                SetPreviewInfo("尚未渲染");
+            }
+
+            AddLog("info", LanguageService.TranslateFormat("已清除默认渲染结果文件夹：{0}", folder));
+            SetStatus("已清除默认渲染结果");
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
     private async Task RenderAsync()
     {
         if (IsBusy)
@@ -2620,6 +2682,31 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             ReportError(new StageException(nameof(MainViewModel), "render", LanguageService.Translate("没有启用的歌手。")));
             return;
         }
+
+        // Ask where the rendered file goes before doing any work (analysis/render may take minutes).
+        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var defaultFolder = ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot);
+        Directory.CreateDirectory(defaultFolder);
+
+        var dialog = new SaveFileDialog
+        {
+            Title = LanguageService.Translate("渲染输出"),
+            Filter = LanguageService.Translate("WAV 音频 (*.wav)|*.wav"),
+            DefaultExt = ".wav",
+            AddExtension = true,
+            FileName = $"render_{stamp}.wav",
+            InitialDirectory = defaultFolder,
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            AddLog("info", "已取消渲染（未选择输出位置）。");
+            return;
+        }
+
+        var mixPath = dialog.FileName;
+        Directory.CreateDirectory(Path.GetDirectoryName(mixPath) ?? defaultFolder);
+        // Per-singer files are intermediates: they live in the temp directory and are removed after mixing.
+        var singerFolder = Path.Combine(Path.GetTempPath(), "VocalB1", "singers_" + stamp);
 
         _renderCts = new CancellationTokenSource();
         IsBusy = true;
@@ -2656,17 +2743,15 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 AddLog("info", "Python 引擎已就绪。");
             }
 
-            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var folder = Path.Combine(ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot),
-                "singers_" + stamp);
-            Directory.CreateDirectory(folder);
+            Directory.CreateDirectory(singerFolder);
 
             var outputs = new List<string>();
             for (var i = 0; i < singers.Count; i++)
             {
                 var singer = singers[i];
                 var plan = SingerRenderPlan.Build(_project, singer, i, singers.Count);
-                var output = Path.Combine(folder, $"singer_{i + 1:00}.wav");
+                ReportUnwiredGraphs(singer);
+                var output = Path.Combine(singerFolder, $"singer_{i + 1:00}.wav");
                 var progress = new Progress<EngineEvent>(e =>
                 {
                     if (e.Kind == EngineEventKind.Warning)
@@ -2680,8 +2765,6 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
                 AddLog("info", LanguageService.TranslateFormat("歌手「{0}」完成：{1:0.0}s。", singer.Name, result.DurationSeconds));
             }
 
-            var mixPath = Path.Combine(ProjectFactory.DefaultRenderDirectory(_services.Options.RepositoryRoot),
-                $"render_{stamp}.wav");
             TrackMixer.Mix(outputs, mixPath, _project.Singers[0].ParameterSetId is { } id
                 ? _project.FindParameterSet(id)?.Base.BitDepth ?? 16
                 : 16);
@@ -2702,9 +2785,48 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         }
         finally
         {
+            TryDeleteDirectory(singerFolder);
             _renderCts?.Dispose();
             _renderCts = null;
             IsBusy = false;
+        }
+    }
+
+    /// <summary>Reports summary inputs that are not wired, so the graph's non-strict parts are visible.</summary>
+    private void ReportUnwiredGraphs(SingerDocument singer)
+    {
+        var graphs = new (string Label, ParameterNodeGraph? Graph)[]
+        {
+            ("共享参数", _project.FindParameterSet(singer.ParameterSetId)?.Graph),
+            ("歌手覆盖", singer.Graph),
+        };
+
+        foreach (var (label, graph) in graphs)
+        {
+            if (graph is null || graph.Nodes.Count == 0)
+                continue;
+
+            var unwired = graph.UnwiredSummaryInputs();
+            if (unwired.Count == 0)
+                continue;
+
+            AddLog("warn", LanguageService.TranslateFormat(
+                "节点图「{0}」有 {1} 个参数输入未连接，这些参数回退到声库实测/默认值：{2}",
+                label, unwired.Count, string.Join("，", unwired)));
+        }
+    }
+
+    /// <summary>Best-effort removal of a temporary directory; a locked file must not fail the render.</summary>
+    private void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+        }
+        catch (Exception ex)
+        {
+            AddLog("warn", LanguageService.TranslateFormat("临时文件清理失败：{0}", ex.Message));
         }
     }
 

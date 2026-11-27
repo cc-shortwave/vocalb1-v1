@@ -220,6 +220,11 @@
 
                         <StackPanel Grid.Row="4" Margin="0,8,0,0">
                             <Button Content="清理孤立数据块" Command="{Binding PurgeOrphansCommand}" />
+                            <Button Content="清除缓存" Margin="0,6,0,0" Command="{Binding ClearCacheCommand}"
+                                    ToolTip="清除声库分解结果与上次渲染结果，下次渲染会重新分解" />
+                            <Button Content="清除默认渲染结果文件夹" Margin="0,6,0,0"
+                                    Command="{Binding ClearRenderFolderCommand}"
+                                    ToolTip="删除默认渲染输出目录中的全部文件" />
                             <TextBlock Text="规则：歌词与歌手一对一；参数可被多个歌手共享；0 用户且无伪用户才会被清理。"
                                        FontSize="11" Foreground="{DynamicResource DimBrush}" TextWrapping="Wrap"
                                        Margin="0,6,0,0" />
@@ -296,24 +301,52 @@
 
                         <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                                 CornerRadius="6" Padding="4">
-                            <controls:PianoRollView x:Name="PianoRoll"
-                                                    Lyric="{Binding ActiveLyric}"
-                                                    Bpm="{Binding Bpm}"
-                                                    BeatsPerBar="{Binding BeatsPerBar}"
-                                                    HasBgm="{Binding HasBgm}"
-                                                    BgmStartBeat="{Binding BgmStartBeat}"
-                                                    BgmDurationBeats="{Binding BgmDurationBeats}"
-                                                    Mode="{Binding RollMode}"
-                                                    IsPencil="{Binding IsPencil}"
-                                                    GridDivision="{Binding GridDivision}"
-                                                    Revision="{Binding RollRevision}"
-                                                    SelectedNoteIndex="{Binding SelectedNoteIndex, Mode=TwoWay}"
-                                                    SelectedPitchIndex="{Binding SelectedPitchIndex, Mode=TwoWay}"
-                                                    PlayheadBeat="{Binding PlayheadBeat, Mode=TwoWay}"
-                                                    EditCommitted="OnRollEditCommitted"
-                                                    PlayheadGrabbed="OnRollPlayheadGrabbed"
-                                                    NoteAddRequested="OnRollNoteAddRequested"
-                                                    NoteDrawRequested="OnRollNoteDrawRequested" />
+                            <Grid>
+                                <controls:PianoRollView x:Name="PianoRoll"
+                                                        Lyric="{Binding ActiveLyric}"
+                                                        Bpm="{Binding Bpm}"
+                                                        BeatsPerBar="{Binding BeatsPerBar}"
+                                                        HasBgm="{Binding HasBgm}"
+                                                        BgmStartBeat="{Binding BgmStartBeat}"
+                                                        BgmDurationBeats="{Binding BgmDurationBeats}"
+                                                        Mode="{Binding RollMode}"
+                                                        IsPencil="{Binding IsPencil}"
+                                                        GridDivision="{Binding GridDivision}"
+                                                        Revision="{Binding RollRevision}"
+                                                        SelectedNoteIndex="{Binding SelectedNoteIndex, Mode=TwoWay}"
+                                                        SelectedPitchIndex="{Binding SelectedPitchIndex, Mode=TwoWay}"
+                                                        PlayheadBeat="{Binding PlayheadBeat, Mode=TwoWay}"
+                                                        EditCommitted="OnRollEditCommitted"
+                                                        PlayheadGrabbed="OnRollPlayheadGrabbed"
+                                                        NoteAddRequested="OnRollNoteAddRequested"
+                                                        NoteDrawRequested="OnRollNoteDrawRequested" />
+
+                                <!-- View pan / pitch scroll buttons overlaid on the roll: press and hold to
+                                     move smoothly; left/right scrolls by time, up/down by pitch row. -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                            VerticalAlignment="Top" Margin="0,1,6,0" Opacity="0.9">
+                                    <Button Content="◀" Width="24" Height="22" Padding="0" Margin="0"
+                                            PreviewMouseLeftButtonDown="OnRollPanLeft"
+                                            PreviewMouseLeftButtonUp="OnRollHoldMouseUp"
+                                            LostMouseCapture="OnRollHoldLostCapture"
+                                            ToolTip="向左滑动视图（按住连续移动）" />
+                                    <Button Content="▶" Width="24" Height="22" Padding="0" Margin="2,0,0,0"
+                                            PreviewMouseLeftButtonDown="OnRollPanRight"
+                                            PreviewMouseLeftButtonUp="OnRollHoldMouseUp"
+                                            LostMouseCapture="OnRollHoldLostCapture"
+                                            ToolTip="向右滑动视图（按住连续移动）" />
+                                    <Button Content="▲" Width="24" Height="22" Padding="0" Margin="8,0,0,0"
+                                            PreviewMouseLeftButtonDown="OnRollScrollUp"
+                                            PreviewMouseLeftButtonUp="OnRollHoldMouseUp"
+                                            LostMouseCapture="OnRollHoldLostCapture"
+                                            ToolTip="向上滑动音高轴（按住连续移动）" />
+                                    <Button Content="▼" Width="24" Height="22" Padding="0" Margin="2,0,0,0"
+                                            PreviewMouseLeftButtonDown="OnRollScrollDown"
+                                            PreviewMouseLeftButtonUp="OnRollHoldMouseUp"
+                                            LostMouseCapture="OnRollHoldLostCapture"
+                                            ToolTip="向下滑动音高轴（按住连续移动）" />
+                                </StackPanel>
+                            </Grid>
                         </Border>
 
                         <Grid Grid.Row="3" Margin="0,6,0,0">

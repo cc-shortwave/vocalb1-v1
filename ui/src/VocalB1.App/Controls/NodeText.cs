@@ -71,6 +71,7 @@ public static class NodeText
         NodeKind.ParameterOutput => LanguageService.Translate("四路汇总 → 生效"),
         NodeKind.VoicebankData => LanguageService.Translate("当前歌手声库"),
         NodeKind.FieldDecompose => Field(VoicebankField.Get(node.Field)),
+        NodeKind.PitchLine => LanguageService.Translate("PIT 曲线"),
         NodeKind.FormantPosition => LanguageService.Translate("F1~F7 → 位置"),
         NodeKind.FormantGain => LanguageService.Translate("F1~F7 → 增益"),
         NodeKind.FormantBandwidth => LanguageService.Translate("F1~F7 → 带宽"),

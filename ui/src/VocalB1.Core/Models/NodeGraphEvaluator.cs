@@ -13,7 +13,11 @@ public readonly record struct FrameGlobals(
     string Phoneme,
     int SingerIndex,
     int SingerCount,
-    int FrameIndex);
+    int FrameIndex)
+{
+    /// <summary>Written pitch of the note under this frame; the PIT line deviates from it.</summary>
+    public double NoteSemitone { get; init; }
+}
 
 /// <summary>
 /// Evaluates a <see cref="ParameterNodeGraph"/> for one frame. Evaluation is pull-based from the output
@@ -160,6 +164,15 @@ public sealed class NodeGraphEvaluator
 
             case NodeKind.TimeInput:
                 return Global(node.Global, _globals);
+
+            case NodeKind.PitchLine:
+                // 0 = curve pitch in semitones, 1 = Hz, 2 = deviation from the written note.
+                return socket switch
+                {
+                    1 => _globals.PitchHz,
+                    2 => _globals.PitchSemitone - _globals.NoteSemitone,
+                    _ => _globals.PitchSemitone,
+                };
 
             case NodeKind.ParameterInput:
                 return string.IsNullOrWhiteSpace(node.Text)
@@ -336,6 +349,13 @@ public sealed class NodeGraphEvaluator
         var index = ParameterKeys.FormantIndexOf(field.Key);
         if (index < 0)
             return 0;
+
+        // The bank measures formant positions; gain / bandwidth have no measurement, so this bundle
+        // exposes their neutral baseline. Every parameter input can therefore be wired to the bank.
+        if (field.Key.StartsWith(ParameterKeys.FormantGainPrefix, StringComparison.Ordinal)
+            || field.Key.StartsWith(ParameterKeys.FormantBandwidthPrefix, StringComparison.Ordinal))
+            return ParameterKeys.Get(field.Key).Default;
+
         var formants = _vowels.Resolve(_globals.Vowel, _globals.Phoneme);
         return formants[index];
     }
