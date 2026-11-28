@@ -44,9 +44,11 @@ VocalB1 把一段人声录音拆成「基频 + 频谱包络 + 气声 + 激励」
 ```
 .
 ├── VocalB1Synthesizer.py     # 合成核心
-├── VocalDecomposer.py        # 分解：音频 -> 参数（.npy + .json）
-├── VocalSynthesizer.py       # 由参数重建语音
-├── VocalB1.py                # 命令行入口
+├── engine/
+│   ├── VocalDecomposer.py    # 分解：音频 -> 参数（.npy + .json）
+│   ├── VocalSynthesizer.py   # 由参数重建语音
+│   ├── VocalB1.py            # 命令行入口
+│   └── prosses_breath.py     # 气声混合辅助
 ├── vocal_lib/                # 基频检测、共振峰、气声、声门模型等底层库
 ├── ui/                       # Windows 桌面界面（C# / WPF）
 │   ├── src/

@@ -5,6 +5,7 @@ using VocalB1.App.Infrastructure;
 using VocalB1.App.Services;
 using VocalB1.Core.Dictionaries;
 using VocalB1.Core.Models;
+using VocalB1.Core.Scripting;
 
 namespace VocalB1.App.ViewModels;
 
@@ -359,9 +360,12 @@ public sealed class NodeRow : ObservableObject
             Model.InputDefaults.Clear();
             foreach (var socket in NodeCatalog.Get(value).Inputs)
                 Model.InputDefaults.Add(socket.Default);
+            if (value == NodeKind.Script && string.IsNullOrWhiteSpace(Model.ScriptPath))
+                Model.ScriptPath = PythonNodeSandbox.SampleAveragePath;
             _graph.Links.RemoveAll(l =>
                 l.ToNode == Model.Id && l.ToSocket >= NodeCatalog.Get(value).Inputs.Length);
-            Touch(nameof(Kind), nameof(KindTitle), nameof(Subtitle), nameof(Preview), nameof(InputDefaultsText));
+            Touch(nameof(Kind), nameof(KindTitle), nameof(Subtitle), nameof(Preview),
+                nameof(InputDefaultsText), nameof(ScriptPath));
         }
     }
 
@@ -577,6 +581,20 @@ public sealed class NodeRow : ObservableObject
         }
     }
 
+    /// <summary>Script file used by an external-script node (absolute or repository-relative).</summary>
+    public string ScriptPath
+    {
+        get => Model.ScriptPath;
+        set
+        {
+            var text = (value ?? string.Empty).Trim();
+            if (string.Equals(Model.ScriptPath, text, StringComparison.Ordinal))
+                return;
+            Model.ScriptPath = text;
+            Touch(nameof(ScriptPath), nameof(Subtitle));
+        }
+    }
+
     /// <summary>Unwired input socket values, in socket order: "0, 1, 1".</summary>
     public string InputDefaultsText
     {
@@ -719,6 +737,7 @@ public sealed class NodeRow : ObservableObject
         OnPropertyChanged(nameof(ManualValueText));
         OnPropertyChanged(nameof(BreathOutput));
         OnPropertyChanged(nameof(Amplitude));
+        OnPropertyChanged(nameof(ScriptPath));
         OnPropertyChanged(nameof(InputDefaultsText));
         OnPropertyChanged(nameof(CurveText));
         OnPropertyChanged(nameof(Preview));

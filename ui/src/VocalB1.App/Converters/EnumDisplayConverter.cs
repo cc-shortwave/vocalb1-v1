@@ -41,6 +41,7 @@ public sealed class EnumDisplayConverter : IValueConverter
         NodeKind.FormantGain => "共振峰增益",
         NodeKind.FormantBandwidth => "共振峰带宽",
         NodeKind.BreathParameters => "气声参数",
+        NodeKind.Script => "外部脚本",
         _ => value?.ToString() ?? string.Empty,
     });
 

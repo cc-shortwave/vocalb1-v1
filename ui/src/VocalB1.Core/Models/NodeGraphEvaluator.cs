@@ -1,4 +1,5 @@
 using VocalB1.Core.Diagnostics;
+using VocalB1.Core.Scripting;
 
 namespace VocalB1.Core.Models;
 
@@ -286,6 +287,15 @@ public sealed class NodeGraphEvaluator
             {
                 var divisor = Input(node, 1);
                 return Math.Abs(divisor) < 1e-12 ? Input(node, 0) : Input(node, 0) / divisor;
+            }
+
+            case NodeKind.Script:
+            {
+                // Third-party code runs in a sealed sandbox: five scalars in, one finite number out.
+                var inputs = new double[PythonNodeSandbox.InputCount];
+                for (var i = 0; i < inputs.Length; i++)
+                    inputs[i] = Input(node, i);
+                return PythonNodeSandbox.Evaluate(node.ScriptPath, inputs);
             }
 
             default:

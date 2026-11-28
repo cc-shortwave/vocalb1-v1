@@ -2252,11 +2252,13 @@ public sealed class PianoRollView : FrameworkElement
         SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
 
-        // A transposed note (and the note after it) needs its automatic opening articulation rebuilt.
-        if (pitchMoved)
+        // Any timing or pitch change alters connectivity, so the automatic contour of the note and its
+        // neighbours is rebuilt: this also clears a stale closing fall once a successor is attached.
+        AutoPitchCurve.RefreshAround(track, segment, Bpm);
+        foreach (var (index, _) in drag.Shifts)
         {
-            AutoPitchCurve.Apply(track, segment);
-            AutoPitchCurve.Apply(track, SegmentLayout.Neighbors(track, segment).Next);
+            if (index >= 0 && index < track.Segments.Count)
+                AutoPitchCurve.RefreshAround(track, track.Segments[index], Bpm);
         }
 
         EditCommitted?.Invoke(this, EventArgs.Empty);
@@ -2328,17 +2330,18 @@ public sealed class PianoRollView : FrameworkElement
         SegmentLayout.RemoveOverlaps(track);
         SegmentLayout.SyncTransitionPoints(track);
 
-        // Rebuilt after the batch so every transposed note keeps an articulation that matches its new interval.
-        if (semitone != 0)
+        // Rebuilt after the batch so every note keeps an articulation that matches its new interval and
+        // every neighbour knows whether it is still connected.
+        foreach (var index in drag.Previews.Keys)
         {
-            foreach (var index in drag.Previews.Keys)
-            {
-                if (index < 0 || index >= track.Segments.Count)
-                    continue;
-                var moved = track.Segments[index];
-                AutoPitchCurve.Apply(track, moved);
-                AutoPitchCurve.Apply(track, SegmentLayout.Neighbors(track, moved).Next);
-            }
+            if (index < 0 || index >= track.Segments.Count)
+                continue;
+            AutoPitchCurve.RefreshAround(track, track.Segments[index], Bpm);
+        }
+        foreach (var (index, _) in drag.Shifts)
+        {
+            if (index >= 0 && index < track.Segments.Count)
+                AutoPitchCurve.RefreshAround(track, track.Segments[index], Bpm);
         }
 
         EditCommitted?.Invoke(this, EventArgs.Empty);
@@ -2495,7 +2498,9 @@ public sealed class PianoRollView : FrameworkElement
         SegmentLayout.SyncTransitionPoints(track);
         track.SortPitchLine();
         // The note that followed a deleted one now compares against a different reference pitch.
-        AutoPitchCurve.RefreshAll(track);
+        AutoPitchCurve.RefreshAll(track, Bpm);
+        // RefreshAll leaves raster curves alone, so make sure the new last note gets its closing fall.
+        AutoPitchCurve.RefreshAround(track, SegmentLayout.Ordered(track).LastOrDefault(), Bpm);
         SelectedNoteIndex = null;
         SelectedPitchIndex = null;
         EditCommitted?.Invoke(this, EventArgs.Empty);

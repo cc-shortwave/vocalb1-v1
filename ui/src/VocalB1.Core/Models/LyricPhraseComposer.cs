@@ -126,8 +126,8 @@ public static class LyricPhraseComposer
 
     /// <summary>
     /// Keeps the phrase consistent with the track after edits made outside the lyric bar:
-    /// segments that disappeared turn their unit into a rest of the same span, moved/resized segments
-    /// update their unit's timing, and segments not yet represented gain a word object.
+    /// deleted segments drop their unit, moved/resized segments update their unit's timing, changed
+    /// sample or lyric text updates the unit, and segments not yet represented gain a word object.
     /// Returns the number of changes.
     /// </summary>
     public static int SyncWithSegments(LyricPhrase phrase, LyricDocument track)
@@ -140,8 +140,13 @@ public static class LyricPhraseComposer
         foreach (var segment in track.Segments)
             segmentsById[segment.Id] = segment;
 
+        var deleted = new List<LyricUnit>();
+
         foreach (var word in phrase.Words)
         {
+            var surfaceBefore = string.Concat(word.Units.Select(u => u.Text));
+            var textChanged = false;
+
             foreach (var unit in word.Units)
             {
                 if (unit.IsRest)
@@ -149,11 +154,8 @@ public static class LyricPhraseComposer
 
                 if (unit.SegmentId is not string id || !segmentsById.TryGetValue(id, out var segment))
                 {
-                    // Deleted outside the lyric bar: keep the beat span as a rest.
-                    unit.IsRest = true;
-                    unit.SegmentId = null;
-                    unit.Audio = string.Empty;
-                    unit.Display = "休止";
+                    // Deleted outside the lyric bar: the unit disappears with its segment.
+                    deleted.Add(unit);
                     changes++;
                     continue;
                 }
@@ -173,7 +175,31 @@ public static class LyricPhraseComposer
                     unit.Display = LyricPhrase.SampleLabel(segment.Audio);
                     changes++;
                 }
+
+                var text = segment.Lyric;
+                if (!string.IsNullOrEmpty(text) && !string.Equals(unit.Text, text, StringComparison.Ordinal))
+                {
+                    unit.Text = text;
+                    textChanged = true;
+                    changes++;
+                }
             }
+
+            // A one-unit word follows its note directly; kana surfaces (already the concatenation of
+            // their units) keep following too, while kanji surfaces stay untouched.
+            if (textChanged
+                && (word.Units.Count == 1 || string.Equals(word.Surface, surfaceBefore, StringComparison.Ordinal)))
+            {
+                word.Surface = string.Concat(word.Units.Select(u => u.Text));
+            }
+        }
+
+        if (deleted.Count > 0)
+        {
+            foreach (var unit in deleted)
+            foreach (var word in phrase.Words)
+                word.Units.Remove(unit);
+            phrase.Words.RemoveAll(w => w.Units.Count == 0);
         }
 
         var referenced = new HashSet<string>(StringComparer.Ordinal);

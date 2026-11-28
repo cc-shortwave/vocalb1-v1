@@ -36,10 +36,17 @@ import contextlib
 import io
 import os
 import shutil
+import sys
 import tempfile
 import numpy as np
 
 import vocal_lib as vl
+
+# Engine helper modules live in ./engine; keep them importable without installing a package.
+_ENGINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine")
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
 import prosses_breath   # used to mix the concatenated breath directly into the final output
 from VocalDecomposer import VocalDecomposer
 from VocalSynthesizer import VocalSynthesizer

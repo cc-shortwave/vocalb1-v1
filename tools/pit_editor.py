@@ -19,9 +19,9 @@ Features (sketch version):
              two nodes at the same beat = hard cut (red vertical line)
   Space = render current edits to _output/editor_preview.wav(16bit) and preview
           (press again to stop)
-  S = save edit_pitch.json (VocalB1.py untouched)  R = reload  Esc = cancel selection/pending/drag
+  S = save edit_pitch.json (engine/VocalB1.py untouched)  R = reload  Esc = cancel selection/pending/drag
 
-Data source: imports SEGMENTS / PITCH_LINE / BPM / TIME_SIGNATURE from VocalB1.py in the same directory
+Data source: imports SEGMENTS / PITCH_LINE / BPM / TIME_SIGNATURE from engine/VocalB1.py
 
 Run:
     python tools\\pit_editor.py
@@ -40,7 +40,7 @@ import time
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = _BASE_DIR if os.path.exists(
     os.path.join(_BASE_DIR, 'VocalB1Synthesizer.py')) else os.path.dirname(_BASE_DIR)
-for _path in (_ROOT_DIR, _BASE_DIR):
+for _path in (_ROOT_DIR, _BASE_DIR, os.path.join(_ROOT_DIR, 'engine')):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
@@ -169,7 +169,7 @@ class Editor:
         self._update_view()
         self.drag = None
         self.sel_node = None
-        self.set_status("Reloaded from VocalB1.py")
+        self.set_status("Reloaded from engine/VocalB1.py")
 
     def _update_view(self):
         ends = [s['beat_end'] for s in self.segments] + [n[0] for n in self.nodes]
@@ -532,7 +532,7 @@ class Editor:
     # ---------------- Save ----------------
     def save(self):
         data = {
-            'source': 'VocalB1.py',
+            'source': 'engine/VocalB1.py',
             'bpm': self.bpm,
             'time_signature': [int(self.bpb), int(self.mod.TIME_SIGNATURE[1])],
             'lib_dir': self.lib_dir,
@@ -550,13 +550,13 @@ class Editor:
         out = os.path.join(_ROOT_DIR, 'edit_pitch.json')
         with open(out, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        self.set_status(f"Saved {os.path.basename(out)} (VocalB1.py untouched)", 4000)
+        self.set_status(f"Saved {os.path.basename(out)} (engine/VocalB1.py untouched)", 4000)
         return out
 
     # ---------------- Render preview ----------------
     def render_audio(self):
         """Run the full synthesis pipeline on the current edits -> editor_preview.wav (16bit, for preview).
-        Segments only carry the 5 required fields; all other global parameters come from VocalB1.py."""
+        Segments only carry the 5 required fields; all other global parameters come from engine/VocalB1.py."""
         if len(self.segments) < 2:
             raise ValueError("At least 2 segments are required to render (add more notes)")
         m = self.mod
@@ -1087,7 +1087,7 @@ def _shot():
 
 
 def _render():
-    """Headless render of the preview wav using VocalB1.py's current config plus the editor's default data (chain verification)."""
+    """Headless render of the preview wav using engine/VocalB1.py's current config plus the editor's default data (chain verification)."""
     ed = Editor()
     t0 = time.time()
     path = ed.render_audio()

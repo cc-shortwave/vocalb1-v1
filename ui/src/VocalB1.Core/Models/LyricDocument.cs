@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json.Serialization;
 using VocalB1.Core.Pitch;
 
 namespace VocalB1.Core.Models;
@@ -10,6 +12,13 @@ namespace VocalB1.Core.Models;
 public sealed class LyricDocument : IDatablock
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>
+    /// Tempo used to size the automatic PIT attack in milliseconds. Runtime-only: the project owns the
+    /// tempo, this is just the last value handed to <see cref="AutoPitchCurve"/>.
+    /// </summary>
+    [JsonIgnore]
+    public double Bpm { get; set; } = 120.0;
 
     public string Name { get; set; } = "歌词";
 
@@ -90,10 +99,7 @@ public sealed class LyricDocument : IDatablock
     /// </summary>
     private void ApplyAutoPitch(VoiceSegment segment)
     {
-        var (previous, next) = SegmentLayout.Neighbors(this, segment);
-        AutoPitchCurve.Apply(this, previous);
-        AutoPitchCurve.Apply(this, segment);
-        AutoPitchCurve.Apply(this, next);
+        AutoPitchCurve.RefreshAround(this, segment, Bpm);
     }
 
     /// <summary>
@@ -112,7 +118,16 @@ public sealed class LyricDocument : IDatablock
 
         if (PitchLine.Any(p => p.IsEdgeAnchor && p.SegmentId == owner.Id
                                && Math.Abs(p.Beat - owner.BeatEnd) < 1e-6))
+        {
+            // Keep an existing closing anchor on the written pitch (older projects may have left a
+            // released value there).
+            var closing = PitchLine.FirstOrDefault(p =>
+                p.IsEdgeAnchor && !p.IsTransition && p.SegmentId == owner.Id
+                && Math.Abs(p.Beat - owner.BeatEnd) < 1e-6);
+            if (closing is not null && PitchMath.TryParseSemitones(owner.DstPitch, out _))
+                closing.Pitch = owner.DstPitch;
             return;
+        }
         if (!PitchMath.TryParseSemitones(owner.DstPitch, out _))
             return;
 

@@ -1,3 +1,4 @@
+using System.IO;
 using VocalB1.App.Services;
 using VocalB1.Core.Models;
 
@@ -80,6 +81,9 @@ public static class NodeText
         NodeKind.Subtract => "A − B",
         NodeKind.Multiply => "A × B",
         NodeKind.Divide => "A ÷ B",
+        NodeKind.Script => string.IsNullOrWhiteSpace(node.ScriptPath)
+            ? LanguageService.Translate("未选择脚本")
+            : Path.GetFileName(node.ScriptPath),
         _ => node.Subtitle,
     };
 

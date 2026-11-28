@@ -42,9 +42,11 @@ VocalB1 は歌声の録音を「F0（基本周波数）／スペクトル包絡�
 ```
 .
 ├── VocalB1Synthesizer.py     # 合成コア
-├── VocalDecomposer.py        # 分解：音声 -> パラメータ（.npy + .json）
-├── VocalSynthesizer.py       # パラメータから音声を再構築
-├── VocalB1.py                # コマンドライン入口
+├── engine/
+│   ├── VocalDecomposer.py    # 分解：音声 -> パラメータ（.npy + .json）
+│   ├── VocalSynthesizer.py   # パラメータから音声を再構築
+│   ├── VocalB1.py            # コマンドライン入口
+│   └── prosses_breath.py     # 息成分ミックス補助
 ├── vocal_lib/                # F0検出、フォルマント、息成分、声門モデルなど
 ├── ui/                       # Windows デスクトップ UI（C# / WPF）
 │   ├── src/

@@ -699,6 +699,25 @@
     "向左滑动视图（按住连续移动）": "Pan view left (hold to keep moving)",
     "向右滑动视图（按住连续移动）": "Pan view right (hold to keep moving)",
     "向上滑动音高轴（按住连续移动）": "Scroll pitch axis up (hold to keep moving)",
-    "向下滑动音高轴（按住连续移动）": "Scroll pitch axis down (hold to keep moving)"
+    "向下滑动音高轴（按住连续移动）": "Scroll pitch axis down (hold to keep moving)",
+    "外部脚本": "External script",
+    "脚本": "Script",
+    "值 1": "Value 1",
+    "值 2": "Value 2",
+    "值 3": "Value 3",
+    "值 4": "Value 4",
+    "值 5": "Value 5",
+    "未选择脚本": "No script selected",
+    "脚本路径": "Script file",
+    "选择外部脚本": "Choose an external script",
+    "浏览…": "Browse…",
+    "外部 .py 文件，必须定义 compute(values) 并返回一个数值；越权时会被压缩封存隔离": "External .py file; it must define compute(values) and return one number. Privilege escalation is compressed, sealed and isolated.",
+    "外部脚本越权": "External script violation",
+    "外部脚本越权，已压缩封存隔离。": "The external script attempted a privilege escalation. It has been compressed, sealed and isolated.",
+    "原因": "Reason",
+    "封存文件": "Sealed archive",
+    "是否直接删除原始脚本文件？": "Delete the original script file now?",
+    "已删除原始脚本": "Original script deleted",
+    "删除失败": "Delete failed"
   }
 }

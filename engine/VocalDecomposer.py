@@ -9,8 +9,14 @@ import sys
 
 import os
 import json
-import numpy as np
 from typing import Union, Optional
+
+# Keep the repository root importable when this module is executed directly from ./engine.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import numpy as np
 
 import vocal_lib as vl
 

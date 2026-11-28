@@ -178,13 +178,14 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    /// <summary>Project files and UTAU sequences can be dropped; anything else is rejected.</summary>
+    /// <summary>Project files, UTAU sequences and external node scripts can be dropped.</summary>
     private static bool IsDroppable(IDataObject data) =>
         data.GetDataPresent(DataFormats.FileDrop)
         && data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } paths
         && File.Exists(paths[0])
         && (ProjectJson.IsProjectFile(paths[0])
-            || string.Equals(Path.GetExtension(paths[0]), ".ust", StringComparison.OrdinalIgnoreCase));
+            || string.Equals(Path.GetExtension(paths[0]), ".ust", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.GetExtension(paths[0]), ".py", StringComparison.OrdinalIgnoreCase));
 
     private void OnWindowDrop(object sender, DragEventArgs e)
     {
@@ -205,6 +206,8 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(new Action(() => _viewModel?.OpenProjectFromPath(path)));
         else if (string.Equals(Path.GetExtension(path), ".ust", StringComparison.OrdinalIgnoreCase))
             Dispatcher.BeginInvoke(new Action(() => _viewModel?.ImportUstFromPath(path)));
+        else if (string.Equals(Path.GetExtension(path), ".py", StringComparison.OrdinalIgnoreCase))
+            Dispatcher.BeginInvoke(new Action(() => _viewModel?.InstallScriptFromPath(path)));
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)

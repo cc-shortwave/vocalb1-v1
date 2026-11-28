@@ -273,9 +273,9 @@ if ($variants -contains 'full') {
 
 # ------------------------------------------------------------------ assemble
 $engineFiles = @(
-    'VocalB1Synthesizer.py', 'VocalDecomposer.py', 'VocalSynthesizer.py', 'VocalB1.py',
+    'VocalB1Synthesizer.py',
     'tools/spectrogram.py', 'tools/oscilloscope.py', 'tools/pit_editor.py', 'tools/analyze_voicebank.py',
-    'prosses_breath.py'
+    'scripts/node_scripts/average5.py'
 )
 
 $built = @()
@@ -296,11 +296,12 @@ foreach ($variant in $variants) {
         Move-Item -LiteralPath $publishedExe -Destination (Join-Path $target 'VocalB1.exe') -Force
     }
 
-    # 2. python engine, at the folder root so auto-discovery finds it
+    # 2. python engine, at the folder root so auto-discovery finds it; helper modules stay in engine\
     foreach ($f in $engineFiles) {
         $src = Join-Path $Root $f
         if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $target -Force }
     }
+    Copy-Item -LiteralPath (Join-Path $Root 'engine') -Destination $target -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $Root 'vocal_lib') -Destination $target -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $Root 'languages') -Destination $target -Recurse -Force
 
@@ -341,8 +342,9 @@ foreach ($variant in $variants) {
     $sizeMB = Get-SizeMB $target
     # 7.5 打包自检：任何运行时会 import 的模块缺一个就立刻失败，别把半成品发出去
     $required = @(
-        'VocalB1.exe', 'VocalB1Synthesizer.py', 'vocal_lib', 'languages', 'VERSION',
-        'analyze_voicebank.py', 'prosses_breath.py',
+        'VocalB1.exe', 'VocalB1Synthesizer.py', 'engine\VocalB1.py', 'engine\prosses_breath.py',
+        'vocal_lib', 'languages', 'VERSION',
+        'analyze_voicebank.py',
         'ui\bridge\vocal_bridge.py', 'voicebank\README.md'
     )
     $absent = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $target $_)) })

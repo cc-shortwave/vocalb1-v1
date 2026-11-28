@@ -7,10 +7,16 @@ Run:
 """
 
 import os
+import sys
+
+# This entry point lives in ./engine; the repository root (with VocalB1Synthesizer.py) stays importable.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from VocalB1Synthesizer import synthesize
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_BASE_DIR = _ROOT
 _OUTPUT_DIR = os.path.join(_BASE_DIR, "_output")
 
 # ======================================================================

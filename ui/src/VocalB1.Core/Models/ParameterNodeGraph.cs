@@ -1,3 +1,5 @@
+using VocalB1.Core.Scripting;
+
 namespace VocalB1.Core.Models;
 
 /// <summary>Interpolation applied between two keys of a <see cref="ParameterCurve"/>.</summary>
@@ -156,6 +158,9 @@ public enum NodeKind
 
     /// <summary>PIT line source: outputs the per-frame pitch curve (semitones / Hz / deviation from the note).</summary>
     PitchLine,
+
+    /// <summary>External Python script: five scalar inputs in, one scalar out, evaluated inside a sandbox.</summary>
+    Script,
 }
 
 /// <summary>
@@ -219,6 +224,7 @@ public static class NodeCatalog
     public const string CategoryVoice = "发声";
     public const string CategorySummary = "汇总";
     public const string CategoryOutput = "输出";
+    public const string CategoryScript = "脚本";
 
     private static readonly Dictionary<NodeKind, NodeDefinition> Definitions = new();
 
@@ -338,6 +344,12 @@ public static class NodeCatalog
 
         Add(new NodeDefinition(NodeKind.Divide, "除法 ÷", CategoryMath, "#4E5C6E",
             [new NodeSocket("A"), new NodeSocket("B", 1)], [new NodeSocket("值")]));
+
+        Add(new NodeDefinition(NodeKind.Script, "外部脚本", CategoryScript, "#7A6A3A",
+            [
+                new NodeSocket("值 1"), new NodeSocket("值 2"), new NodeSocket("值 3"),
+                new NodeSocket("值 4"), new NodeSocket("值 5"),
+            ], [new NodeSocket("值")]));
     }
 
     private static void Add(NodeDefinition definition) => Definitions[definition.Kind] = definition;
@@ -361,6 +373,7 @@ public static class NodeCatalog
         NodeKind.VowelManager, NodeKind.BreathManager,
         NodeKind.FormantPosition, NodeKind.FormantGain, NodeKind.FormantBandwidth,
         NodeKind.BreathParameters,
+        NodeKind.Script,
         NodeKind.ParameterOutput,
     ];
 
@@ -432,6 +445,9 @@ public sealed class ParameterNode
     /// <summary>Noise / random amplitude.</summary>
     public double Amplitude { get; set; } = 0.1;
 
+    /// <summary>Absolute or repository-relative path of the .py file used by a <see cref="NodeKind.Script"/> node.</summary>
+    public string ScriptPath { get; set; } = string.Empty;
+
     public double Min { get; set; }
 
     public double Max { get; set; } = 1.0;
@@ -476,6 +492,7 @@ public sealed class ParameterNode
         NodeKind.Subtract => "A − B",
         NodeKind.Multiply => "A × B",
         NodeKind.Divide => "A ÷ B",
+        NodeKind.Script => string.IsNullOrWhiteSpace(ScriptPath) ? "未选择脚本" : Path.GetFileName(ScriptPath),
         _ => string.Empty,
     };
 
@@ -534,6 +551,7 @@ public sealed class ParameterNode
         ManualValue = ManualValue,
         BreathOutput = BreathOutput,
         Amplitude = Amplitude,
+        ScriptPath = ScriptPath,
         Min = Min,
         Max = Max,
         Curve = Curve.Clone(),
@@ -620,6 +638,9 @@ public sealed class ParameterNodeGraph
                 break;
             case NodeKind.BreathManager:
                 node.BreathOutput = "gain";
+                break;
+            case NodeKind.Script:
+                node.ScriptPath = PythonNodeSandbox.SampleAveragePath;
                 break;
         }
 

@@ -1,6 +1,7 @@
 using System.IO;
 using VocalB1.Core.Abstractions;
 using VocalB1.Core.Configuration;
+using VocalB1.Core.Scripting;
 using VocalB1.Engine.Bridge;
 
 namespace VocalB1.App.Services;
@@ -30,6 +31,10 @@ public sealed class AppServices : IAsyncDisposable
         var settingsPath = Path.Combine(options.RepositoryRoot, "ui", "engine.settings.json");
         if (File.Exists(settingsPath))
             options = EngineOptions.Load(settingsPath);
+
+        // Node-graph script sandbox: same interpreter as the engine, sealed archives next to vocal_lib.
+        PythonNodeSandbox.Configure(options.PythonPath, options.RepositoryRoot);
+        NodeScriptQuarantine.Configure(Path.Combine(options.RepositoryRoot, "quarantine"));
 
         return new AppServices(
             options,

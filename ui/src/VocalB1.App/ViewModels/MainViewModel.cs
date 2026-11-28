@@ -17,6 +17,7 @@ using VocalB1.Core.Diagnostics;
 using VocalB1.Core.Library;
 using VocalB1.Core.Models;
 using VocalB1.Core.Pitch;
+using VocalB1.Core.Scripting;
 using VocalB1.Core.Serialization;
 using VocalB1.Engine.Audio;
 
@@ -113,6 +114,10 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         LanguageService.Initialize(services.Options.RepositoryRoot);
         RebuildLanguages();
 
+        // A sealed external script can additionally be deleted from disk when the user confirms.
+        PythonNodeSandbox.ScriptSealed -= OnScriptSealed;
+        PythonNodeSandbox.ScriptSealed += OnScriptSealed;
+
         NewProjectCommand = new RelayCommand(_ => NewProject());
         OpenProjectCommand = new RelayCommand(_ => OpenProject());
         SaveProjectCommand = new RelayCommand(_ => SaveProject());
@@ -143,6 +148,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
 
         AddOutputNodeCommand = new RelayCommand(_ => AddOutputNode(), _ => CanEdit && ActiveGraph is not null);
         AddNodeCommand = new RelayCommand(_ => AddNode(NewNodeKind), _ => CanEdit && ActiveGraph is not null);
+        BrowseScriptCommand = new RelayCommand(_ => BrowseScript(), _ => CanEdit);
         RemoveNodeCommand = new RelayCommand(_ => RemoveSelectedNode(), _ => CanEdit && SelectedNode is not null);
         FrameGraphCommand = new RelayCommand(_ => FrameGraph(), _ => ActiveGraph is not null);
 
@@ -266,6 +272,9 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     public ICommand PurgeOrphansCommand { get; }
     public ICommand AddOutputNodeCommand { get; }
     public ICommand AddNodeCommand { get; }
+
+    /// <summary>Picks the .py file used by the selected external-script node.</summary>
+    public ICommand BrowseScriptCommand { get; }
     public ICommand RemoveNodeCommand { get; }
     public ICommand FrameGraphCommand { get; }
     public ICommand RenderCommand { get; }
@@ -991,6 +1000,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         OnPropertyChanged(nameof(RollRevision));
         RefreshSegments();
         RefreshLyricUnits();
+        SyncLyricInput();
         AddLog("info", "Piano roll edit committed; lyric units synchronized.");
     }
 
@@ -1727,6 +1737,7 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         OnPropertyChanged(nameof(RollRevision));
         RefreshSegments();
         RefreshLyricUnits();
+        SyncLyricInput();
         AddLog("info", $"新增发音段：{segment.Phoneme}，{segment.BeatStart:0.##} → {segment.BeatEnd:0.##} 拍"
             + (Math.Abs(segment.BeatStart - beatStart) > 1e-6 ? "（避开已有音符，已后移）" : string.Empty) + "。");
     }
@@ -1743,21 +1754,14 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             lyric.Segments.Remove(segment.Model);
             lyric.PitchLine.RemoveAll(p => p.SegmentId == segment.Model.Id);
             // The following note now compares against a different reference pitch.
-            AutoPitchCurve.RefreshAll(lyric);
-            foreach (var word in lyric.Phrase.Words)
-            {
-                foreach (var unit in word.Units.Where(u => u.SegmentId == segment.Model.Id))
-                {
-                    unit.IsRest = true;
-                    unit.SegmentId = null;
-                    unit.Audio = string.Empty;
-                    unit.Display = "休止";
-                }
-            }
+            AutoPitchCurve.RefreshAll(lyric, Bpm);
+            // Deleting a note removes its lyric unit (the same rule as deleting it in the roll).
+            LyricPhraseComposer.SyncWithSegments(lyric.Phrase, lyric);
             _rollRevision++;
             OnPropertyChanged(nameof(RollRevision));
             RefreshSegments();
             RefreshLyricUnits();
+            SyncLyricInput();
             return;
         }
 
@@ -2060,6 +2064,42 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         AddLog("info", $"节点图：添加「{NodeCatalog.Get(kind).Title}」节点。");
     }
 
+    /// <summary>Drag-and-drop entry: installs a .py script and binds it to the selected script node.</summary>
+    public void InstallScriptFromPath(string path)
+    {
+        try
+        {
+            var installed = NodeScriptInstaller.Install(path, _services.Options.RepositoryRoot);
+
+            if (ActiveGraph is { } graph)
+            {
+                PushUndo();
+                if (SelectedNodeRow is { Kind: NodeKind.Script } row)
+                {
+                    row.ScriptPath = installed;
+                }
+                else
+                {
+                    var anchor = SelectedNode;
+                    var node = graph.Add(NodeKind.Script,
+                        anchor is null ? 60 : anchor.X + 40,
+                        anchor is null ? 60 : anchor.Y + 100);
+                    node.ScriptPath = installed;
+                    SelectedNode = node;
+                }
+                NotifyGraphChanged();
+            }
+
+            var fileName = Path.GetFileName(installed);
+            AddLog("info", $"外部脚本：已安装「{fileName}」。");
+            SetStatus("已安装外部脚本：{0}", fileName);
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex);
+        }
+    }
+
     private void RemoveSelectedNode()
     {
         if (ActiveGraph is not { } graph || SelectedNode is not { } node)
@@ -2079,8 +2119,26 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
     // ------------------------------------------------------------------
     // INodeGraphHost — the canvas calls these around every structural edit
     // ------------------------------------------------------------------
-    public void PushGraphUndo() => PushUndo();
+    /// <summary>Opens the file picker for the selected external-script node.</summary>
+    private void BrowseScript()
+    {
+        if (SelectedNodeRow is not { Kind: NodeKind.Script } row)
+            return;
 
+        var dialog = new OpenFileDialog
+        {
+            Title = LanguageService.Translate("选择外部脚本"),
+            Filter = "Python (*.py)|*.py",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        PushUndo();
+        row.ScriptPath = dialog.FileName;
+    }
+
+    public void PushGraphUndo() => PushUndo();
     public void NotifyGraphChanged()
     {
         _rollRevision++;
@@ -2553,8 +2611,11 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             return;
         try
         {
-            TimbreProfile.From(ActiveParameterSet.Base).Save(dialog.FileName);
+            // The package now carries the live node graph so the routing is reproduced, not just the sliders.
+            TimbreProfile.From(ActiveParameterSet.Base, ActiveGraph).Save(dialog.FileName);
             AddLog("info", LanguageService.TranslateFormat("音色参数已导出：{0}", dialog.FileName));
+            if (ActiveGraph is not null)
+                AddLog("info", "音色节点图已导出。");
         }
         catch (Exception ex)
         {
@@ -2580,12 +2641,35 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
             PushUndo();
             foreach (var item in profile.ApplyTo(ActiveParameterSet.Base))
                 AddLog("warn", LanguageService.TranslateFormat("音色导入跳过：{0}", item));
+
+            if (profile.Graph is { } importedGraph)
+            {
+                ReplaceActiveGraph(importedGraph);
+                ResetNodeSelection();
+                NotifyGraphChanged();
+                AddLog("info", "音色节点图已导入。");
+            }
+
             OnPropertyChanged(nameof(BaseValue));
             AddLog("info", "音色参数已导入。");
         }
         catch (Exception ex)
         {
             ReportError(ex);
+        }
+    }
+
+    /// <summary>Replaces the graph currently shown on the canvas (shared set or singer overlay).</summary>
+    private void ReplaceActiveGraph(ParameterNodeGraph graph)
+    {
+        if (_editSingerGraph)
+        {
+            if (_selectedSinger is not null)
+                _selectedSinger.Model.Graph = graph;
+        }
+        else if (ActiveParameterSet is { } set)
+        {
+            set.Graph = graph;
         }
     }
 
@@ -3112,6 +3196,56 @@ public sealed class MainViewModel : ObservableObject, INodeGraphHost
         AddLog("error", error.Message);
         SetStatus("出错：{0} @ {1}", error.ClassName, error.Stage);
         MessageBox.Show(error.Message, LanguageService.Translate("VocalB1 错误"), MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    /// <summary>Sandbox callback: the script has been sealed, ask whether the original file should go too.</summary>
+    private void OnScriptSealed(PythonNodeSandbox.SealedScript sealedScript)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+        if (dispatcher.CheckAccess())
+            AskDeleteSealedScript(sealedScript);
+        else
+            dispatcher.BeginInvoke(new Action(() => AskDeleteSealedScript(sealedScript)));
+    }
+
+    private void AskDeleteSealedScript(PythonNodeSandbox.SealedScript sealedScript)
+    {
+        var message = string.Join(Environment.NewLine, new[]
+        {
+            LanguageService.Translate("外部脚本越权，已压缩封存隔离。"),
+            LanguageService.Translate("脚本") + "：" + sealedScript.ScriptPath,
+            LanguageService.Translate("原因") + "：" + sealedScript.Reason,
+            LanguageService.Translate("封存文件") + "：" + sealedScript.Archive,
+            string.Empty,
+            LanguageService.Translate("是否直接删除原始脚本文件？"),
+        });
+
+        var title = LanguageService.Translate("外部脚本越权");
+        var owner = Application.Current?.MainWindow;
+        var answer = owner is null
+            ? MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Warning)
+            : MessageBox.Show(owner, message, title, MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            if (File.Exists(sealedScript.ScriptPath))
+            {
+                File.SetAttributes(sealedScript.ScriptPath, FileAttributes.Normal);
+                File.Delete(sealedScript.ScriptPath);
+            }
+            AddLog("warn", LanguageService.Translate("已删除原始脚本") + "：" + sealedScript.ScriptPath);
+            SetStatus("已删除原始脚本");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                LanguageService.Translate("删除失败") + "：" + ex.Message,
+                title, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private static string SafeFileName(string name)

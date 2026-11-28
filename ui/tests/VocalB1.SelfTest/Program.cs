@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using VocalB1.Core.Abstractions;
@@ -7,6 +8,7 @@ using VocalB1.Core.Diagnostics;
 using VocalB1.Core.Library;
 using VocalB1.Core.Models;
 using VocalB1.Core.Pitch;
+using VocalB1.Core.Scripting;
 using VocalB1.Core.Serialization;
 using VocalB1.Engine.Audio;
 using VocalB1.Engine.Bridge;
@@ -35,7 +37,10 @@ internal static class Program
         TestProjectJson();
         TestSpatial();
         TestPitchRaster();
+        TestAutoPitchTuning();
         TestNodeGraph();
+        TestNodeScriptSandbox();
+        TestNodeScriptInstaller();
         TestDictionary();
         TestLyricPhrase();
         TestUstImport();
@@ -294,6 +299,98 @@ internal static class Program
         Check("空间：清洗非有限值并钳制范围",
             strays.X.Count == 1 && Math.Abs(strays.X[0].Beat - 3) < 1e-9
             && Math.Abs(strays.X[0].Value - 1) < 1e-9);
+    }
+
+    // ------------------------------------------------------------------
+    // 1b. Automatic PIT articulation timing (physiological attack model)
+    // ------------------------------------------------------------------
+    private static void TestAutoPitchTuning()
+    {
+        var lyric = new LyricDocument();
+        var first = new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 0, BeatEnd = 4 };
+        var second = new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 4, BeatEnd = 8 };
+        lyric.Segments.Add(first);
+        lyric.Segments.Add(second);
+
+        AutoPitchCurve.Apply(lyric, second, 120);
+        var contour = lyric.PitchLine
+            .Where(p => p.IsAutoPitch && p.SegmentId == second.Id)
+            .OrderBy(p => p.Beat)
+            .ToList();
+
+        // 200 ms at 120 BPM = 0.4 beat, and the peak sits at 40 ms (one fifth of the window).
+        var peak = contour.FirstOrDefault(p => Math.Abs(p.Beat - 4.08) < 1e-6);
+        var peakValue = parse(peak?.Pitch);
+        Check("自动 PIT：过冲峰值位于起音 40 ms 处", Math.Abs(peakValue - 4.9) < 1e-6,
+            peak is null ? "缺少节点" : $"实际 {peakValue:0.####}");
+
+        var cent = (peakValue - 4.0) * 100.0;
+        Check("自动 PIT：过冲幅度落在 20-120 cent", cent >= 20 && cent <= 120, $"实际 {cent:0.#} cent");
+
+        var settle = contour.FirstOrDefault(p => Math.Abs(p.Beat - 4.4) < 1e-6);
+        Check("自动 PIT：200 ms 内收敛到本音",
+            settle is not null && Math.Abs(parse(settle.Pitch) - 4.0) < 1e-9);
+
+        // The last note keeps its steady pitch to the end: no closing fall after the attack.
+        Check("自动 PIT：末音收尾保持稳态",
+            contour.Where(p => p.Beat > 4.45).All(p => parse(p.Pitch) >= 4.0 - 1e-9));
+
+        // Sparse curves must also hold the pitch to the note end, otherwise a note before a rest
+        // would stop drawing right after its attack.
+        var lineLyric = new LyricDocument();
+        var lineFirst = new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 0, BeatEnd = 4 };
+        lineLyric.Segments.Add(lineFirst);
+        lineLyric.Segments.Add(new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 6, BeatEnd = 10 });
+        AutoPitchCurve.Apply(lineLyric, lineFirst, 120);
+        Check("自动 PIT：稀疏曲线稳态覆盖到音块末尾",
+            lineLyric.PitchLine.Any(p => p.IsAutoPitch && p.SegmentId == lineFirst.Id
+                && p.Beat > 3.99 && Math.Abs(parse(p.Pitch) - 2.0) < 1e-9));
+
+        // A gap breaks the phrase: the next note still starts from the previous note's pitch.
+        var gap = new LyricDocument();
+        var gapFirst = new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 0, BeatEnd = 4 };
+        var gapSecond = new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 6, BeatEnd = 10 };
+        gap.Segments.Add(gapFirst);
+        gap.Segments.Add(gapSecond);
+        gap.PitchLine.Add(new PitchPoint { SegmentId = gapSecond.Id, IsEdgeAnchor = true, Beat = 6, Pitch = "E4" });
+        AutoPitchCurve.Apply(gap, gapSecond, 120);
+        var gapStart = gap.PitchLine.First(p =>
+            p.SegmentId == gapSecond.Id && p.IsEdgeAnchor && !p.IsTransition
+            && Math.Abs(p.Beat - 6) < 1e-6);
+        Check("自动 PIT：断开处从上一音音高起音",
+            Math.Abs(parse(gapStart.Pitch) - 2.0) < 1e-9, gapStart.Pitch);
+
+        // Raster mode must keep a visible steady line even when only articulation cells were written.
+        var rasterLyric = new LyricDocument();
+        var rasterNote = new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 0, BeatEnd = 4 };
+        rasterLyric.Segments.Add(rasterNote);
+        var raster = new PitchRaster();
+        raster.SetValue(0, -5.0);
+        rasterLyric.PitchRaster = raster;
+        AutoPitchCurve.Apply(rasterLyric, rasterNote, 120);
+        var bodyIndex = raster.IndexOfBeat(2.0);
+        var bodyValue = bodyIndex >= 0 && bodyIndex < raster.Values.Count ? raster.Values[bodyIndex] : null;
+        Check("自动 PIT：栅格模式补齐稳态曲线",
+            bodyValue is { } steady && Math.Abs(steady - 4.0) < 1e-9,
+            bodyValue?.ToString(CultureInfo.InvariantCulture) ?? "空");
+
+        // Same wall-clock attack at another tempo: 60 BPM -> 0.2 beat.
+        var slow = new LyricDocument();
+        slow.Segments.Add(new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 0, BeatEnd = 4 });
+        var slowSecond = new VoiceSegment { Audio = "b.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 4, BeatEnd = 8 };
+        slow.Segments.Add(slowSecond);
+        AutoPitchCurve.Apply(slow, slowSecond, 60);
+        var slowContour = slow.PitchLine
+            .Where(p => p.IsAutoPitch && p.SegmentId == slowSecond.Id)
+            .OrderBy(p => p.Beat)
+            .ToList();
+        Check("自动 PIT：起音时长随速度换算为固定毫秒",
+            slowContour.Any(p => Math.Abs(p.Beat - 4.2) < 1e-6));
+
+        static double parse(string? text) =>
+            text is not null && double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : double.NaN;
     }
 
     // ------------------------------------------------------------------
@@ -567,6 +664,221 @@ internal static class Program
         new(0, 1, 0, 440, 9, vowel, string.Empty, 0, 1, 0);
 
     // ------------------------------------------------------------------
+    // 2c. External script installation (drag & drop)
+    // ------------------------------------------------------------------
+    private static void TestNodeScriptInstaller()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "install_" + Guid.NewGuid().ToString("N"));
+        var source = Path.Combine(root, "src");
+        var other = Path.Combine(source, "other");
+        Directory.CreateDirectory(source);
+        Directory.CreateDirectory(other);
+
+        try
+        {
+            var first = Path.Combine(source, "mix.py");
+            File.WriteAllText(first, "def compute(values):\n    return values[0]\n");
+
+            var installed = NodeScriptInstaller.Install(first, root);
+            Check("脚本安装：复制到 scripts/node_scripts",
+                string.Equals(installed,
+                    Path.Combine(root, "scripts", NodeScriptInstaller.FolderName, "mix.py"),
+                    StringComparison.OrdinalIgnoreCase)
+                && File.Exists(installed));
+
+            var again = NodeScriptInstaller.Install(first, root);
+            Check("脚本安装：相同内容不重复复制", string.Equals(again, installed, StringComparison.OrdinalIgnoreCase));
+
+            var conflict = Path.Combine(other, "mix.py");
+            File.WriteAllText(conflict, "def compute(values):\n    return values[1]\n");
+            var renamed = NodeScriptInstaller.Install(conflict, root);
+            Check("脚本安装：同名不同内容自动改名",
+                !string.Equals(renamed, installed, StringComparison.OrdinalIgnoreCase)
+                && Path.GetFileName(renamed) == "mix_2.py"
+                && File.Exists(renamed));
+
+            var text = Path.Combine(source, "notes.txt");
+            File.WriteAllText(text, "x");
+            var rejected = false;
+            try
+            {
+                NodeScriptInstaller.Install(text, root);
+            }
+            catch (StageException)
+            {
+                rejected = true;
+            }
+            Check("脚本安装：拒绝非 .py 文件", rejected);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, true);
+            }
+            catch
+            {
+                // temp cleanup is best effort
+            }
+        }
+    }
+
+
+    private static void TestNodeScriptSandbox()
+    {
+        var definition = NodeCatalog.Get(NodeKind.Script);
+        Check("外部脚本节点：五个输入一个输出",
+            definition.Inputs.Length == PythonNodeSandbox.InputCount
+            && definition.Outputs.Length == 1
+            && definition.Outputs[0].Type == SocketType.Scalar);
+        Check("外部脚本节点：归类为脚本",
+            definition.Category == NodeCatalog.CategoryScript
+            && NodeCatalog.All.Any(d => d.Kind == NodeKind.Script));
+        Check("外部脚本节点：附带平均示例脚本",
+            !string.IsNullOrWhiteSpace(PythonNodeSandbox.SampleAveragePath)
+            && File.Exists(PythonNodeSandbox.SampleAveragePath),
+            PythonNodeSandbox.SampleAveragePath);
+
+        var options = EngineOptions.Discover();
+        Check("外部脚本：封存目录位于 vocal_lib 同级",
+            string.Equals(Path.GetFullPath(NodeScriptQuarantine.DefaultRoot),
+                Path.GetFullPath(Path.Combine(options.RepositoryRoot, "quarantine")),
+                StringComparison.OrdinalIgnoreCase),
+            NodeScriptQuarantine.DefaultRoot);
+        var root = Path.Combine(Path.GetTempPath(), "VocalB1SelfTest", "scripts_" + Guid.NewGuid().ToString("N"));
+        var quarantine = Path.Combine(root, "quarantine");
+        Directory.CreateDirectory(root);
+
+        PythonNodeSandbox.Configure(options.PythonPath, options.RepositoryRoot);
+        NodeScriptQuarantine.Configure(quarantine);
+
+        var sealedEvents = new List<PythonNodeSandbox.SealedScript>();
+        void OnSealed(PythonNodeSandbox.SealedScript sealedScript) => sealedEvents.Add(sealedScript);
+        PythonNodeSandbox.ScriptSealed += OnSealed;
+
+        try
+        {
+            var profile = VoicebankFormantProfile.Load(null);
+
+            // The averaging sample runs end to end through the node graph.
+            var average = Path.Combine(root, "average.py");
+            File.WriteAllText(average,
+                "def compute(values):\n    return sum(values) / len(values)\n");
+            var graph = new ParameterNodeGraph();
+            var script = graph.Add(NodeKind.Script, 200, 0);
+            script.ScriptPath = average;
+            for (var i = 0; i < PythonNodeSandbox.InputCount; i++)
+                script.SetInputDefault(i, (i + 1) * 2);
+            var breath = graph.Add(NodeKind.BreathParameters, 400, 0);
+            var output = graph.Add(NodeKind.ParameterOutput, 600, 0);
+            graph.Connect(script.Id, 0, breath.Id, 3);
+            graph.Connect(breath.Id, 0, output.Id, ParameterNodeGraph.BreathSocket);
+
+            var values = new NodeGraphEvaluator(graph, Globals(), profile, key => 0).EvaluateOutputs();
+            Check("外部脚本节点：五值输入取平均",
+                values.TryGetValue("breathGain", out var mean) && Math.Abs(mean - 6) < 1e-9,
+                values.TryGetValue("breathGain", out var got) ? got.ToString("F3") : "缺少输出");
+
+            var sustained = true;
+            for (var i = 0; i < 50; i++)
+            {
+                var actual = PythonNodeSandbox.Evaluate(average, [i, i + 1, i + 2, i + 3, i + 4]);
+                if (Math.Abs(actual - (i + 2)) > 1e-9)
+                {
+                    sustained = false;
+                    break;
+                }
+            }
+            Check("外部脚本：连续调用保持稳定", sustained);
+
+            // Importing anything is privilege escalation: rejected, compressed and sealed.
+            var violating = Path.Combine(root, "violating.py");
+            File.WriteAllText(violating,
+                "import os\n\ndef compute(values):\n    return os.getpid()\n");
+            var rejected = false;
+            try
+            {
+                PythonNodeSandbox.Evaluate(violating, [1, 2, 3, 4, 5]);
+            }
+            catch (StageException)
+            {
+                rejected = true;
+            }
+            Check("外部脚本：越权操作被拒绝", rejected);
+            Check("外部脚本：越权脚本已压缩封存",
+                Directory.Exists(quarantine) && Directory.GetFiles(quarantine, "*.zip").Length == 1,
+                Directory.Exists(quarantine) ? Directory.GetFiles(quarantine).Length.ToString() : "无封存目录");
+            Check("外部脚本：封存事件已通知界面",
+                sealedEvents.Count == 1
+                && sealedEvents[0].ScriptPath == violating
+                && !string.IsNullOrWhiteSpace(sealedEvents[0].Archive));
+
+            var blocked = false;
+            try
+            {
+                PythonNodeSandbox.Evaluate(violating, [1, 2, 3, 4, 5]);
+            }
+            catch (StageException ex)
+            {
+                blocked = ex.Message.Contains("封存", StringComparison.Ordinal);
+            }
+            Check("外部脚本：封存后拒绝再次执行", blocked);
+
+            // A plain script error is reported but is not an escalation and must not be sealed.
+            var failing = Path.Combine(root, "failing.py");
+            File.WriteAllText(failing,
+                "def compute(values):\n    return values[0] / 0\n");
+            var failed = false;
+            try
+            {
+                PythonNodeSandbox.Evaluate(failing, [1, 2, 3, 4, 5]);
+            }
+            catch (StageException)
+            {
+                failed = true;
+            }
+            Check("外部脚本：普通异常只报错不封存",
+                failed && Directory.GetFiles(quarantine, "*.zip").Length == 1);
+
+            // Classic object-graph escape (.__subclasses__) must be rejected and sealed as well.
+            var escape = Path.Combine(root, "escape.py");
+            File.WriteAllText(escape,
+                "def compute(values):\n"
+                + "    return float(len(().__class__.__base__.__subclasses__()))\n");
+            var escapeRejected = false;
+            try
+            {
+                PythonNodeSandbox.Evaluate(escape, [1, 2, 3, 4, 5]);
+            }
+            catch (StageException)
+            {
+                escapeRejected = true;
+            }
+            Check("外部脚本：对象图逃逸被拒绝并封存",
+                escapeRejected && Directory.GetFiles(quarantine, "*.zip").Length == 2);
+        }
+        finally
+        {
+            PythonNodeSandbox.ScriptSealed -= OnSealed;
+            PythonNodeSandbox.Reset();
+            PythonNodeSandbox.Configure(options.PythonPath, options.RepositoryRoot);
+            NodeScriptQuarantine.Configure(NodeScriptQuarantine.DefaultRoot);
+            try
+            {
+                foreach (var file in Directory.GetFiles(quarantine))
+                    File.SetAttributes(file, FileAttributes.Normal);
+                if (Directory.Exists(root))
+                    Directory.Delete(root, true);
+            }
+            catch
+            {
+                // temp cleanup is best effort
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 3. User dictionary
     // ------------------------------------------------------------------
     private static void TestDictionary()
@@ -749,6 +1061,46 @@ internal static class Program
             && Math.Abs(phrase.Words[2].BeatEnd - 5) < 1e-9,
             $"{phrase.Text} / {phrase.Words[2].BeatStart}-{phrase.Words[2].BeatEnd}");
         Check("歌词 diff：旧词音块已移除", lyric.Segments.Count == 3);
+
+        // Piano-roll edits sync back into the lyric objects.
+        var syncedLyric = new LyricDocument();
+        var syncedPhrase = syncedLyric.Phrase;
+        LyricPhraseComposer.Apply(syncedPhrase,
+            LyricPhraseParser.Parse(dictionary, "きゃ あ", dir, null).Words,
+            syncedLyric, 1.0, 0, "D4");
+
+        var movedSegment = syncedLyric.Segments[0];
+        movedSegment.BeatStart += 0.5;
+        movedSegment.BeatEnd += 0.5;
+        var moveChanges = LyricPhraseComposer.SyncWithSegments(syncedPhrase, syncedLyric);
+        Check("音轨→歌词：移动音块同步单位拍位",
+            moveChanges > 0
+            && Math.Abs(syncedPhrase.Words[0].Units[0].BeatStart - movedSegment.BeatStart) < 1e-9);
+
+        movedSegment.LyricOverride = "か";
+        LyricPhraseComposer.SyncWithSegments(syncedPhrase, syncedLyric);
+        Check("音轨→歌词：音块歌词同步到歌词栏",
+            syncedPhrase.Words[0].Units[0].Text == "か",
+            syncedPhrase.Words[0].Units[0].Text);
+
+        var addedSegment = new VoiceSegment
+        {
+            Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 10, BeatEnd = 11,
+        };
+        syncedLyric.Segments.Add(addedSegment);
+        var addChanges = LyricPhraseComposer.SyncWithSegments(syncedPhrase, syncedLyric);
+        Check("音轨→歌词：新增音块自动出现占位词",
+            addChanges > 0 && syncedPhrase.Words.Any(w =>
+                w.Units.Any(u => u.SegmentId == addedSegment.Id)));
+
+        var unitsBefore = syncedPhrase.Words.SelectMany(w => w.Units).Count();
+        syncedLyric.Segments.Remove(addedSegment);
+        var deleteChanges = LyricPhraseComposer.SyncWithSegments(syncedPhrase, syncedLyric);
+        Check("音轨→歌词：删除音块后歌词单位消失",
+            deleteChanges > 0
+            && !syncedPhrase.Words.Any(w => w.Units.Any(u => u.SegmentId == addedSegment.Id))
+            && syncedPhrase.Words.SelectMany(w => w.Units).Count() == unitsBefore - 1,
+            $"{syncedPhrase.Words.SelectMany(w => w.Units).Count()} 单位");
 
         // Deleting a rest word pulls the following words left.
         var restWord = phrase.Words[1];
@@ -1378,6 +1730,42 @@ internal static class Program
             nanSkipped.Any(x => x.Contains("bandRatios"))
             && nanTarget.BandRatios.SequenceEqual(new SynthesisSettings().BandRatios),
             string.Join(";", nanSkipped));
+
+        // Version 2 packages carry the node graph, so the parameter routing travels with the timbre.
+        var graph = new ParameterNodeGraph();
+        var number = graph.Add(NodeKind.Number, 0, 0);
+        number.Value = 0.75;
+        var graphBreath = graph.Add(NodeKind.BreathParameters, 200, 0);
+        var graphOutput = graph.Add(NodeKind.ParameterOutput, 400, 0);
+        graph.Connect(number.Id, 0, graphBreath.Id, 3);
+        graph.Connect(graphBreath.Id, 0, graphOutput.Id, ParameterNodeGraph.BreathSocket);
+
+        var graphPath = Path.Combine(Path.GetTempPath(), "vocalb1-selftest-timbre-graph.vbtimbre.json");
+        TimbreProfile.From(source, graph).Save(graphPath);
+        var graphLoaded = TimbreProfile.Load(graphPath);
+        Check("音色：往返保留节点图",
+            graphLoaded.Graph is { } restored
+            && restored.Nodes.Count == graph.Nodes.Count
+            && restored.Links.Count == graph.Links.Count);
+        Check("音色：含节点图的包版本为 2", graphLoaded.Version == 2);
+
+        var graphValues = new NodeGraphEvaluator(
+            graphLoaded.Graph!, Globals(), VoicebankFormantProfile.Load(null), key => 0).EvaluateOutputs();
+        Check("音色：导入的节点图求值一致",
+            graphValues.TryGetValue("breathGain", out var graphBreathValue)
+            && Math.Abs(graphBreathValue - 0.75) < 1e-9);
+        File.Delete(graphPath);
+
+        var legacy = TimbreProfile.From(source);
+        legacy.Graph = null;
+        legacy.Version = 1;
+        var legacyPath = Path.Combine(Path.GetTempPath(), "vocalb1-selftest-timbre-v1.vbtimbre.json");
+        legacy.Save(legacyPath);
+        var legacyLoaded = TimbreProfile.Load(legacyPath);
+        Check("音色：旧版无节点图的包仍可导入",
+            legacyLoaded.Graph is null
+            && legacyLoaded.ApplyTo(new SynthesisSettings()).Count == 0);
+        File.Delete(legacyPath);
 
         File.Delete(path);
     }

@@ -12,7 +12,7 @@ import numpy as np
 import vocal_lib as vl
 
 # Anchor paths to the script directory to avoid broken relative paths when the working directory differs at runtime
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAMES_TXT = os.path.join(_BASE_DIR, "_output", "spliced_frames.txt")
 BREATH_FMT = os.path.join(_BASE_DIR, "_output", "breath_seg{}.wav")
 OUTPUT_PATH = os.path.join(_BASE_DIR, "_output", "breath_trim_concat.wav")

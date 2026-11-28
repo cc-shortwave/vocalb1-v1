@@ -35,6 +35,7 @@ public sealed class NodeFieldVisibilityConverter : IValueConverter
         "Manual" => kind is NodeKind.VowelManager or NodeKind.BreathManager,
         "UseVoicebank" => kind is NodeKind.VowelManager or NodeKind.BreathManager,
         "Field" => kind is NodeKind.FieldDecompose,
+        "ScriptPath" => kind is NodeKind.Script,
         "ParameterKey" => kind is NodeKind.ParameterInput,
         "Amplitude" => kind is NodeKind.Noise or NodeKind.Random,
         "Curve" => kind is NodeKind.TimeCurve or NodeKind.CurveRemap,

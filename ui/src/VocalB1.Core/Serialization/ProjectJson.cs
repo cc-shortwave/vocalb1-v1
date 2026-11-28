@@ -195,7 +195,10 @@ public static class ProjectJson
             {
                 raster.Normalize();
                 if (raster.HasValues)
+                {
                     lyric.PitchLine.Clear();
+                    AutoPitchCurve.RepairMissing(lyric);
+                }
             }
             else if (lyric.PitchLine.Count > 0)
             {
@@ -203,7 +206,7 @@ public static class ProjectJson
                 // so the automatic PIT attack is generated before the sparse line is rasterised.
                 // Authored lines (any regular or transition node) are migrated unchanged.
                 if (lyric.PitchLine.All(p => p.IsEdgeAnchor || p.IsAutoPitch))
-                    AutoPitchCurve.RefreshAll(lyric);
+                    AutoPitchCurve.RefreshAll(lyric, project.Bpm);
                 lyric.PitchRaster = PitchRaster.FromPitchLine(lyric.BuildRenderPitchLine());
                 if (lyric.PitchRaster is not null)
                     lyric.PitchLine.Clear();
@@ -251,8 +254,9 @@ public static class ProjectJson
     /// <summary>
     /// Normalises a node graph after loading: unique node ids, known node kinds, valid output keys and only
     /// links whose endpoints and sockets still exist. Broken links are dropped instead of failing the load.
+    /// Also used when importing a timbre package that carries its own graph.
     /// </summary>
-    private static ParameterNodeGraph SanitizeGraph(ParameterNodeGraph? graph)
+    public static ParameterNodeGraph SanitizeGraph(ParameterNodeGraph? graph)
     {
         graph ??= new ParameterNodeGraph();
         graph.Nodes ??= [];
@@ -287,6 +291,7 @@ public static class ProjectJson
             node.Global ??= "beat";
             node.Text ??= string.Empty;
             node.BreathOutput ??= "gain";
+            node.ScriptPath ??= string.Empty;
             node.Curve ??= new ParameterCurve();
             node.Curve.Points ??= [];
             node.InputDefaults ??= [];

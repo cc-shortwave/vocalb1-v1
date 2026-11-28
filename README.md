@@ -49,9 +49,11 @@ pure signal processing that runs on a 2-core / 2 GB machine.
 ```
 .
 ├── VocalB1Synthesizer.py     # synthesis core
-├── VocalDecomposer.py        # audio -> parameters (.npy + .json)
-├── VocalSynthesizer.py       # rebuild speech from parameters
-├── VocalB1.py                # command-line entry
+├── engine/
+│   ├── VocalDecomposer.py    # audio -> parameters (.npy + .json)
+│   ├── VocalSynthesizer.py   # rebuild speech from parameters
+│   ├── VocalB1.py            # command-line entry
+│   └── prosses_breath.py     # breath mixing helper
 ├── vocal_lib/                # F0 detection, formants, breath, glottal models
 ├── ui/                       # Windows desktop UI (C# / WPF)
 │   ├── src/

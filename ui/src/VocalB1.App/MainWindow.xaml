@@ -527,8 +527,8 @@
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
-
                                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="类型" VerticalAlignment="Center" />
                                                 <ComboBox Grid.Row="0" Grid.Column="1" Margin="0,2"
                                                           ItemsSource="{Binding DataContext.NodeKinds, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -633,6 +633,22 @@
                                                           DisplayMemberPath="Label" SelectedValuePath="Key"
                                                           SelectedValue="{Binding Field}"
                                                           ToolTip="连接声库数据后，输出所选字段的值" />
+
+                                                <TextBlock Grid.Row="8" Grid.Column="0" Text="脚本路径" VerticalAlignment="Center"
+                                                           Visibility="{Binding Kind, Converter={StaticResource NodeFieldVis}, ConverterParameter=ScriptPath}" />
+                                                <Grid Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" Margin="0,2"
+                                                      Visibility="{Binding Kind, Converter={StaticResource NodeFieldVis}, ConverterParameter=ScriptPath}">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="8" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Grid.Column="0"
+                                                             Text="{Binding ScriptPath, UpdateSourceTrigger=LostFocus}"
+                                                             ToolTip="外部 .py 文件，必须定义 compute(values) 并返回一个数值；越权时会被压缩封存隔离" />
+                                                    <Button Grid.Column="2" Content="浏览…"
+                                                            Command="{Binding DataContext.BrowseScriptCommand, RelativeSource={RelativeSource AncestorType=Window}}" />
+                                                </Grid>
                                             </Grid>
 
                                             <TextBlock Text="未连线的输入跟随声库/歌词默认值；汇总节点接到参数输出后立即生效。"

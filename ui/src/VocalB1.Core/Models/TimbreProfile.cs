@@ -7,13 +7,18 @@ namespace VocalB1.Core.Models;
 /// Core timbre parameters of a single track, saved as *.vbtimbre.json so a tuning result can be
 /// carried over to another project. Only the parameters that shape the voice colour are stored;
 /// engine bookkeeping (sample rate, frame period, intermediate files) stays in the project.
+/// Starting with format version 2 the package also carries the parameter node graph, so importing a
+/// timbre reproduces the exact parameter routing instead of only the baseline slider values.
 /// </summary>
 public sealed class TimbreProfile
 {
     public const string FileExtension = ".vbtimbre.json";
 
-    /// <summary>Format version, kept for future field changes.</summary>
-    public int Version { get; set; } = 1;
+    /// <summary>Format version, kept for future field changes. 2 = includes <see cref="Graph"/>.</summary>
+    public int Version { get; set; } = 2;
+
+    /// <summary>Node graph captured on export; null for legacy version-1 packages.</summary>
+    public ParameterNodeGraph? Graph { get; set; }
 
     /// <summary>Formant follow ratio per band (7 bands).</summary>
     public double[] FollowRatio { get; set; } = [];
@@ -32,8 +37,10 @@ public sealed class TimbreProfile
     public double Jitter { get; set; } = 0.0;
     public double Shimmer { get; set; } = 0.0;
 
-    public static TimbreProfile From(SynthesisSettings settings) => new()
+    public static TimbreProfile From(SynthesisSettings settings, ParameterNodeGraph? graph = null) => new()
     {
+        Version = 2,
+        Graph = graph?.Clone(),
         FollowRatio = [.. settings.FollowRatio],
         BandRatios = [.. settings.BandRatios],
         BandWidthHz = settings.BandWidthHz,
@@ -100,9 +107,17 @@ public sealed class TimbreProfile
         return skipped;
     }
 
-    public static TimbreProfile Load(string path) =>
-        JsonSerializer.Deserialize<TimbreProfile>(File.ReadAllText(path), ProjectJson.ReadOptions)
-        ?? throw new InvalidDataException("音色参数 JSON 为空或无法解析。");
+    public static TimbreProfile Load(string path)
+    {
+        var profile = JsonSerializer.Deserialize<TimbreProfile>(File.ReadAllText(path), ProjectJson.ReadOptions)
+            ?? throw new InvalidDataException("音色参数 JSON 为空或无法解析。");
+
+        // A package is external data: drop unknown nodes, broken links and duplicate ids before it is shown.
+        if (profile.Graph is not null)
+            profile.Graph = ProjectJson.SanitizeGraph(profile.Graph);
+
+        return profile;
+    }
 
     public void Save(string path)
     {
