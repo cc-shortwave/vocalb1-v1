@@ -60,10 +60,21 @@ pure signal processing that runs on a 2-core / 2 GB machine.
 │   └── engine.settings.example.json
 ├── languages/                # UI language packs (en / ja / zh)
 ├── voicebank/                # put your voicebank here (none is bundled)
+├── scripts/
+│   ├── node_scripts/         # sample external node scripts
+│   │   └── average5.py       # five-input average, runs in the sandbox
+│   └── package-release.ps1   # builds the release archives
+├── installer/
+│   └── vocalb1.iss           # Inno Setup definition for the installer
+├── docs/                     # quick start and release notes
 └── tools/                    # helper scripts (the engine does not need them)
     ├── spectrogram.py        # spectrogram view
     ├── oscilloscope.py       # waveform view
+    ├── make_spectrogram.py   # spectrogram PNG for a rendered WAV
     ├── pit_editor.py         # pitch-curve editor
+    ├── analyze_voicebank.py  # reports missing syllables in a voicebank
+    ├── perf_render.py        # full render with the performance probe
+    ├── probe_render.py       # replay a project and audit parameters
     ├── _plosive_diag.py      # plosive transient diagnostics
     └── test_vocal_lib.py     # library regression tests
 ```

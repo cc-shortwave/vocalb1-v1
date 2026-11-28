@@ -55,10 +55,21 @@ VocalB1 把一段人声录音拆成「基频 + 频谱包络 + 气声 + 激励」
 │   └── engine.settings.example.json
 ├── languages/                # 界面语言包（en / ja / zh）
 ├── voicebank/                # 声库放这里（仓库不含声库）
+├── scripts/
+│   ├── node_scripts/         # 外部脚本节点示例
+│   │   └── average5.py       # 五输入取平均，在沙箱里运行
+│   └── package-release.ps1   # 生成发布用的压缩包
+├── installer/
+│   └── vocalb1.iss           # Inno Setup 安装包定义
+├── docs/                     # 快速上手与发布说明
 └── tools/                    # 辅助工具（引擎运行不依赖）
     ├── spectrogram.py        # 语谱图
     ├── oscilloscope.py       # 波形视图
+    ├── make_spectrogram.py   # 给渲染好的 WAV 出语谱图
     ├── pit_editor.py         # 音高曲线编辑器
+    ├── analyze_voicebank.py  # 检查声库缺失的音节
+    ├── perf_render.py        # 带性能探针的完整渲染
+    ├── probe_render.py       # 复现工程并核对参数
     ├── _plosive_diag.py      # 爆破音诊断
     └── test_vocal_lib.py     # 库回归测试
 ```

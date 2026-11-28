@@ -53,10 +53,21 @@ VocalB1 は歌声の録音を「F0（基本周波数）／スペクトル包絡�
 │   └── engine.settings.example.json
 ├── languages/                # UI 言語パック（en / ja / zh）
 ├── voicebank/                # 音源はここに置く（同梱なし）
+├── scripts/
+│   ├── node_scripts/         # 外部スクリプトノードのサンプル
+│   │   └── average5.py       # 5入力の平均、サンドボックス内で実行
+│   └── package-release.ps1   # 配布用アーカイブの生成
+├── installer/
+│   └── vocalb1.iss           # Inno Setup のインストーラ定義
+├── docs/                     # クイックスタートとリリースノート
 └── tools/                    # 補助ツール（エンジンの実行には不要）
     ├── spectrogram.py        # スペクトログラム表示
     ├── oscilloscope.py       # 波形表示
+    ├── make_spectrogram.py   # レンダリング済み WAV のスペクトログラム画像
     ├── pit_editor.py         # ピッチカーブエディタ
+    ├── analyze_voicebank.py  # 音源に不足している音節の一覧
+    ├── perf_render.py        # 性能プローブ付きのフルレンダリング
+    ├── probe_render.py       # プロジェクトを再現してパラメータを照合
     ├── _plosive_diag.py      # 破裂音の過渡診断
     └── test_vocal_lib.py     # ライブラリの回帰テスト
 ```
