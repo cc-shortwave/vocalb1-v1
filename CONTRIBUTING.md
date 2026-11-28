@@ -8,8 +8,9 @@ Welcome: UI layout, styles, icons, motion, copy, translations,
 accessibility fixes, and bug reports.
 
 Maintained solely by the maintainer: the synthesis engine
-(`vocal_lib/`, `tools/`), voicebank analysis, the project format
-(`.vbp`), the installer and the release process.
+(`VocalB1Synthesizer.py`, `engine/`, `vocal_lib/`), the analysis and
+helper scripts (`tools/`), the project format (`.vbp`), the installer
+and the release process.
 
 ## Pull requests
 
