@@ -121,7 +121,8 @@ internal static class Program
             {
                 var graph = viewModel!.SelectedParameterSet!.Model.Graph;
                 return graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.ParameterOutput) == 1
-                    && graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.VoicebankData) == 1
+                    // The default graph feeds one bank node per formant group (position + bandwidth).
+                    && graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.VoicebankData) == 2
                     && graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.FormantPosition) == 1
                     && graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.FormantGain) == 1
                     && graph.Nodes.Count(n => n.Kind == VocalB1.Core.Models.NodeKind.FormantBandwidth) == 1
