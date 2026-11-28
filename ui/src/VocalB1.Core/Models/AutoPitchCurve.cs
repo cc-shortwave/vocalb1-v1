@@ -84,24 +84,31 @@ public static class AutoPitchCurve
 
         if (lyric.PitchRaster is { HasValues: true } raster)
         {
+            // A raster may carry an imported or hand-painted curve. Overwriting its head or tail
+            // would destroy that work, so the automatic layer only owns cells that still sit flat on
+            // the note's own pitch; anything already shaped is preserved and only holes are filled.
+            var painted = HasCurveInRange(raster, segment.BeatStart, segment.BeatEnd, target);
             var attackEnd = segment.BeatStart;
-            if (TryBuild(segment, interval, lyric.Bpm, out var start, out var end,
-                    out var overshoot, out var counter))
-            {
-                WriteRaster(raster, start, end, target, interval, overshoot, counter);
-                attackEnd = end;
-            }
 
-            // Clear a previously written closing fall and keep the tail on the steady pitch.
-            var steadyFrom = Math.Max(attackEnd,
-                segment.BeatEnd - (segment.BeatEnd - segment.BeatStart) * (1.0 - MinSteadyRatio));
-            WriteSteady(raster, steadyFrom, segment.BeatEnd, target);
+            if (!painted)
+            {
+                if (TryBuild(segment, interval, lyric.Bpm, out var start, out var end,
+                        out var overshoot, out var counter))
+                {
+                    WriteRaster(raster, start, end, target, interval, overshoot, counter);
+                    attackEnd = end;
+                }
+
+                // Keep the tail on the steady pitch (this also clears any stale closing fall).
+                var steadyFrom = Math.Max(attackEnd,
+                    segment.BeatEnd - (segment.BeatEnd - segment.BeatStart) * (1.0 - MinSteadyRatio));
+                WriteSteady(raster, steadyFrom, segment.BeatEnd, target);
+            }
 
             // The steady body is authored by the automatic layer as well: without it a raster that
             // only holds articulation cells would leave the note without a drawn pitch line. Existing
             // (possibly hand-painted) cells are kept.
-            if (!manual)
-                FillMissingSteady(raster, attackEnd, steadyFrom, target);
+            FillMissingSteady(raster, attackEnd, segment.BeatEnd, target);
             return;
         }
 
@@ -291,11 +298,32 @@ public static class AutoPitchCurve
         var last = raster.IndexOfBeat(end - 1e-9);
         for (var index = first; index <= last; index++)
         {
+            // Unset cells beyond the stored range count as missing: the raster grows on write.
+            var value = index < raster.Values.Count ? raster.Values[index] : null;
+            if (value is null || double.IsNaN(value.Value))
+                raster.SetValue(index, Math.Round(target, 4));
+        }
+    }
+
+    /// <summary>
+    /// True when the raster already holds a shaped curve (imported or hand-painted) inside the note:
+    /// a finite cell whose pitch differs from the note's own pitch. A raster that only repeats the
+    /// note pitch counts as unshaped, so the automatic articulation may still be written into it.
+    /// </summary>
+    private static bool HasCurveInRange(PitchRaster raster, double start, double end, double target)
+    {
+        var first = Math.Max(0, raster.IndexOfBeat(start));
+        var last = raster.IndexOfBeat(end - 1e-9);
+        for (var index = first; index <= last; index++)
+        {
             if (index >= raster.Values.Count)
                 break;
             if (raster.Values[index] is not { } value || double.IsNaN(value))
-                raster.SetValue(index, Math.Round(target, 4));
+                continue;
+            if (Math.Abs(value - target) > 1e-3)
+                return true;
         }
+        return false;
     }
 
     private static void WriteRaster(PitchRaster raster, double start, double end,

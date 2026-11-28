@@ -374,6 +374,42 @@ internal static class Program
             bodyValue is { } steady && Math.Abs(steady - 4.0) < 1e-9,
             bodyValue?.ToString(CultureInfo.InvariantCulture) ?? "空");
 
+        // An imported or hand-painted curve must survive an edit: only holes are filled.
+        var paintedLyric = new LyricDocument();
+        var paintedNote = new VoiceSegment
+        {
+            Audio = "a.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 0, BeatEnd = 4,
+        };
+        paintedLyric.Segments.Add(paintedNote);
+        var paintedRaster = new PitchRaster { StartBeat = 0 };
+        for (var index = 0; index <= paintedRaster.IndexOfBeat(4 - 1e-9); index++)
+            paintedRaster.SetValue(index, 4.0);
+        paintedRaster.SetValue(paintedRaster.IndexOfBeat(0.06), 5.0);
+        paintedRaster.SetValue(paintedRaster.IndexOfBeat(3.5), 3.0);
+        paintedLyric.PitchRaster = paintedRaster;
+
+        AutoPitchCurve.Apply(paintedLyric, paintedNote, 120);
+        Check("自动 PIT：不覆盖手绘栅格音头",
+            Math.Abs((paintedRaster.ValueAt(0.06) ?? 0) - 5.0) < 1e-9);
+        Check("自动 PIT：不覆盖手绘栅格尾部",
+            Math.Abs((paintedRaster.ValueAt(3.5) ?? 0) - 3.0) < 1e-9);
+
+        // A raster that only repeats the note pitch is unshaped: the attack is still generated.
+        var flatLyric = new LyricDocument();
+        var flatNote = new VoiceSegment
+        {
+            Audio = "a.wav", SrcPitch = "D4", DstPitch = "E4", BeatStart = 0, BeatEnd = 4,
+        };
+        flatLyric.Segments.Add(flatNote);
+        var flatRaster = new PitchRaster { StartBeat = 0 };
+        for (var index = 0; index <= flatRaster.IndexOfBeat(4 - 1e-9); index++)
+            flatRaster.SetValue(index, 4.0);
+        flatLyric.PitchRaster = flatRaster;
+
+        AutoPitchCurve.Apply(flatLyric, flatNote, 120);
+        var flatPeak = flatRaster.ValueAt(0.08) ?? 0;
+        Check("自动 PIT：平坦栅格仍生成起音", flatPeak > 4.5, $"{flatPeak:0.####}");
+
         // Same wall-clock attack at another tempo: 60 BPM -> 0.2 beat.
         var slow = new LyricDocument();
         slow.Segments.Add(new VoiceSegment { Audio = "a.wav", SrcPitch = "D4", DstPitch = "D4", BeatStart = 0, BeatEnd = 4 });
