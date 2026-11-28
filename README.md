@@ -223,6 +223,14 @@ The icon is his work; see [NOTICE.md](NOTICE.md) for how it relates to the MIT l
 
 ---
 
+## Contributing
+
+Bug reports and UI-layer pull requests are welcome. Please read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or a pull request —
+it explains what is in scope and how contributions are licensed.
+
+---
+
 ## Author
 
 Xichun Guo · 2026
